@@ -18,14 +18,20 @@
 * Local `application.properties` excluded from Git via `backend/.gitignore`.
 * Initial Git repository created.
 * Initial backend commit pushed to GitHub.
+* V1 datasets migration (`datasets` aggregate-root table).
+* Dataset JPA entity mapped 1:1 to the Flyway schema.
+* Dataset repository with per-owner listing.
+* PostgreSQL persistence test (`@DataJpaTest` against the real database).
+* Flyway → JPA validation path proven (migration applies, `validate` passes).
 
 ## Current state
 
 * Backend foundation exists and boots against the local database; the
   context-load test passes.
 * PostgreSQL database `aegivault` exists locally.
-* No application database migrations have been implemented yet
-  (`db/migration/` is empty; only the Flyway history table exists).
+* V1 migration applied: `datasets` table plus Flyway history table.
+* One domain entity exists: `Dataset` (ingestion aggregate root).
+* No application database migrations beyond V1 have been implemented yet.
 * No domain entities have been implemented.
 * No authentication implementation exists yet.
 * No sanitization implementation exists.
@@ -36,8 +42,7 @@
 
 ## Next planned step
 
-PostgreSQL/Flyway persistence foundation: the first versioned migration(s)
-and the initial domain entities they support.
+Review the persistence foundation before moving to the next feature.
 
 ## Future phases
 

@@ -42,6 +42,10 @@ The repository currently contains only the backend foundation:
 * Spring Security, Validation, and Actuator dependencies (no custom security
   configuration yet).
 * One context-load test; no domain code.
+* V1 Flyway migration: `datasets` table (ingestion aggregate root, UUID key,
+  UTC timestamps, owner/status indexes).
+* `Dataset` JPA entity mapped 1:1 to the Flyway schema plus a minimal
+  repository; persistence proven by a `@DataJpaTest` against PostgreSQL.
 
 Everything below under "planned" is design intent, not implementation.
 

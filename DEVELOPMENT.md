@@ -15,6 +15,11 @@
 * Prefer simple production-quality solutions over clever or elaborate ones.
 * Do not add technologies merely for resume keywords. Every dependency must
   earn its place against a real requirement.
+* No production Java source file should exceed 400 lines. Prefer splitting
+  classes by responsibility when approaching the limit, and avoid god
+  classes — but do not artificially split a small cohesive class merely to
+  satisfy a number. This limit applies to production source code;
+  migrations, configuration, and documentation stay cohesive as written.
 
 ## Technology constraints
 
