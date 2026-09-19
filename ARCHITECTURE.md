@@ -38,7 +38,8 @@ The repository currently contains only the backend foundation:
   git-ignored; committed `application-example.properties` template).
 * Spring Data JPA with `ddl-auto=validate` — Hibernate never modifies the
   schema.
-* Flyway dependency, enabled, pointing at `db/migration/` (no migrations yet).
+* Flyway dependency, enabled, pointing at `db/migration/` (V1 datasets
+  migration applied).
 * Spring Security, Validation, and Actuator dependencies (no custom security
   configuration yet).
 * One context-load test; no domain code.

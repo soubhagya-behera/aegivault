@@ -32,7 +32,6 @@
 * V1 migration applied: `datasets` table plus Flyway history table.
 * One domain entity exists: `Dataset` (ingestion aggregate root).
 * No application database migrations beyond V1 have been implemented yet.
-* No domain entities have been implemented.
 * No authentication implementation exists yet.
 * No sanitization implementation exists.
 * No audit ledger exists.
