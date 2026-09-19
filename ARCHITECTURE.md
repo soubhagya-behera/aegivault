@@ -43,8 +43,8 @@ The repository currently contains only the backend foundation:
 * Spring Security, Validation, and Actuator dependencies plus the
   `oauth2-resource-server` starter for JWT support, with a custom
   stateless security configuration.
-* Twelve tests covering context load, dataset persistence, identity
-  persistence, and the auth API.
+* Twenty-five tests covering context load, dataset persistence, identity
+  persistence, auth API, and dataset API.
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -64,9 +64,16 @@ The repository currently contains only the backend foundation:
   `roles` claims) via Spring Security's `JwtEncoder`/`JwtDecoder`; login
   failures return an identical 401 that never reveals email existence.
   `Dataset.owner_subject` stays opaque TEXT with the convention
-  `owner_subject = users.id`; no ownership endpoints exist yet.
-* Twelve tests (context load, dataset persistence, identity persistence,
-  auth API) run against the real PostgreSQL; no embedded database.
+  `owner_subject = users.id` (JWT `sub`); ownership is enforced server-side.
+* Owner-scoped dataset API: `POST /api/datasets` (201 + `Location`,
+  server-set `CSV`/`UPLOADED`/trimmed name), `GET /api/datasets` (caller's
+  rows only via `findByOwnerSubject`), `GET /api/datasets/{id}` (single
+  `findByIdAndOwnerSubject` lookup; other-owner and missing ids return the
+  same generic 404; malformed UUID returns 400). USER and ADMIN behave
+  identically; no cross-user access exists. Responses never expose
+  `ownerSubject`.
+* Twenty-five tests (context load, dataset persistence, identity persistence,
+  auth API, dataset API) run against the real PostgreSQL; no embedded database.
 
 Everything below under "planned" is design intent, not implementation.
 

@@ -37,6 +37,13 @@
   security enabled.
 * Authenticated profile endpoint (`GET /api/auth/me`).
 * Auth test suites (repository + API, 10 tests) against real PostgreSQL.
+* Owner-scoped dataset API (`POST /api/datasets` returning 201 + `Location`
+  with server-set `CSV`/`UPLOADED`/trimmed name, `GET /api/datasets` listing
+  only the caller's rows, `GET /api/datasets/{id}` via a single
+  `findByIdAndOwnerSubject` lookup with identical 404 for other-owner and
+  missing ids and 400 for malformed UUID; no `ownerSubject` in responses).
+* Dataset API test suite (13 tests) against real PostgreSQL: USER/ADMIN
+  behave identically with no cross-user access.
 
 ## Current state
 
@@ -48,8 +55,8 @@
 * Two domain areas exist: `Dataset` (ingestion aggregate root) and identity
   (`User`, `Role`).
 * Password authentication works (register/login return bearer JWTs);
-  `owner_subject = users.id` is the adopted convention but no Dataset
-  ownership behavior or endpoints exist yet.
+  `owner_subject = users.id` (JWT `sub`) is enforced server-side by the
+  dataset API; no dataset ownership endpoints are missing anymore.
 * No sanitization implementation exists.
 * No audit ledger exists.
 * No AI gateway exists.
@@ -58,8 +65,7 @@
 
 ## Next planned step
 
-Dataset service/API work (ownership behavior using the authenticated JWT
-subject), then PII detection.
+PII detection, then CSV ingestion/processing on top of the owned datasets.
 
 ## Future phases
 
