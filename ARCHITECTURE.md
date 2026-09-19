@@ -40,13 +40,33 @@ The repository currently contains only the backend foundation:
   schema.
 * Flyway dependency, enabled, pointing at `db/migration/` (V1 datasets
   migration applied).
-* Spring Security, Validation, and Actuator dependencies (no custom security
-  configuration yet).
-* One context-load test; no domain code.
+* Spring Security, Validation, and Actuator dependencies plus the
+  `oauth2-resource-server` starter for JWT support, with a custom
+  stateless security configuration.
+* Twelve tests covering context load, dataset persistence, identity
+  persistence, and the auth API.
+* Spring Security with a stateless JWT configuration (no custom login
+  page, no sessions): Bearer tokens authenticate every request except
+  `/api/auth/**` and actuator health/info; method security is enabled.
 * V1 Flyway migration: `datasets` table (ingestion aggregate root, UUID key,
   UTC timestamps, owner/status indexes).
+* V2 Flyway migration: `users` (BCrypt password hashes, unique
+  lowercase-normalized email), `roles` (closed `USER`/`ADMIN` set, seeded),
+  `user_roles` join (cascade on user delete, restrict on role delete).
 * `Dataset` JPA entity mapped 1:1 to the Flyway schema plus a minimal
   repository; persistence proven by a `@DataJpaTest` against PostgreSQL.
+* Identity module: `User` (implements Spring Security `UserDetails`
+  directly; roles become `ROLE_<name>` authorities) and `Role` entities
+  mapped 1:1 to the V2 schema, `UserDetailsService` backed by the
+  `users` table.
+* Password authentication: registration and login endpoints issue HMAC
+  SHA-256 JWTs (60-minute expiry; `sub` = user UUID, plus `email` and
+  `roles` claims) via Spring Security's `JwtEncoder`/`JwtDecoder`; login
+  failures return an identical 401 that never reveals email existence.
+  `Dataset.owner_subject` stays opaque TEXT with the convention
+  `owner_subject = users.id`; no ownership endpoints exist yet.
+* Twelve tests (context load, dataset persistence, identity persistence,
+  auth API) run against the real PostgreSQL; no embedded database.
 
 Everything below under "planned" is design intent, not implementation.
 

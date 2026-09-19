@@ -23,6 +23,20 @@
 * Dataset repository with per-owner listing.
 * PostgreSQL persistence test (`@DataJpaTest` against the real database).
 * Flyway → JPA validation path proven (migration applies, `validate` passes).
+* V2 auth migration (`users`, `roles` seeded with USER/ADMIN, `user_roles`).
+* Identity entities (`User` implementing `UserDetails`, `Role`) plus
+  `UserRepository.findByEmail` and role lookup.
+* Password registration (`POST /api/auth/register`) and login
+  (`POST /api/auth/login`) with BCrypt strength 12 and lowercase email
+  normalization; duplicate email rejected with 409.
+* HMAC SHA-256 JWTs (60-minute expiry, `sub`/`email`/`roles` claims) issued
+  via Spring Security's `JwtEncoder`, verified by `JwtDecoder`.
+* Stateless security configuration: JWT Bearer resource server, CSRF
+  disabled, `/api/auth/**` and actuator health/info public, everything else
+  authenticated, `roles` claim mapped to `ROLE_USER`/`ROLE_ADMIN`, method
+  security enabled.
+* Authenticated profile endpoint (`GET /api/auth/me`).
+* Auth test suites (repository + API, 10 tests) against real PostgreSQL.
 
 ## Current state
 
@@ -30,9 +44,12 @@
   context-load test passes.
 * PostgreSQL database `aegivault` exists locally.
 * V1 migration applied: `datasets` table plus Flyway history table.
-* One domain entity exists: `Dataset` (ingestion aggregate root).
-* No application database migrations beyond V1 have been implemented yet.
-* No authentication implementation exists yet.
+* V2 migration applied: `users`, `roles` (USER/ADMIN seeded), `user_roles`.
+* Two domain areas exist: `Dataset` (ingestion aggregate root) and identity
+  (`User`, `Role`).
+* Password authentication works (register/login return bearer JWTs);
+  `owner_subject = users.id` is the adopted convention but no Dataset
+  ownership behavior or endpoints exist yet.
 * No sanitization implementation exists.
 * No audit ledger exists.
 * No AI gateway exists.
@@ -41,7 +58,8 @@
 
 ## Next planned step
 
-Review the persistence foundation before moving to the next feature.
+Dataset service/API work (ownership behavior using the authenticated JWT
+subject), then PII detection.
 
 ## Future phases
 

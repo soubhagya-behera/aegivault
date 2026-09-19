@@ -65,3 +65,37 @@ as new numbers.
   interface from the start; paid APIs may only appear as optional,
   explicitly configured providers, never as a requirement.
 * **Status:** Accepted.
+
+## ADR-006 — JWT via Spring Security Resource Server (Nimbus), HS256
+
+* **Decision:** Issue and verify bearer tokens with Spring Security's
+  `JwtEncoder`/`JwtDecoder` (Nimbus JOSE under the hood) using HMAC
+  SHA-256 and a 256-bit secret from `aegivault.security.jwt-secret`.
+  Tokens carry `sub` (user UUID), `email`, and `roles` claims with a
+  60-minute expiry. No JJWT or other separate JWT library, no
+  refresh-token infrastructure in this step.
+* **Reason:** The resource-server starter is already part of the Spring
+  Security stack, so JWT support arrives without a new third-party
+  dependency or hand-rolled signing; short-lived access tokens keep the
+  stateless API simple until a demonstrated need for refresh tokens.
+* **Consequences:** The JWT secret is required configuration in every
+  environment (startup fails fast below 256 bits); adding refresh tokens
+  or key rotation later is a deliberate new decision, not an accident.
+* **Status:** Accepted.
+
+## ADR-007 — User Entity as the UserDetails Principal
+
+* **Decision:** The `User` JPA entity implements Spring Security's
+  `UserDetails` directly (email as username, BCrypt hash as password,
+  roles as `ROLE_<name>` authorities). Login authenticates through the
+  standard `AuthenticationManager`/DAO provider backed by a
+  `UserDetailsService` over the `users` table. Passwords use BCrypt
+  strength 12; emails are normalized to lowercase on write and lookup.
+* **Reason:** No separate principal class is needed — the entity already
+  carries exactly the fields authentication requires, and the standard
+  provider gives BCrypt verification plus enabled-account checks without
+  custom code.
+* **Consequences:** Authentication stays coupled to the `User` mapping
+  (acceptable while local passwords are the only credential type);
+  introducing OAuth2 or other credential types would revisit this.
+* **Status:** Accepted.
