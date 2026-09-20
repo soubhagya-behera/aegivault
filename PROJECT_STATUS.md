@@ -44,6 +44,9 @@
   missing ids and 400 for malformed UUID; no `ownerSubject` in responses).
 * Dataset API test suite (13 tests) against real PostgreSQL: USER/ADMIN
   behave identically with no cross-user access.
+* PII detection foundation (`pii` package: `PiiType` enum with 11 types,
+  immutable `PiiDetection` carrying only the type, minimal `PiiDetector`
+  contract `Optional<PiiDetection> detect(String)`; no implementations yet).
 
 ## Current state
 
