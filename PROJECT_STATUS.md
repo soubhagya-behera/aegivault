@@ -44,9 +44,29 @@
   missing ids and 400 for malformed UUID; no `ownerSubject` in responses).
 * Dataset API test suite (13 tests) against real PostgreSQL: USER/ADMIN
   behave identically with no cross-user access.
-* PII detection foundation (`pii` package: `PiiType` enum with 11 types,
-  immutable `PiiDetection` carrying only the type, minimal `PiiDetector`
-  contract `Optional<PiiDetection> detect(String)`; no implementations yet).
+* PII detection foundation (`pii` package: `PiiType` enum, immutable
+  `PiiDetection` carrying only the type, minimal `PiiDetector` contract
+  `Optional<PiiDetection> detect(String)`, and `PiiDetectorRegistry`
+  orchestrating all detectors via Spring `List<PiiDetector>` injection
+  with deterministic `PiiType`-ordered, deduplicated results).
+* Six conservative whole-value PII detectors: `EmailDetector` (practical
+  email subset, whole value only), `PhoneDetector` (scoped to supported
+  Indian/international-style mobile formats), `CreditCardDetector`
+  (normalized 13–19 digits with Luhn checksum), `IpAddressDetector`
+  (strict IPv4 dotted-decimal plus IPv6 literal forms, no DNS/network
+  calls), `UuidDetector` (strict 8-4-4-4-12 hexadecimal textual form),
+  and `ApiKeyDetector` (only explicit `sk-`/`sk-proj-`, `ghp_`/`gho_`/
+  `ghu_`/`ghs_`/`ghr_`, and labelled `api_key`/`apikey`/`api-key`
+  patterns; bare alphanumeric strings are never classified as keys).
+  Detection results never expose raw sensitive values.
+* PII test coverage (pure unit tests, no Spring/network/DB): 172 total
+  tests passing, 0 failures, 0 errors, 0 skipped.
+* API-key test fixtures initially resembled provider credentials closely
+  enough to trigger GitHub secret scanning; the fixtures were rewritten so
+  provider-like values are assembled from harmless fragments at test
+  runtime, the API-key commit was amended, and the corrected history was
+  pushed with `--force-with-lease`. The fixtures were always synthetic and
+  no credential was revoked or rotated.
 
 ## Current state
 
@@ -60,6 +80,13 @@
 * Password authentication works (register/login return bearer JWTs);
   `owner_subject = users.id` (JWT `sub`) is enforced server-side by the
   dataset API; no dataset ownership endpoints are missing anymore.
+* PII detection is currently a detector-level foundation: individual
+  whole-value detectors plus registry orchestration. Not completed yet:
+  schema discovery, column profiling, dataset-wide PII scanning,
+  column-level PII aggregation, confidence scoring, transformation
+  planning, masking, synthetic replacement, relationship-preserving
+  anonymization, sanitization jobs, CSV processing pipeline, Spring Batch
+  processing, user approval workflow, or policy-driven transformations.
 * No sanitization implementation exists.
 * No audit ledger exists.
 * No AI gateway exists.
@@ -68,7 +95,10 @@
 
 ## Next planned step
 
-PII detection, then CSV ingestion/processing on top of the owned datasets.
+Transition from individual PII detectors toward schema-aware/dataset-aware
+detection and profiling, once the detector layer is sufficiently complete
+and stable. CSV ingestion/processing follows on top of the owned
+datasets.
 
 ## Future phases
 
