@@ -99,3 +99,23 @@ as new numbers.
   (acceptable while local passwords are the only credential type);
   introducing OAuth2 or other credential types would revisit this.
 * **Status:** Accepted.
+
+## ADR-008 — Bounded Deterministic PII Column Profiling Without Raw-Value Retention
+
+* **Decision:** Profile dataset columns over a deterministic bounded sample
+  (default 100 values, first-N order): `PiiColumnProfiler` delegates each
+  sampled value to the existing `PiiDetectorRegistry`, aggregates per-type
+  detection counts plus observed detection rates (denominator: analyzed
+  non-blank values), and returns an immutable `ColumnProfile` carrying only
+  counts (supplied/analyzed/analyzable) and rates; `DatasetProfiler` composes
+  column profiles into an immutable `DatasetProfile` with deterministic
+  column-name ordering. No raw values, raw PII, confidence scores, CSV
+  parsing, persistence, or REST exposure in this step.
+* **Reason:** Keeps detector logic separate from dataset aggregation, bounds
+  cost on wide columns, makes sample-vs-full-dataset semantics explicit, and
+  guarantees profiling results can never leak the data they describe.
+* **Consequences:** Callers supply column values directly until ingestion
+  exists; oversized columns report supplied vs analyzed counts instead of
+  claiming full coverage; adding ingestion, persistence, confidence, or
+  policy mapping later is a deliberate new decision.
+* **Status:** Accepted.

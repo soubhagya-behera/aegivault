@@ -72,8 +72,45 @@ The repository currently contains only the backend foundation:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* Twenty-five tests (context load, dataset persistence, identity persistence,
-  auth API, dataset API) run against the real PostgreSQL; no embedded database.
+* 274 total tests verified (context load, dataset persistence, identity persistence,
+  auth API, dataset API, PII detectors, PII profiling), 0 failures, 0 errors,
+  0 skipped, run against the real PostgreSQL; no embedded database.
+
+* Eleven whole-value PII detectors (email, phone, credit card, IP address, UUID, API key,
+  password-labelled values, JWT structure, person-name heuristic, address heuristic, and
+  labelled custom identifiers) fronted by PiiDetectorRegistry (Spring List injection,
+  deduplicated, deterministic PiiType ordering; failures propagate).
+* Schema-aware PII profiling foundation (pii.profile, implemented; not persisted, no CSV
+  parsing, no REST changes):
+
+```text
+Dataset / future ingestion
+        |
+   Column Values
+        |
+PiiColumnProfiler
+        |
+PiiDetectorRegistry
+        |
++-----------------------------+
+| Email | Phone | Card | ... |
++-----------------------------+
+        |
+ Detection Aggregation
+        |
+   ColumnProfile
+        |
+  DatasetProfile
+```
+
+  PiiColumnProfiler takes caller-supplied column values, analyses a deterministic bounded
+  sample (default 100, first-N order; supplied vs analyzed counts recorded), aggregates
+  per-type detection counts and observed detection rates (denominator: analyzed non-blank
+  values; observed rates only, not confidence/accuracy), and returns an immutable
+  ColumnProfile with no raw values. DatasetProfiler profiles a column collection into an
+  immutable DatasetProfile with deterministic column-name ordering. CSV ingestion,
+  database profiling tables, masking, policies, audit, gateway, Redis, and the dashboard
+  remain future work.
 
 Everything below under "planned" is design intent, not implementation.
 

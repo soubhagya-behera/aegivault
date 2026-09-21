@@ -49,7 +49,7 @@
   `Optional<PiiDetection> detect(String)`, and `PiiDetectorRegistry`
   orchestrating all detectors via Spring `List<PiiDetector>` injection
   with deterministic `PiiType`-ordered, deduplicated results).
-* Six conservative whole-value PII detectors: `EmailDetector` (practical
+* Eleven conservative whole-value PII detectors: `EmailDetector` (practical
   email subset, whole value only), `PhoneDetector` (scoped to supported
   Indian/international-style mobile formats), `CreditCardDetector`
   (normalized 13–19 digits with Luhn checksum), `IpAddressDetector`
@@ -57,10 +57,15 @@
   calls), `UuidDetector` (strict 8-4-4-4-12 hexadecimal textual form),
   and `ApiKeyDetector` (only explicit `sk-`/`sk-proj-`, `ghp_`/`gho_`/
   `ghu_`/`ghs_`/`ghr_`, and labelled `api_key`/`apikey`/`api-key`
-  patterns; bare alphanumeric strings are never classified as keys).
+  patterns; bare alphanumeric strings are never classified as keys),
+  plus `PasswordDetector`, `JwtDetector`, `PersonNameDetector`,
+  `AddressDetector`, and `CustomIdentifierDetector` (all conservative
+  whole-value policies; see Current state).
   Detection results never expose raw sensitive values.
-* PII test coverage (pure unit tests, no Spring/network/DB): 172 total
-  tests passing, 0 failures, 0 errors, 0 skipped.
+* Schema-aware PII profiling foundation: see Current state below.
+* PII test coverage (pure unit tests, no Spring/network/DB): 249 PII/profile
+  tests passing, 0 failures, 0 errors, 0 skipped (full repository total
+  274 including 25 pre-existing auth/dataset/context tests).
 * API-key test fixtures initially resembled provider credentials closely
   enough to trigger GitHub secret scanning; the fixtures were rewritten so
   provider-like values are assembled from harmless fragments at test
@@ -80,10 +85,12 @@
 * Password authentication works (register/login return bearer JWTs);
   `owner_subject = users.id` (JWT `sub`) is enforced server-side by the
   dataset API; no dataset ownership endpoints are missing anymore.
+* PII detector coverage is complete at eleven whole-value detectors: password (explicit label only), JWT structure, person-name heuristic, address heuristic, and custom-identifier allowlist join the six original detectors; the registry still auto-discovers detectors via Spring List injection with deterministic ordering and dedup.
+* Schema-aware PII profiling foundation (pii.profile, not persisted, no CSV parsing, no REST changes): ColumnInput plus ColumnProfile carry only counts, PiiColumnProfiler aggregates registry detections over a deterministic bounded sample (default 100, first-N order; supplied vs analyzed counts recorded), and DatasetProfiler returns an immutable DatasetProfile with deterministic column ordering; detection rates use analyzed non-blank values as denominator and are observed rates only.
 * PII detection is currently a detector-level foundation: individual
-  whole-value detectors plus registry orchestration. Not completed yet:
-  schema discovery, column profiling, dataset-wide PII scanning,
-  column-level PII aggregation, confidence scoring, transformation
+  whole-value detectors plus registry orchestration, with column and dataset profiling on caller-supplied values. Not completed yet:
+  schema discovery from files or PostgreSQL, dataset-wide PII scanning over stored data,
+  column-level persistence of profiles, confidence scoring, transformation
   planning, masking, synthetic replacement, relationship-preserving
   anonymization, sanitization jobs, CSV processing pipeline, Spring Batch
   processing, user approval workflow, or policy-driven transformations.
@@ -95,10 +102,7 @@
 
 ## Next planned step
 
-Transition from individual PII detectors toward schema-aware/dataset-aware
-detection and profiling, once the detector layer is sufficiently complete
-and stable. CSV ingestion/processing follows on top of the owned
-datasets.
+Connect CSV ingestion on top of the owned datasets and the new profiling foundation; sanitization, masking, and the audit ledger remain later milestones. No CSV ingestion or sanitization is complete yet.
 
 ## Future phases
 
