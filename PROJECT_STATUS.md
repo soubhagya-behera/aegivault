@@ -81,9 +81,9 @@
   86 tests covering parser behavior, header policy, duplicate-header rejection,
   row-width policy, malformed quoting, safety limits, bounded sampling,
   determinism, error safety, and CSV→profile integration.
-* Pure unit test totals: 335 tests (249 PII/profile + 86 CSV), 0 failures,
+* Pure unit test totals: 412 tests (249 PII/profile + 86 CSV + 77 sanitization), 0 failures,
   0 errors, 0 skipped.
-* Repository total: 360 tests, 0 failures, 0 errors, 0 skipped — 335 pure unit
+* Repository total: 437 tests, 0 failures, 0 errors, 0 skipped — 412 pure unit
   tests plus 25 context/persistence/API tests run against the real local
   PostgreSQL.
 * API-key test fixtures initially resembled provider credentials closely
@@ -108,13 +108,12 @@
 * PII detector coverage is complete at eleven whole-value detectors: password (explicit label only), JWT structure, person-name heuristic, address heuristic, and custom-identifier allowlist join the six original detectors; the registry still auto-discovers detectors via Spring List injection with deterministic ordering and dedup.
 * Schema-aware PII profiling foundation (pii.profile, not persisted, no REST changes): ColumnInput plus ColumnProfile carry only counts, PiiColumnProfiler aggregates registry detections over a deterministic bounded sample (default 100, first-N order; supplied vs analyzed counts recorded), and DatasetProfiler returns an immutable DatasetProfile with deterministic column ordering; detection rates use analyzed non-blank values as denominator and are observed rates only.
 * CSV schema discovery and bounded CSV profiling now feed that foundation (dataset.csv, not persisted, no REST endpoint, no database writes, no sanitization): the CSV sample size defaults to the profiler's own sample size, rows read are reported separately from rows retained, all-blank data records are skipped, blank or duplicate header names and any row whose width contradicts the header are rejected with row/index/limit-only messages, and raw CSV values exist only in memory during processing (never logged, never persisted, never placed in a profile or in an exception).
-* PII detection and CSV ingestion together still form a foundation only: individual whole-value detectors plus registry orchestration, column/dataset profiling, and CSV discovery on caller-supplied input. Not completed yet:
+* PII detection and CSV ingestion together still form a foundation only: individual whole-value detectors plus registry orchestration, column/dataset profiling, CSV discovery on caller-supplied input, and now the domain sanitization engine described below. Not completed yet:
   PostgreSQL schema discovery, dataset-wide PII scanning over stored data,
-  persistence of profiles or findings, confidence scoring, transformation
-  planning, masking, synthetic replacement, relationship-preserving
-  anonymization, sanitization jobs, the CSV sanitization/rewrite pipeline,
+  persistence of profiles, findings, plans, or sanitization runs, confidence scoring,
+  the CSV sanitization/rewrite pipeline,
   Spring Batch processing, a multipart upload REST API, user approval workflow,
-  or policy-driven transformations.
+  stored versioned policies, or sanitization jobs.
 * Known CSV-discovery limitations at this stage: the accepted input is buffered
   in memory (bounded by the 10 MB default input-byte limit) rather than being
   processed as a chunked/streaming pipeline; the full data-row count is reported
@@ -122,7 +121,23 @@
   caller never handed over); all-blank records are skipped by policy rather than
   counted; and the configured limits bound the work of one discovery call but are
   not a complete denial-of-service protection.
-* No sanitization implementation exists.
+* Data sanitization / transformation engine foundation (`sanitization`
+  package, not persisted, no REST endpoint): detection and transformation are
+  separate — detectors identify PII, an explicit immutable `TransformationPlan`
+  maps each `PiiType` to one of six deterministic pure strategies (`KEEP`,
+  `REDACT`, `MASK` with an explicit 4-character visible suffix, `SYNTHETIC_EMAIL`
+  as `user-<token>@example.invalid`, `SYNTHETIC_PHONE` in the project's accepted
+  phone format, unsalted `HASH_SHA256`), and `DataSanitizationService` applies the
+  planned strategy via `TransformationRegistry` without detecting, reading CSV,
+  or touching any repository, file, network, cache, or AI service.
+  `ColumnSanitizer` sanitizes a column's sampled values into an immutable
+  `SanitizedColumn` holding sanitized values plus policy metadata only (raw values
+  never retained, never logged, never in exceptions). `DefaultTransformationPolicy`
+  is an explicit application policy covering all eleven PII types, not a safety or
+  compliance claim; hashing is deterministic pseudonymization-like transformation,
+  not anonymization. 77 pure unit tests cover strategies, plans, the service,
+  column sanitization, determinism, and the default policy.
+* No sanitization persistence, REST API, or CSV rewrite pipeline exists yet.
 * No audit ledger exists.
 * No AI gateway exists.
 * No Redis implementation exists.
@@ -130,11 +145,12 @@
 
 ## Next planned step
 
-Wire the proven CSV discovery/profiling boundary into the authenticated dataset
-flow (an upload/ingest path plus persistence of profile metadata), then begin
-the sanitization pipeline. Sanitization, masking, output rewriting, and the
-audit ledger remain later milestones: no CSV upload API, no profile
-persistence, and no sanitization is complete yet.
+Wire the proven CSV discovery/profiling boundary and the sanitization engine
+into the authenticated dataset flow (an upload/ingest path, persistence of
+profile metadata, and the CSV sanitization/rewrite pipeline), then the audit
+ledger. Sanitization persistence, output rewriting, and the audit ledger remain
+later milestones: no CSV upload API, no profile persistence, and no end-to-end
+sanitization run is complete yet.
 
 ## Future phases
 

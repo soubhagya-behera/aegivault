@@ -45,8 +45,9 @@ profiling, and CSV discovery modules:
   `oauth2-resource-server` starter for JWT support, with a custom
   stateless security configuration.
 * Test suites covering context load, Flyway/JPA persistence, identity and
-  dataset REST APIs, PII detectors, PII profiling, and CSV discovery/profiling
-  (360 tests; see the verified test count below).
+  dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
+  and the sanitization/transformation engine (437 tests; see the verified
+  test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -74,10 +75,11 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 360 total tests verified (context load, dataset persistence, identity persistence,
-  auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling),
+* 437 total tests verified (context load, dataset persistence, identity persistence,
+  auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
+  sanitization/transformation engine),
   0 failures, 0 errors, 0 skipped; the persistence/context suites run against the real
-  PostgreSQL with no embedded database, and the CSV/profiling suites are pure unit tests.
+  PostgreSQL with no embedded database, and the CSV/profiling/sanitization suites are pure unit tests.
 
 * Eleven whole-value PII detectors (email, phone, credit card, IP address, UUID, API key,
   password-labelled values, JWT structure, person-name heuristic, address heuristic, and
@@ -121,12 +123,49 @@ CSV Input (caller-owned InputStream or text)
   CsvLimits (maximum columns, sampled rows, field length, input bytes); the CSV sample
   size defaults to the profiler's own default sample size, so there is one sampling
   concept, and rows read are reported separately from rows retained for profiling. The
-  facade CsvDatasetProfiler composes CSV discovery with the existing DatasetProfiler and
-  returns a DatasetProfile without sanitizing, transforming, persisting, or calling any
-  external service. CSV profiling is not yet persistent, sanitization is not implemented,
-  Spring Batch is not used, and there is no uploaded-file REST API yet. Database profiling
-  tables, masking, policies, audit, gateway, Redis, and the dashboard also remain future
-  work.
+   facade CsvDatasetProfiler composes CSV discovery with the existing DatasetProfiler and
+   returns a DatasetProfile without sanitizing, transforming, persisting, or calling any
+   external service. CSV profiling is not yet persistent, the CSV sanitization/rewrite
+   pipeline is not implemented, Spring Batch is not used, and there is no uploaded-file
+   REST API yet. Database profiling tables, persisted policies, audit, gateway, Redis,
+   and the dashboard also remain future work.
+
+* Data sanitization / transformation engine foundation (sanitization, implemented;
+  not persisted, no REST endpoint, no CSV/file/network/database access):
+
+```text
+raw value
+    |
+PiiDetectorRegistry (detection: what is this value?)
+    |
+PiiType
+    |
+TransformationPlan (explicit policy: what should happen to it?)
+    |
+TransformationRegistry / ValueTransformation (how it is rewritten)
+    |
+sanitized value
+```
+
+  Detection and transformation are separate concerns and live in separate
+  classes: detectors never transform, transformations never detect, and the
+  engine (`DataSanitizationService`) never infers a strategy from a detection
+  result — it only applies the explicit `TransformationPlan` it is given.
+  Six deterministic, pure strategies exist (`KEEP`, `REDACT`, `MASK`,
+  `SYNTHETIC_EMAIL`, `SYNTHETIC_PHONE`, `HASH_SHA256`), resolved through the
+  `TransformationRegistry` without a switch statement. Determinism comes from
+  the input value and stable configuration alone (SHA-256 based; no randomness,
+  no counters, no mapping store), so identical source values map to identical
+  sanitized values within one operation. `ColumnSanitizer` applies one resolved
+  strategy to a column's sampled values and returns a `SanitizedColumn` holding
+  sanitized values plus policy metadata only — raw values are never retained in
+  the result, never logged, never persisted, and never included in exception
+  messages. `DefaultTransformationPolicy` is an explicit application policy
+  covering all eleven PII types, not an intrinsic property of `PiiType` and not
+  a safety or compliance claim; `HASH_SHA256` is deterministic
+  pseudonymization-like transformation, not anonymization. No sanitization
+  tables, repositories, migrations, REST endpoints, or new dependencies were
+  added in this step.
 
 Everything below under "planned" is design intent, not implementation.
 

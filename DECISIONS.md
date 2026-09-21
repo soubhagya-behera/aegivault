@@ -162,3 +162,43 @@ as new numbers.
   decisions. The configured limits bound one discovery call and are not a
   complete denial-of-service protection.
 * **Status:** Accepted.
+
+## ADR-010 — Explicit Deterministic Transformation Plans Separate From Detection
+
+* **Decision:** Sanitization is a pure domain engine (`sanitization` package)
+  kept strictly separate from detection: detectors report `PiiType`, an
+  explicit immutable `TransformationPlan` maps each type to one of six
+  strategies (`KEEP`, `REDACT`, `MASK`, `SYNTHETIC_EMAIL`, `SYNTHETIC_PHONE`,
+  `HASH_SHA256`), `TransformationRegistry` resolves behaviour without a switch
+  statement, `DataSanitizationService` applies the planned strategy to one
+  value, and `ColumnSanitizer` applies it across a column's sampled values into
+  a `SanitizedColumn` that holds sanitized values plus policy metadata only.
+  Every strategy is deterministic and stateless (SHA-256 derived, UTF-8,
+  lowercase hex where applicable; no randomness, no counters, no mapping store,
+  no network/database/cache/AI calls), so identical source values map to
+  identical sanitized values without any retained state. Unmapped types fail
+  closed instead of silently keeping or rewriting. Synthetic outputs use
+  never-routable forms (`user-<token>@example.invalid`; a ten-digit value in
+  the project's accepted phone format, documented as synthetic data with no
+  reserved-range claim). `MASK` keeps an explicit four-character tail and is a
+  generic mask, not a card algorithm. `HASH_SHA256` is unsalted and therefore a
+  deterministic pseudonymization-like transformation, not anonymization.
+  `DefaultTransformationPolicy` covers all eleven PII types as an explicit,
+  overridable application policy — not a property of `PiiType` and not a safety
+  or compliance claim. No tables, repositories, migrations, REST endpoints, or
+  new dependencies in this step.
+* **Reason:** Merging detection with rewriting would hide policy gaps (a
+  detector silently deciding what happens to data) and make every policy change
+  a code change; an explicit plan makes the sanitization decision reviewable
+  and testable independently of HTTP, persistence, and CSV writing. Determinism
+  from the value alone preserves in-operation relationships (repeated
+  identifiers stay repeated) with no mapping store to secure, back up, or leak,
+  at the accepted cost that unsalted hashes of low-entropy values are
+  guessable. Keeping raw values out of results, logs, and exceptions bounds raw
+  data lifetime to the in-memory call.
+* **Consequences:** The engine cannot sanitize anything without a plan, and an
+  incomplete plan fails loudly; adding stateful tokenization, salting/keyed
+  pseudonymization, streaming CSV rewriting, persistence, or REST integration
+  are deliberate later decisions. `KEEP` on a detected type is possible but
+  always an explicit hand-written choice.
+* **Status:** Accepted.
