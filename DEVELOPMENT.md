@@ -31,6 +31,22 @@
 * No paid AI API dependency for core functionality. Use a Mock provider for
   tests and Ollama for local AI development (see `DECISIONS.md`, ADR-005).
 
+## Data-handling rules
+
+* Treat every ingested value as sensitive by default. Never log raw field
+  values, never put them in exception messages, and never echo them in an error
+  response — identify the problem with row numbers, column indexes, and the
+  violated limit instead.
+* Discovery and profiling results carry metadata only (types, counts, rates,
+  sizes). Raw values may exist in memory while a request is processed, but never
+  inside a stored or returned result.
+* Keep the ingestion path self-contained: no AI/LLM calls, no DNS lookups, no
+  geocoding, no caching services, and no third-party APIs while reading or
+  profiling data (see `DECISIONS.md`, ADR-005).
+* Test fixtures must be synthetic. Never commit credentials, tokens, or values
+  shaped like real provider secrets (see the API-key fixture incident recorded
+  in `PROJECT_STATUS.md`).
+
 ## Honesty rules
 
 * Security claims must match the actual implementation. Document what the

@@ -62,10 +62,30 @@
   `AddressDetector`, and `CustomIdentifierDetector` (all conservative
   whole-value policies; see Current state).
   Detection results never expose raw sensitive values.
-* Schema-aware PII profiling foundation: see Current state below.
-* PII test coverage (pure unit tests, no Spring/network/DB): 249 PII/profile
-  tests passing, 0 failures, 0 errors, 0 skipped (full repository total
-  274 including 25 pre-existing auth/dataset/context tests).
+* Schema-aware PII profiling foundation plus CSV schema discovery and
+  bounded CSV profiling: see Current state below.
+* CSV schema discovery and bounded CSV profiling (`dataset.csv`):
+  `CsvTokenizer` (RFC 4180-style quoting, `""` escapes, delimiters and line
+  breaks inside quoted fields, LF/CRLF/CR terminators, strict quote rejection,
+  per-field length ceiling, per-record column ceiling, one record at a time so
+  no record list accumulates), `CsvDiscoveryService` (first record is the
+  header, verbatim column names, blank/duplicate header rejection, exact
+  row-width validation, all-blank record skipping, UTF-8 with BOM tolerance,
+  byte-bounded input, sampled-row ceiling, explicit rows-read vs rows-retained
+  accounting), `CsvLimits` (four explicit safety limits with conservative
+  defaults), `CsvSchema`/`CsvSample` (immutable discovery results holding no
+  claimed full-dataset counts) and `CsvDatasetProfiler` (CSV → `ColumnInput` →
+  `DatasetProfiler` → `DatasetProfile`, performing no sanitization, no
+  transformation, no persistence, and no external, network, cache, or AI call).
+* CSV discovery/profiling test coverage (pure unit tests, no Spring/DB/network):
+  86 tests covering parser behavior, header policy, duplicate-header rejection,
+  row-width policy, malformed quoting, safety limits, bounded sampling,
+  determinism, error safety, and CSV→profile integration.
+* Pure unit test totals: 335 tests (249 PII/profile + 86 CSV), 0 failures,
+  0 errors, 0 skipped.
+* Repository total: 360 tests, 0 failures, 0 errors, 0 skipped — 335 pure unit
+  tests plus 25 context/persistence/API tests run against the real local
+  PostgreSQL.
 * API-key test fixtures initially resembled provider credentials closely
   enough to trigger GitHub secret scanning; the fixtures were rewritten so
   provider-like values are assembled from harmless fragments at test
@@ -86,14 +106,22 @@
   `owner_subject = users.id` (JWT `sub`) is enforced server-side by the
   dataset API; no dataset ownership endpoints are missing anymore.
 * PII detector coverage is complete at eleven whole-value detectors: password (explicit label only), JWT structure, person-name heuristic, address heuristic, and custom-identifier allowlist join the six original detectors; the registry still auto-discovers detectors via Spring List injection with deterministic ordering and dedup.
-* Schema-aware PII profiling foundation (pii.profile, not persisted, no CSV parsing, no REST changes): ColumnInput plus ColumnProfile carry only counts, PiiColumnProfiler aggregates registry detections over a deterministic bounded sample (default 100, first-N order; supplied vs analyzed counts recorded), and DatasetProfiler returns an immutable DatasetProfile with deterministic column ordering; detection rates use analyzed non-blank values as denominator and are observed rates only.
-* PII detection is currently a detector-level foundation: individual
-  whole-value detectors plus registry orchestration, with column and dataset profiling on caller-supplied values. Not completed yet:
-  schema discovery from files or PostgreSQL, dataset-wide PII scanning over stored data,
-  column-level persistence of profiles, confidence scoring, transformation
+* Schema-aware PII profiling foundation (pii.profile, not persisted, no REST changes): ColumnInput plus ColumnProfile carry only counts, PiiColumnProfiler aggregates registry detections over a deterministic bounded sample (default 100, first-N order; supplied vs analyzed counts recorded), and DatasetProfiler returns an immutable DatasetProfile with deterministic column ordering; detection rates use analyzed non-blank values as denominator and are observed rates only.
+* CSV schema discovery and bounded CSV profiling now feed that foundation (dataset.csv, not persisted, no REST endpoint, no database writes, no sanitization): the CSV sample size defaults to the profiler's own sample size, rows read are reported separately from rows retained, all-blank data records are skipped, blank or duplicate header names and any row whose width contradicts the header are rejected with row/index/limit-only messages, and raw CSV values exist only in memory during processing (never logged, never persisted, never placed in a profile or in an exception).
+* PII detection and CSV ingestion together still form a foundation only: individual whole-value detectors plus registry orchestration, column/dataset profiling, and CSV discovery on caller-supplied input. Not completed yet:
+  PostgreSQL schema discovery, dataset-wide PII scanning over stored data,
+  persistence of profiles or findings, confidence scoring, transformation
   planning, masking, synthetic replacement, relationship-preserving
-  anonymization, sanitization jobs, CSV processing pipeline, Spring Batch
-  processing, user approval workflow, or policy-driven transformations.
+  anonymization, sanitization jobs, the CSV sanitization/rewrite pipeline,
+  Spring Batch processing, a multipart upload REST API, user approval workflow,
+  or policy-driven transformations.
+* Known CSV-discovery limitations at this stage: the accepted input is buffered
+  in memory (bounded by the 10 MB default input-byte limit) rather than being
+  processed as a chunked/streaming pipeline; the full data-row count is reported
+  only for the input actually supplied (no claim is made about a larger file the
+  caller never handed over); all-blank records are skipped by policy rather than
+  counted; and the configured limits bound the work of one discovery call but are
+  not a complete denial-of-service protection.
 * No sanitization implementation exists.
 * No audit ledger exists.
 * No AI gateway exists.
@@ -102,7 +130,11 @@
 
 ## Next planned step
 
-Connect CSV ingestion on top of the owned datasets and the new profiling foundation; sanitization, masking, and the audit ledger remain later milestones. No CSV ingestion or sanitization is complete yet.
+Wire the proven CSV discovery/profiling boundary into the authenticated dataset
+flow (an upload/ingest path plus persistence of profile metadata), then begin
+the sanitization pipeline. Sanitization, masking, output rewriting, and the
+audit ledger remain later milestones: no CSV upload API, no profile
+persistence, and no sanitization is complete yet.
 
 ## Future phases
 

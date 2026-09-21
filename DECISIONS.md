@@ -119,3 +119,46 @@ as new numbers.
   claiming full coverage; adding ingestion, persistence, confidence, or
   policy mapping later is a deliberate new decision.
 * **Status:** Accepted.
+
+## ADR-009 — Strict Bounded CSV Discovery at the Profiling Boundary
+
+* **Decision:** CSV ingestion is a discovery/extraction boundary, not a
+  detection or sanitization boundary. `CsvDiscoveryService` (with a hand-written
+  `CsvTokenizer`, no CSV library) reads UTF-8 CSV input under explicit
+  `CsvLimits` and produces an immutable `CsvSchema` plus bounded per-column
+  samples (`CsvSample`); `CsvDatasetProfiler` converts those samples into
+  `ColumnInput` values and delegates to the existing `DatasetProfiler`, so
+  detection stays in `PiiDetectorRegistry`/`PiiColumnProfiler`. The rules
+  chosen: the first record is always the header; column names are preserved
+  verbatim (never trimmed or renamed) while blank names and duplicate names
+  (compared after trimming and case folding) are rejected; every data record
+  must match the header width exactly, and nothing is dropped, padded, merged,
+  or invented; all-blank records (empty lines, whitespace-only lines,
+  delimiter-only records such as `,,`) are skipped and counted neither as
+  sampled nor as encountered rows; sampling is bounded (default 100 rows per
+  column, the same default as `PiiColumnProfiler`) while rows read are counted
+  separately from rows retained, and no full-dataset row count is invented;
+  raw values are never logged, persisted, transformed, exported, sent to any
+  network/AI service, or included in a profile or exception message (errors
+  name row numbers, column indexes, and limits only).
+* **Reason:** Silent schema mutation or silent row repair would make later
+  sanitization unsafe — a sanitizer that trusts a "repaired" schema could
+  rename a column the caller relies on, or mask the wrong field — so ambiguity
+  fails fast at the boundary instead. Bounded sampling keeps memory and CPU
+  proportional to the configured limits rather than to input size, explicit
+  read-vs-retained counters prevent a sample from being mistaken for the whole
+  dataset, and keeping detection in the existing PII layer avoids a second
+  profiler implementation. A small hand-written parser was preferred to a new
+  CSV dependency because the required grammar (quoted fields, `""` escapes,
+  LF/CRLF/CR terminators) is small, fully testable, and avoids another
+  dependency to audit.
+* **Consequences:** CSV input that would previously have needed lenient repair
+  (duplicate or blank headers, ragged rows, text after a closing quote) is
+  rejected with a domain `CsvParseException` instead of being accepted.
+  Ingestion remains non-persistent: the accepted input is buffered within the
+  byte limit, no raw data is stored, and no profile is stored. Wiring CSV
+  profiling into the Dataset flow, persisting profiles, sanitization, and
+  chunked processing of inputs larger than the byte limit are deliberate later
+  decisions. The configured limits bound one discovery call and are not a
+  complete denial-of-service protection.
+* **Status:** Accepted.

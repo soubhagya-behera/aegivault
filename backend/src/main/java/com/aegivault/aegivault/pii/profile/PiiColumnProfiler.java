@@ -32,7 +32,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class PiiColumnProfiler {
 
-    static final int DEFAULT_MAX_SAMPLE_SIZE = 100;
+    public static final int DEFAULT_MAX_SAMPLE_SIZE = 100;
 
     private final PiiDetectorRegistry registry;
 

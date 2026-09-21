@@ -39,4 +39,16 @@ public class DatasetProfiler {
                 profiles.size(),
                 columnProfiler.maxSampleSize());
     }
+
+    /**
+     * Maximum number of values analysed per column, as configured on the
+     * underlying {@link PiiColumnProfiler}. Callers that supply values (for
+     * example CSV discovery) use this to decide how many rows to read instead
+     * of inventing a separate sampling limit.
+     *
+     * @return the effective per-column sample limit
+     */
+    public int maxSampleSizePerColumn() {
+        return columnProfiler.maxSampleSize();
+    }
 }

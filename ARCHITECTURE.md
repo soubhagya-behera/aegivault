@@ -31,7 +31,8 @@ genuine scaling or ownership requirement emerges.
 
 ## Currently implemented architecture
 
-The repository currently contains only the backend foundation:
+The repository currently contains the backend foundation plus the PII detection,
+profiling, and CSV discovery modules:
 
 * Spring Boot 4.1.1 application skeleton (Java 17, Maven).
 * PostgreSQL datasource configuration (local `application.properties`,
@@ -43,8 +44,9 @@ The repository currently contains only the backend foundation:
 * Spring Security, Validation, and Actuator dependencies plus the
   `oauth2-resource-server` starter for JWT support, with a custom
   stateless security configuration.
-* Twenty-five tests covering context load, dataset persistence, identity
-  persistence, auth API, and dataset API.
+* Test suites covering context load, Flyway/JPA persistence, identity and
+  dataset REST APIs, PII detectors, PII profiling, and CSV discovery/profiling
+  (360 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -72,45 +74,59 @@ The repository currently contains only the backend foundation:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 274 total tests verified (context load, dataset persistence, identity persistence,
-  auth API, dataset API, PII detectors, PII profiling), 0 failures, 0 errors,
-  0 skipped, run against the real PostgreSQL; no embedded database.
+* 360 total tests verified (context load, dataset persistence, identity persistence,
+  auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling),
+  0 failures, 0 errors, 0 skipped; the persistence/context suites run against the real
+  PostgreSQL with no embedded database, and the CSV/profiling suites are pure unit tests.
 
 * Eleven whole-value PII detectors (email, phone, credit card, IP address, UUID, API key,
   password-labelled values, JWT structure, person-name heuristic, address heuristic, and
   labelled custom identifiers) fronted by PiiDetectorRegistry (Spring List injection,
   deduplicated, deterministic PiiType ordering; failures propagate).
-* Schema-aware PII profiling foundation (pii.profile, implemented; not persisted, no CSV
-  parsing, no REST changes):
+* Schema-aware PII profiling foundation (pii.profile, implemented; not persisted, no REST
+  changes): PiiColumnProfiler analyses a deterministic bounded sample of the values
+  supplied for one column (default 100, first-N order; supplied vs analyzed counts
+  recorded), aggregates per-type detection counts and observed detection rates
+  (denominator: analyzed non-blank values; observed rates only, not confidence or
+  accuracy), and returns an immutable ColumnProfile with no raw values. DatasetProfiler
+  composes one ColumnInput per column into an immutable DatasetProfile with deterministic
+  column-name ordering.
+* CSV schema discovery and bounded CSV profiling (dataset.csv, implemented; not persisted,
+  no REST endpoint, no sanitization):
 
 ```text
-Dataset / future ingestion
+CSV Input (caller-owned InputStream or text)
         |
-   Column Values
+   CSV Discovery / Reader
+   (CsvDiscoveryService + CsvTokenizer)
         |
-PiiColumnProfiler
+   Bounded Column Samples + CsvSchema (CsvSample)
         |
-PiiDetectorRegistry
+   ColumnInput (one per discovered column)
         |
-+-----------------------------+
-| Email | Phone | Card | ... |
-+-----------------------------+
+   DatasetProfiler
         |
- Detection Aggregation
+   PiiColumnProfiler
         |
-   ColumnProfile
+   PiiDetectorRegistry
         |
-  DatasetProfile
+   ColumnProfile / DatasetProfile
 ```
 
-  PiiColumnProfiler takes caller-supplied column values, analyses a deterministic bounded
-  sample (default 100, first-N order; supplied vs analyzed counts recorded), aggregates
-  per-type detection counts and observed detection rates (denominator: analyzed non-blank
-  values; observed rates only, not confidence/accuracy), and returns an immutable
-  ColumnProfile with no raw values. DatasetProfiler profiles a column collection into an
-  immutable DatasetProfile with deterministic column-name ordering. CSV ingestion,
-  database profiling tables, masking, policies, audit, gateway, Redis, and the dashboard
-  remain future work.
+  The CSV layer only discovers and extracts values: the first record is the header, column
+  names are preserved verbatim, blank/duplicate header names and any row whose width
+  contradicts the header are rejected (a domain CsvParseException naming row numbers,
+  column indexes, and limits only), quoted fields may hold delimiters, escaped quotes, and
+  line breaks, and LF/CRLF/CR are all accepted. Sampling is bounded by explicit
+  CsvLimits (maximum columns, sampled rows, field length, input bytes); the CSV sample
+  size defaults to the profiler's own default sample size, so there is one sampling
+  concept, and rows read are reported separately from rows retained for profiling. The
+  facade CsvDatasetProfiler composes CSV discovery with the existing DatasetProfiler and
+  returns a DatasetProfile without sanitizing, transforming, persisting, or calling any
+  external service. CSV profiling is not yet persistent, sanitization is not implemented,
+  Spring Batch is not used, and there is no uploaded-file REST API yet. Database profiling
+  tables, masking, policies, audit, gateway, Redis, and the dashboard also remain future
+  work.
 
 Everything below under "planned" is design intent, not implementation.
 
