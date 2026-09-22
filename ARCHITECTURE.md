@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (572 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (579 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,7 +75,7 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 572 total tests verified (context load, dataset persistence, identity persistence,
+* 579 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
   sanitization run domain/persistence/lifecycle/execution/retrieval),
@@ -269,7 +269,15 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   `DatasetInputSource` seam (owner in, fresh caller-owned stream out, no
   production implementation yet) names exactly what a future input-storage
   milestone must provide before `POST /api/runs` can execute against a
-  stored dataset. The backing-store choice itself is undecided. The V3 migration constrains the table the same way (`RESTRICT` on
+  stored dataset. That milestone is now implemented as PostgreSQL BYTEA
+  (ADR-013): one `dataset_inputs` row per dataset (primary-key dataset id,
+  denormalized owner, `content BYTEA`, 10 MiB schema CHECK mirroring
+  `CsvLimits`, `ON DELETE CASCADE` because bytes are dataset content, not
+  history), served by `DatabaseDatasetInputSource` with the 10 MiB bound
+  enforced while streaming before anything persists. `Dataset` holds no
+  reference and the input entity holds no association back, so metadata
+  queries never load the payload. BYTEA is the first backend for bounded
+  MVP inputs, not a large-scale storage claim. The V3 migration constrains the table the same way (`RESTRICT` on
   dataset delete so history is never silently orphaned, error columns only on
   `FAILED`, `completed_at` required on terminal states, non-negative counts;
   indexes on `dataset_id` and `owner_subject` only — no status index until a

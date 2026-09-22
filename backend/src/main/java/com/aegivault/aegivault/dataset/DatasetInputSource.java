@@ -6,12 +6,12 @@ import java.util.UUID;
 /**
  * Owner-scoped source of a dataset's stored CSV bytes.
  *
- * <p>Datasets currently persist metadata only (see {@link Dataset}: names,
- * labels, counts, status — no byte columns, no files, no object storage),
- * so there is deliberately no production implementation of this interface
- * yet. It exists to name the exact seam the future {@code POST /api/runs}
- * endpoint will read through, instead of letting that endpoint invent
- * storage access ad hoc: owner in, caller-owned stream out.
+ * <p>Datasets persist metadata only (see {@link Dataset}: names, labels,
+ * counts, status); the bytes themselves live in a separate boundary read
+ * through this interface. It exists to name the exact seam the future
+ * {@code POST /api/runs} endpoint will read through, instead of letting
+ * that endpoint invent storage access ad hoc: owner in, caller-owned
+ * stream out.
  *
  * <p>Contract for implementations:
  *
@@ -28,10 +28,11 @@ import java.util.UUID;
  *       content for a dataset that has none stored.</li>
  * </ul>
  *
- * <p>Choosing the backing store (database, filesystem, object storage) is a
- * later architectural decision with its own migration and ADR; this
- * interface stays neutral so that decision changes one implementation, not
- * every caller.
+ * <p>The first production implementation is PostgreSQL BYTEA
+ * ({@code DatabaseDatasetInputSource}, {@code dataset_inputs} table):
+ * owner in, caller-owned stream out. The interface stays neutral so a
+ * later backing-store decision changes one implementation, not every
+ * caller.
  */
 public interface DatasetInputSource {
 

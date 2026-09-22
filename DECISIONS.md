@@ -274,3 +274,34 @@ as new numbers.
   REST endpoints, artifact storage, background execution, and the audit ledger
   remain deliberate later decisions.
 * **Status:** Accepted.
+
+## ADR-013 — PostgreSQL BYTEA as the First Dataset Input Store
+
+* **Decision:** Store one dataset's CSV input bytes in PostgreSQL BYTEA, in
+  a dedicated `dataset_inputs` table (V4 migration: primary key
+  `dataset_id` with a foreign key to `datasets`, denormalized owner,
+  `content BYTEA`, UTC stamps), served through the existing
+  `DatasetInputSource` seam by `DatabaseDatasetInputSource`. The single
+  size bound is `CsvLimits.DEFAULT_MAX_INPUT_BYTES` (10 MiB), enforced in
+  the application while streaming (reject before persisting, never truncate)
+  and mirrored by a schema CHECK, so one bound has two enforcement points.
+  The dataset FK is `ON DELETE CASCADE` — stored bytes are dataset content,
+  not history, and vanish with their dataset (the deliberate opposite of
+  the run table's `RESTRICT`). `Dataset` gains no reference and the input
+  entity holds no object association back, so metadata queries can never
+  load the payload.
+* **Reason:** The application already depends on PostgreSQL, the CSV model
+  is already 10 MiB-bounded, and the project is a modular monolith — BYTEA
+  adds durable input with one transactional store and zero new
+  infrastructure, while filesystem/S3 would introduce operations, secrets,
+  and consistency questions the MVP has no requirement for. A dedicated
+  table over a blob column on `datasets` keeps byte I/O off every metadata
+  query without relying on JPA lazy-basic behavior.
+* **Consequences:** Inputs above 10 MiB are rejected, not chunk-processed;
+  BYTEA rows ride the primary database (backups, replication, bloat) — this
+  is accepted for bounded MVP inputs and is explicitly NOT a claim that
+  BYTEA scales to large-dataset production use; chunked or object storage
+  stays a later decision with its own ADR. No upload REST endpoint, no
+  multipart handling, and no executor wiring yet: the bytes are stored and
+  servable, but nothing executes against them until `POST /api/runs`.
+* **Status:** Accepted.

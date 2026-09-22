@@ -83,8 +83,8 @@
   determinism, error safety, and CSV→profile integration.
 * Pure unit test totals: 487 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 13 run request), 0 failures, 0 errors, 0 skipped.
-* Repository total: 572 tests, 0 failures, 0 errors, 0 skipped — 487 pure unit
-  tests plus 85 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 579 tests, 0 failures, 0 errors, 0 skipped — 487 pure unit
+  tests plus 92 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Sanitization run domain and persistence (`sanitization.run`, V3 migration
   `sanitization_runs`): one operation record per run against one dataset —
@@ -187,8 +187,8 @@
 ## Next planned step
 
 Wire the proven CSV discovery/profiling boundary and the sanitization engine
-into the authenticated dataset flow (dataset input storage first — datasets
-persist metadata only and no CSV bytes exist anywhere yet — then an
+into the authenticated dataset flow (dataset input storage now exists as
+PostgreSQL BYTEA behind DatasetInputSource — next: an
 upload/ingest path around the run
 lifecycle, plus remaining run
 REST endpoints and persistence of profile metadata), then the audit ledger. The audit ledger remains
