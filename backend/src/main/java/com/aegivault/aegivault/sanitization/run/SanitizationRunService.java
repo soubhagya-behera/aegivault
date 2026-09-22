@@ -32,11 +32,11 @@ import org.springframework.transaction.annotation.Transactional;
  * version) reflects the persisted row. No distributed transactions are
  * claimed: there is a single database.
  *
- * <p>This service establishes persistence and lifecycle only. It never
- * invokes the CSV sanitization engine: coupling persistence to CSV
- * streaming now would tangle the future background worker's seam. The
- * worker will call {@code startRun}/{@code completeRun}/{@code failRun}
- * around the existing engine in a later milestone.
+ * <p>This service owns persistence and lifecycle only. It never invokes
+ * the CSV sanitization engine: orchestration lives in
+ * {@link SanitizationRunExecutor} (synchronous success path today, a
+ * background worker later), which calls the lifecycle methods here around
+ * the existing engine.
  */
 @Service
 @RequiredArgsConstructor

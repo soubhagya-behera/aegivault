@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (530 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (538 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,10 +75,10 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 530 total tests verified (context load, dataset persistence, identity persistence,
+* 538 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
-  sanitization run domain/persistence/lifecycle),
+  sanitization run domain/persistence/lifecycle/execution),
   0 failures, 0 errors, 0 skipped; the persistence/context suites run against the real
   PostgreSQL with no embedded database, and the CSV/profiling/sanitization/run-domain suites are pure unit tests.
 
@@ -239,14 +239,19 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   `SanitizationRunService` (`createRun`/`get`/`listByDataset`/`startRun`/
   `completeRun`/`failRun`, one flushed transaction each) enforces dataset
   ownership, owner-scoped reads with identical missing-vs-foreign responses,
-  and snapshot freezing, and never invokes the CSV engine — the future
-  background worker will call these lifecycle methods around the existing
-  engine. The V3 migration constrains the table the same way (`RESTRICT` on
+  and snapshot freezing. `SanitizationRunExecutor` orchestrates the
+  synchronous success path and nothing else — create (`QUEUED`), start
+  (`RUNNING`), run the existing `CsvSanitizationService` on caller-owned
+  streams with the same plan instance that was frozen, map the structural
+  `CsvSanitizationResult` counts into `RunResult`, complete (`COMPLETED`) —
+  with no new parsing, transformation, storage, or policy logic of its own.
+  Engine failures propagate unchanged and leave the run `RUNNING`; mapping
+  failures to `FAILED` is the next milestone. The V3 migration constrains the table the same way (`RESTRICT` on
   dataset delete so history is never silently orphaned, error columns only on
   `FAILED`, `completed_at` required on terminal states, non-negative counts;
   indexes on `dataset_id` and `owner_subject` only — no status index until a
   real status query exists). No REST API, no artifact storage, no jobs,
-  Spring Batch, Redis, or audit ledger was added.
+  Spring Batch, Redis, background workers, or audit ledger was added.
 
 Everything below under "planned" is design intent, not implementation.
 
