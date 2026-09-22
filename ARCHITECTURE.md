@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (538 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (542 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,7 +75,7 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 538 total tests verified (context load, dataset persistence, identity persistence,
+* 542 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
   sanitization run domain/persistence/lifecycle/execution),
@@ -245,8 +245,14 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   streams with the same plan instance that was frozen, map the structural
   `CsvSanitizationResult` counts into `RunResult`, complete (`COMPLETED`) —
   with no new parsing, transformation, storage, or policy logic of its own.
-  Engine failures propagate unchanged and leave the run `RUNNING`; mapping
-  failures to `FAILED` is the next milestone. The V3 migration constrains the table the same way (`RESTRICT` on
+  Documented-safe engine failures are mapped to `FAILED` instead of
+  propagating: `CsvParseException` (structural facts only) becomes
+  `CSV_PARSE_ERROR`, `MissingTransformationException` becomes `POLICY_GAP`,
+  and other `SanitizationException`s become `TRANSFORM_ERROR`, each persisted
+  through the existing `failRun` with its safe message verbatim plus
+  `completedAt`. Anything else (programming errors, infrastructure failures)
+  still propagates untouched with the run left `RUNNING`; there are no
+  retries. The V3 migration constrains the table the same way (`RESTRICT` on
   dataset delete so history is never silently orphaned, error columns only on
   `FAILED`, `completed_at` required on terminal states, non-negative counts;
   indexes on `dataset_id` and `owner_subject` only — no status index until a

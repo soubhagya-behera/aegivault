@@ -5,8 +5,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aegivault.aegivault.dataset.Dataset;
 import com.aegivault.aegivault.dataset.DatasetRepository;
+import com.aegivault.aegivault.pii.PiiType;
 import com.aegivault.aegivault.sanitization.DefaultTransformationPolicy;
 import com.aegivault.aegivault.sanitization.TransformationPlan;
+import com.aegivault.aegivault.sanitization.TransformationRule;
+import com.aegivault.aegivault.sanitization.TransformationStrategy;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -194,6 +197,114 @@ class SanitizationRunExecutorTest {
                 executor.executeCsv(owner, dataset.getId(), plan(), "default", "v1", input, output);
 
         assertThat(view.status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(inputClosed.get()).isFalse();
+        assertThat(outputClosed.get()).isFalse();
+    }
+
+    @Test
+    void raggedCsvTransitionsRunToFailedWithSafeMetadata() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        SanitizationRunView view = executor.executeCsv(
+                owner,
+                dataset.getId(),
+                plan(),
+                "default",
+                "v1",
+                stream("name,email\nbob,bob@example.com,EXTRA\n"),
+                output);
+
+        assertThat(view.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(view.completedAt()).isNotNull();
+        assertThat(view.startedAt()).isNotNull();
+        assertThat(view.errorCode()).isEqualTo("CSV_PARSE_ERROR");
+        assertThat(view.errorStage()).isEqualTo("TOKENIZE");
+        assertThat(view.errorMessage()).isEqualTo("CSV row 2 has 3 columns but the header has 2.");
+        assertThat(view.inputRowCount()).isNull();
+        assertThat(view.outputRowCount()).isNull();
+        assertThat(view.version()).isEqualTo(2L);
+
+        SanitizationRunView reloaded = runs.get(owner, view.id());
+        assertThat(reloaded.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(reloaded.completedAt()).isNotNull();
+        assertThat(reloaded.errorMessage()).isEqualTo("CSV row 2 has 3 columns but the header has 2.");
+    }
+
+    @Test
+    void failedRunPersistsNoRawCsvOrPii() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+
+        SanitizationRunView view = executor.executeCsv(
+                owner,
+                dataset.getId(),
+                plan(),
+                "default",
+                "v1",
+                stream("name,email\nbob,bob@example.com,EXTRA\n"),
+                new ByteArrayOutputStream());
+
+        assertThat(view.errorCode()).doesNotContain("bob@example.com");
+        assertThat(view.errorStage()).doesNotContain("bob@example.com");
+        assertThat(view.errorMessage()).doesNotContain("bob@example.com", "EXTRA", "bob");
+        assertThat(view.errorMessage()).doesNotContain("Exception", "at com.aegivault");
+        assertThat(view.policySnapshot()).doesNotContain("bob@example.com");
+    }
+
+    @Test
+    void policyGapTransitionsRunToFailed() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        TransformationPlan partial = TransformationPlan.of(
+                new TransformationRule(PiiType.EMAIL, TransformationStrategy.REDACT));
+
+        SanitizationRunView view = executor.executeCsv(
+                owner,
+                dataset.getId(),
+                partial,
+                "custom",
+                "v1",
+                stream("phone\n9876543210\n"),
+                new ByteArrayOutputStream());
+
+        assertThat(view.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(view.completedAt()).isNotNull();
+        assertThat(view.errorCode()).isEqualTo("POLICY_GAP");
+        assertThat(view.errorStage()).isEqualTo("TRANSFORM");
+        assertThat(view.errorMessage())
+                .isEqualTo("No transformation strategy is configured for PII type PHONE.");
+        assertThat(view.policySnapshot())
+                .isEqualTo(PolicySnapshot.fromPlan("custom", "v1", partial).toJson());
+    }
+
+    @Test
+    void streamsStayOpenWhenExecutionFails() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        AtomicBoolean inputClosed = new AtomicBoolean(false);
+        AtomicBoolean outputClosed = new AtomicBoolean(false);
+        InputStream input = new ByteArrayInputStream(
+                "a,b\n1,2,3\n".getBytes(StandardCharsets.UTF_8)) {
+            @Override
+            public void close() throws IOException {
+                inputClosed.set(true);
+                super.close();
+            }
+        };
+        OutputStream output = new ByteArrayOutputStream() {
+            @Override
+            public void close() throws IOException {
+                outputClosed.set(true);
+                super.close();
+            }
+        };
+
+        SanitizationRunView view =
+                executor.executeCsv(owner, dataset.getId(), plan(), "default", "v1", input, output);
+
+        assertThat(view.status()).isEqualTo(RunStatus.FAILED);
         assertThat(inputClosed.get()).isFalse();
         assertThat(outputClosed.get()).isFalse();
     }
