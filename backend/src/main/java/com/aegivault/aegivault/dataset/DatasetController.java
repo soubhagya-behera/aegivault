@@ -1,6 +1,10 @@
 package com.aegivault.aegivault.dataset;
 
+import com.aegivault.aegivault.dataset.csv.CsvParseException;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.util.List;
 import java.util.UUID;
@@ -48,10 +52,34 @@ public class DatasetController {
         return datasetService.get(jwt.getSubject(), id);
     }
 
+    /**
+     * Stores (or replaces) the raw CSV input of an owned dataset. The body
+     * is streamed straight from the servlet request into storage — never
+     * pre-buffered by a message converter — so the shared 10 MiB bound is
+     * enforced before the full body ever sits in memory. No parsing,
+     * detection, or execution happens here.
+     */
+    @PostMapping(value = "/{id}/input", consumes = "text/csv")
+    public DatasetInputResponse storeInput(
+            @AuthenticationPrincipal Jwt jwt, @PathVariable UUID id, HttpServletRequest request) {
+        try (InputStream input = request.getInputStream()) {
+            datasetService.storeInput(jwt.getSubject(), id, input);
+        } catch (IOException ex) {
+            throw new CsvParseException("Unable to read CSV input.");
+        }
+        return new DatasetInputResponse(id);
+    }
+
     @ExceptionHandler(DatasetNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     DatasetError notFound(DatasetNotFoundException ex) {
         return new DatasetError("Dataset not found.");
+    }
+
+    @ExceptionHandler(DatasetInputTooLargeException.class)
+    @ResponseStatus(HttpStatus.CONTENT_TOO_LARGE)
+    DatasetError tooLarge(DatasetInputTooLargeException ex) {
+        return new DatasetError(ex.getMessage());
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)

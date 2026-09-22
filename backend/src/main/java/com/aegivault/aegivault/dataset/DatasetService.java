@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.dataset;
 
+import java.io.InputStream;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -16,6 +17,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class DatasetService {
 
     private final DatasetRepository datasets;
+
+    private final DatabaseDatasetInputSource inputs;
 
     @Transactional
     public DatasetResponse create(String ownerSubject, String name, String originalFilename) {
@@ -41,5 +44,19 @@ public class DatasetService {
                 .findByIdAndOwnerSubject(id, ownerSubject)
                 .orElseThrow(DatasetNotFoundException::new);
         return DatasetResponse.from(dataset);
+    }
+
+    /**
+     * Stores (or replaces) the CSV input of an owned dataset. Delegates to
+     * the input storage boundary, which enforces ownership and the shared
+     * 10 MiB bound; this method holds no byte logic of its own.
+     *
+     * @throws DatasetNotFoundException when the dataset is missing or
+     *         belongs to another owner
+     * @throws DatasetInputTooLargeException when the input exceeds 10 MiB
+     */
+    @Transactional
+    public void storeInput(String ownerSubject, UUID id, InputStream input) {
+        inputs.storeInput(ownerSubject, id, input);
     }
 }
