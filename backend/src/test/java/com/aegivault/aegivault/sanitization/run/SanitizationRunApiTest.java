@@ -13,6 +13,7 @@ import com.aegivault.aegivault.sanitization.DefaultTransformationPolicy;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -170,5 +171,67 @@ class SanitizationRunApiTest {
                 .getContentAsString();
 
         assertThat(objectMapper.readTree(body).get("message").asText()).isEqualTo("Invalid run id.");
+    }
+
+    @Test
+    void ownerListsOnlyTheirOwnRuns() throws Exception {
+        String tokenA = register(email());
+        String tokenB = register(email());
+        UUID first = completedRun(tokenA);
+        UUID second = failedRun(tokenA);
+        UUID foreign = completedRun(tokenB);
+
+        String bodyA = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + tokenA))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String bodyB = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + tokenB))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(objectMapper.readTree(bodyA).size()).isEqualTo(2);
+        assertThat(bodyA).contains(first.toString(), second.toString());
+        assertThat(bodyA).doesNotContain(foreign.toString());
+        assertThat(bodyB).doesNotContain(first.toString(), second.toString());
+        assertThat(bodyB).contains(foreign.toString());
+        assertThat(bodyA).doesNotContain("ownerSubject", "bob@example.com");
+    }
+
+    @Test
+    void runListingIsNewestFirst() throws Exception {
+        String token = register(email());
+        UUID first = completedRun(token);
+        UUID second = failedRun(token);
+        UUID third = completedRun(token);
+
+        MvcResult result = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        var ids = new ArrayList<String>();
+        objectMapper.readTree(result.getResponse().getContentAsString())
+                .forEach(node -> ids.add(node.get("id").asText()));
+        assertThat(ids).containsExactly(third.toString(), second.toString(), first.toString());
+    }
+
+    @Test
+    void emptyOwnerReceivesEmptyArray() throws Exception {
+        String token = register(email());
+
+        MvcResult result = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertThat(result.getResponse().getContentAsString()).isEqualTo("[]");
+    }
+
+    @Test
+    void unauthenticatedListingIsRejected() throws Exception {
+        mvc.perform(get("/api/runs")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/runs").header("Authorization", "Bearer not-a-token"))
+                .andExpect(status().isUnauthorized());
     }
 }

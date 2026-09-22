@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.sanitization.run;
 
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -14,11 +15,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
- * Authenticated run read endpoint. The owner always comes from the verified
- * JWT subject; the client can never supply or override it. Ownership is
- * enforced entirely by {@link SanitizationRunService#get(String, UUID)}
- * through its owner-scoped repository query — this controller performs no
- * ownership checks and holds no business logic.
+ * Authenticated run read endpoints (single run, owner run listing). The
+ * owner always comes from the verified JWT subject; the client can never
+ * supply or override it. Ownership is enforced entirely by the
+ * owner-scoped {@link SanitizationRunService} queries — this controller
+ * performs no ownership checks and holds no business logic.
  */
 @RestController
 @RequestMapping("/api/runs")
@@ -30,6 +31,11 @@ public class SanitizationRunController {
     @GetMapping("/{runId}")
     public SanitizationRunView get(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID runId) {
         return runService.get(jwt.getSubject(), runId);
+    }
+
+    @GetMapping
+    public List<SanitizationRunView> list(@AuthenticationPrincipal Jwt jwt) {
+        return runService.list(jwt.getSubject());
     }
 
     @ExceptionHandler(SanitizationRunNotFoundException.class)

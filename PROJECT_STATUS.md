@@ -83,8 +83,8 @@
   determinism, error safety, and CSV→profile integration.
 * Pure unit test totals: 474 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain), 0 failures, 0 errors, 0 skipped.
-* Repository total: 551 tests, 0 failures, 0 errors, 0 skipped — 474 pure unit
-  tests plus 77 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 555 tests, 0 failures, 0 errors, 0 skipped — 474 pure unit
+  tests plus 81 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Sanitization run domain and persistence (`sanitization.run`, V3 migration
   `sanitization_runs`): one operation record per run against one dataset —

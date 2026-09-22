@@ -83,6 +83,17 @@ public class SanitizationRunService {
     }
 
     /**
+     * Lists the caller's runs, newest first.
+     */
+    @Transactional(readOnly = true)
+    public List<SanitizationRunView> list(String ownerSubject) {
+        String owner = requireOwner(ownerSubject);
+        return runs.findByOwnerSubjectOrderByCreatedAtDescIdDesc(owner).stream()
+                .map(SanitizationRunView::from)
+                .toList();
+    }
+
+    /**
      * Lists the caller's runs against one owned dataset.
      */
     @Transactional(readOnly = true)

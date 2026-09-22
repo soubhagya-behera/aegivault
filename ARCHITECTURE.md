@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (551 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (555 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,7 +75,7 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 551 total tests verified (context load, dataset persistence, identity persistence,
+* 555 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
   sanitization run domain/persistence/lifecycle/execution/retrieval),
@@ -259,7 +259,9 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   straight into the existing owner-scoped `get`, returning the hardened
   `SanitizationRunView` (200 owner / identical 404 foreign-or-missing /
   401 unauthenticated / 400 malformed UUID, mirroring the dataset endpoint
-  conventions). The V3 migration constrains the table the same way (`RESTRICT` on
+  conventions), plus an owner-scoped `GET /api/runs` listing returning the
+  caller's runs newest-first (`createdAt` descending, id tiebreak; empty
+  owner gets `200 []`). The V3 migration constrains the table the same way (`RESTRICT` on
   dataset delete so history is never silently orphaned, error columns only on
   `FAILED`, `completed_at` required on terminal states, non-negative counts;
   indexes on `dataset_id` and `owner_subject` only — no status index until a
