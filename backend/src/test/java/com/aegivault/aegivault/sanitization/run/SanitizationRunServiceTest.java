@@ -61,7 +61,6 @@ class SanitizationRunServiceTest {
 
         assertThat(view.id()).isNotNull();
         assertThat(view.datasetId()).isEqualTo(dataset.getId());
-        assertThat(view.ownerSubject()).isEqualTo(owner);
         assertThat(view.status()).isEqualTo(RunStatus.QUEUED);
         assertThat(view.policyName()).isEqualTo("default");
         assertThat(view.policyVersion()).isEqualTo("v1");

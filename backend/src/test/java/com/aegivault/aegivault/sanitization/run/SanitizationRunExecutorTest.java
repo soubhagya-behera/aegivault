@@ -74,7 +74,6 @@ class SanitizationRunExecutorTest {
 
         assertThat(view.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(view.datasetId()).isEqualTo(dataset.getId());
-        assertThat(view.ownerSubject()).isEqualTo(owner);
         assertThat(view.inputRowCount()).isEqualTo(2L);
         assertThat(view.outputRowCount()).isEqualTo(2L);
         assertThat(view.blankRowsSkipped()).isEqualTo(1L);

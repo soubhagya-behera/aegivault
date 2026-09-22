@@ -6,11 +6,13 @@ import java.util.UUID;
 /**
  * Service-layer view of a {@link SanitizationRun}. Carries operation
  * metadata only: no CSV content, no PII, no samples, no secrets.
+ * {@code ownerSubject} is deliberately excluded: it is an internal
+ * authorization field and every retrieval here is already scoped to the
+ * authenticated owner.
  */
 public record SanitizationRunView(
         UUID id,
         UUID datasetId,
-        String ownerSubject,
         RunStatus status,
         String policyName,
         String policyVersion,
@@ -32,7 +34,6 @@ public record SanitizationRunView(
         return new SanitizationRunView(
                 run.getId(),
                 run.getDataset().getId(),
-                run.getOwnerSubject(),
                 run.getStatus(),
                 run.getPolicyName(),
                 run.getPolicyVersion(),

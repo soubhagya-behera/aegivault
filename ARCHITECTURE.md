@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (542 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (546 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,7 +75,7 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 542 total tests verified (context load, dataset persistence, identity persistence,
+* 546 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
   sanitization run domain/persistence/lifecycle/execution),
@@ -239,7 +239,9 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   `SanitizationRunService` (`createRun`/`get`/`listByDataset`/`startRun`/
   `completeRun`/`failRun`, one flushed transaction each) enforces dataset
   ownership, owner-scoped reads with identical missing-vs-foreign responses,
-  and snapshot freezing. `SanitizationRunExecutor` orchestrates the
+  and snapshot freezing; retrieval returns `SanitizationRunView`, which
+  carries operation metadata only and deliberately excludes `ownerSubject`
+  (an internal authorization field, mirroring `DatasetResponse`). `SanitizationRunExecutor` orchestrates the
   synchronous success path and nothing else — create (`QUEUED`), start
   (`RUNNING`), run the existing `CsvSanitizationService` on caller-owned
   streams with the same plan instance that was frozen, map the structural
