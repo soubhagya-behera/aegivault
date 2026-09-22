@@ -233,3 +233,44 @@ as new numbers.
   later decisions. The limits bound one call and are not complete
   denial-of-service protection.
 * **Status:** Accepted.
+
+## ADR-012 — Persistent Sanitization Runs With Frozen Policy Snapshots
+
+* **Decision:** Model one sanitization operation as a persisted
+  `SanitizationRun` row (`sanitization_runs`, V3 migration) holding an
+  operation record only: dataset FK, denormalized owner, `RunStatus`
+  lifecycle (`QUEUED -> RUNNING -> COMPLETED`, `QUEUED -> RUNNING -> FAILED`,
+  enforced in the entity, never set directly), an immutable `PolicySnapshot`
+  (canonical hand-built JSON of the frozen type-to-strategy mapping with
+  alphabetically ordered keys), structural `RunResult` counts, metadata-only
+  `RunFailure` (code/stage/message with length caps; the API accepts fields,
+  never a `Throwable`, so stack traces cannot flow in), and a `@Version`
+  optimistic-locking column. The dataset FK is `ON DELETE RESTRICT` so run
+  history is never silently orphaned or cascade-deleted; the owner is copied
+  onto the run row so all reads are owner-scoped without a join, with
+  identical missing-vs-foreign responses for USER and ADMIN alike; only
+  `dataset_id` and `owner_subject` are indexed (no status index until a real
+  status query exists). `SanitizationRunService` owns the lifecycle and never
+  invokes the CSV engine — persistence is the seam the future worker builds
+  on, not the worker itself.
+* **Reason:** Without a frozen record, an old run's meaning silently follows
+  whatever the current default policy happens to be, which makes past runs
+  unexplainable; a full normalized policy schema would overbuild a product
+  that does not exist yet, so one deterministic JSON text column is the
+  smallest representation with the required property (reproducible and
+  auditable as to which policy was used). `RESTRICT` over cascade/orphaning
+  because runs are operation history, not disposable children. Optimistic
+  locking over distributed locks because there is one database and no worker
+  yet — it is the simplest mechanism that makes concurrent lifecycle updates
+  fail loudly instead of corrupting the state machine. No REST, artifacts,
+  workers, or batch framework in this step because the persistence model must
+  be proven before systems are built on top of it.
+* **Consequences:** Every run carries its policy inline (slight row-size cost
+  instead of a policy-table join); deleting a dataset with runs is rejected
+  until an explicit audited removal path is designed; concurrent writers see
+  `ObjectOptimisticLockingFailureException` and must re-read instead of
+  retrying blindly; failure recording stays usable only if callers pass
+  already-sanitized metadata (overlong fields are rejected, not truncated);
+  REST endpoints, artifact storage, background execution, and the audit ledger
+  remain deliberate later decisions.
+* **Status:** Accepted.

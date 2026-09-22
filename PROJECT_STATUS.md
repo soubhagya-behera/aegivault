@@ -81,11 +81,29 @@
   86 tests covering parser behavior, header policy, duplicate-header rejection,
   row-width policy, malformed quoting, safety limits, bounded sampling,
   determinism, error safety, and CSV→profile integration.
-* Pure unit test totals: 446 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
-  + 34 CSV sanitization pipeline), 0 failures, 0 errors, 0 skipped.
-* Repository total: 471 tests, 0 failures, 0 errors, 0 skipped — 446 pure unit
-  tests plus 25 context/persistence/API tests run against the real local
+* Pure unit test totals: 474 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
+  + 34 CSV sanitization pipeline + 28 run domain), 0 failures, 0 errors, 0 skipped.
+* Repository total: 530 tests, 0 failures, 0 errors, 0 skipped — 474 pure unit
+  tests plus 56 context/persistence/API/lifecycle tests run against the real local
   PostgreSQL.
+* Sanitization run domain and persistence (`sanitization.run`, V3 migration
+  `sanitization_runs`): one operation record per run against one dataset —
+  dataset FK (`ON DELETE RESTRICT`, history is never silently orphaned),
+  denormalized owner for join-free owner-scoped reads, `RunStatus` state
+  machine (`QUEUED -> RUNNING -> COMPLETED/FAILED`, terminal states final,
+  illegal transitions rejected in the domain), immutable `PolicySnapshot`
+  (canonical alphabetically-ordered JSON of the frozen type-to-strategy
+  mapping, so a run never follows later policy changes), structural
+  `RunResult` counts, metadata-only `RunFailure` (code/stage/message with
+  length caps, never a `Throwable`), and `@Version` optimistic locking so
+  concurrent lifecycle updates fail loudly. `SanitizationRunService`
+  (`createRun`/`get`/`listByDataset`/`startRun`/`completeRun`/`failRun`)
+  enforces dataset ownership with identical missing-vs-foreign responses for
+  USER and ADMIN alike, and never invokes the CSV engine. 59 new tests
+  (28 domain unit + 13 repository + 18 service, all green) cover transitions,
+  snapshot determinism/immutability, owner isolation, CHECK constraints, FK
+  behavior, stale-update rejection, and metadata-only failure storage. No
+  REST API, artifact storage, background workers, or audit ledger yet.
 * API-key test fixtures initially resembled provider credentials closely
   enough to trigger GitHub secret scanning; the fixtures were rewritten so
   provider-like values are assembled from harmless fragments at test
@@ -108,9 +126,10 @@
 * PII detector coverage is complete at eleven whole-value detectors: password (explicit label only), JWT structure, person-name heuristic, address heuristic, and custom-identifier allowlist join the six original detectors; the registry still auto-discovers detectors via Spring List injection with deterministic ordering and dedup.
 * Schema-aware PII profiling foundation (pii.profile, not persisted, no REST changes): ColumnInput plus ColumnProfile carry only counts, PiiColumnProfiler aggregates registry detections over a deterministic bounded sample (default 100, first-N order; supplied vs analyzed counts recorded), and DatasetProfiler returns an immutable DatasetProfile with deterministic column ordering; detection rates use analyzed non-blank values as denominator and are observed rates only.
 * CSV schema discovery and bounded CSV profiling now feed that foundation (dataset.csv, not persisted, no REST endpoint, no database writes, no sanitization): the CSV sample size defaults to the profiler's own sample size, rows read are reported separately from rows retained, all-blank data records are skipped, blank or duplicate header names and any row whose width contradicts the header are rejected with row/index/limit-only messages, and raw CSV values exist only in memory during processing (never logged, never persisted, never placed in a profile or in an exception).
-* PII detection and CSV ingestion together still form a foundation only: individual whole-value detectors plus registry orchestration, column/dataset profiling, CSV discovery on caller-supplied input, the domain sanitization engine described below, and the end-to-end CSV sanitization pipeline described below. Not completed yet:
+* PII detection and CSV ingestion together still form a foundation only: individual whole-value detectors plus registry orchestration, column/dataset profiling, CSV discovery on caller-supplied input, the domain sanitization engine described below, and the end-to-end CSV sanitization   pipeline described below, and the persisted sanitization run lifecycle
+  described below. Not completed yet:
   PostgreSQL schema discovery, dataset-wide PII scanning over stored data,
-  persistence of profiles, findings, plans, or sanitization runs, confidence scoring,
+  persistence of profiles, findings, or plans, confidence scoring,
   Spring Batch processing, a multipart upload REST API, user approval workflow,
   stored versioned policies, or sanitization jobs.
 * Known CSV-discovery limitations at this stage: the accepted input is buffered
@@ -136,7 +155,8 @@
   compliance claim; hashing is deterministic pseudonymization-like transformation,
   not anonymization. 77 pure unit tests cover strategies, plans, the service,
   column sanitization, determinism, and the default policy.
-* No sanitization persistence or REST API exists yet. The CSV rewrite pipeline now exists as a
+* Sanitization run persistence exists (`sanitization.run`, V3
+  `sanitization_runs`; operation metadata only, no REST API yet). The CSV rewrite pipeline now exists as a
   domain/service-level operation only: `CsvSanitizationService` in `dataset.csv` orchestrates the
   existing `CsvTokenizer`, `PiiDetectorRegistry`, `DataSanitizationService`/`TransformationRegistry`,
   and a focused `CsvSanitizationWriter` to turn one caller-owned CSV `InputStream` plus an explicit
@@ -156,10 +176,12 @@
 ## Next planned step
 
 Wire the proven CSV discovery/profiling boundary and the sanitization engine
-into the authenticated dataset flow (an upload/ingest path and persistence of
-profile metadata), then the audit ledger. Sanitization persistence and the audit ledger remain
-later milestones: no CSV upload API, no profile persistence, and no sanitization persistence
-is complete yet. The domain CSV sanitization pipeline itself is implemented and unit-tested.
+into the authenticated dataset flow (an upload/ingest path driving the run
+lifecycle: create a run, execute the pipeline, complete/fail it — plus a run
+REST API and persistence of profile metadata), then the audit ledger. The audit ledger remains
+a later milestone: no CSV upload API, no profile persistence, no artifact
+storage, and no background processing is complete yet. The domain CSV sanitization pipeline
+and the run persistence/lifecycle foundation are implemented and tested.
 
 ## Future phases
 
