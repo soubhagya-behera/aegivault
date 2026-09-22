@@ -81,9 +81,9 @@
   86 tests covering parser behavior, header policy, duplicate-header rejection,
   row-width policy, malformed quoting, safety limits, bounded sampling,
   determinism, error safety, and CSV→profile integration.
-* Pure unit test totals: 474 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
-  + 34 CSV sanitization pipeline + 28 run domain), 0 failures, 0 errors, 0 skipped.
-* Repository total: 555 tests, 0 failures, 0 errors, 0 skipped — 474 pure unit
+* Pure unit test totals: 487 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
+  + 34 CSV sanitization pipeline + 28 run domain + 13 run request), 0 failures, 0 errors, 0 skipped.
+* Repository total: 568 tests, 0 failures, 0 errors, 0 skipped — 487 pure unit
   tests plus 81 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Sanitization run domain and persistence (`sanitization.run`, V3 migration
