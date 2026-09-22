@@ -1,6 +1,7 @@
 package com.aegivault.aegivault.sanitization.run;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -10,6 +11,7 @@ import com.aegivault.aegivault.auth.RegisterRequest;
 import com.aegivault.aegivault.dataset.Dataset;
 import com.aegivault.aegivault.dataset.DatasetRepository;
 import com.aegivault.aegivault.sanitization.DefaultTransformationPolicy;
+import com.aegivault.aegivault.sanitization.artifact.DatabaseArtifactStore;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -47,6 +49,9 @@ class SanitizationRunApiTest {
 
     @Autowired
     private DatasetRepository datasets;
+
+    @Autowired
+    private DatabaseArtifactStore artifacts;
 
     private static String email() {
         return "run-" + UUID.randomUUID() + "@example.com";
@@ -233,5 +238,266 @@ class SanitizationRunApiTest {
         mvc.perform(get("/api/runs")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/runs").header("Authorization", "Bearer not-a-token"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    private String createDatasetViaApi(String token, String name) throws Exception {
+        MvcResult result = mvc.perform(post("/api/datasets")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"" + name + "\"}"))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText();
+    }
+
+    private void uploadInput(String token, String datasetId, String csv) throws Exception {
+        mvc.perform(post("/api/datasets/" + datasetId + "/input")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("text/csv")
+                        .content(csv.getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isOk());
+    }
+
+    private String runRequest(String datasetId) {
+        return "{\"datasetId\":\"" + datasetId + "\",\"policyName\":\"default\",\"policyVersion\":\"v1\","
+                + "\"rules\":["
+                + "{\"piiType\":\"EMAIL\",\"strategy\":\"SYNTHETIC_EMAIL\"},"
+                + "{\"piiType\":\"PHONE\",\"strategy\":\"SYNTHETIC_PHONE\"},"
+                + "{\"piiType\":\"PERSON_NAME\",\"strategy\":\"REDACT\"},"
+                + "{\"piiType\":\"ADDRESS\",\"strategy\":\"REDACT\"},"
+                + "{\"piiType\":\"CREDIT_CARD\",\"strategy\":\"MASK\"},"
+                + "{\"piiType\":\"IP_ADDRESS\",\"strategy\":\"HASH_SHA256\"},"
+                + "{\"piiType\":\"UUID\",\"strategy\":\"HASH_SHA256\"},"
+                + "{\"piiType\":\"API_KEY\",\"strategy\":\"REDACT\"},"
+                + "{\"piiType\":\"PASSWORD\",\"strategy\":\"HASH_SHA256\"},"
+                + "{\"piiType\":\"JWT\",\"strategy\":\"REDACT\"},"
+                + "{\"piiType\":\"CUSTOM_IDENTIFIER\",\"strategy\":\"HASH_SHA256\"}"
+                + "]}";
+    }
+
+    private MvcResult postRun(String token, String body) throws Exception {
+        return mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andReturn();
+    }
+
+    private static String readArtifact(DatabaseArtifactStore artifacts, String token, JwtDecoder decoder, String runId)
+            throws Exception {
+        String subject = decoder.decode(token).getSubject();
+        try (java.io.InputStream open = artifacts.openArtifact(subject, UUID.fromString(runId))) {
+            return new String(open.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
+    void ownerCreatesSuccessfulRun() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\ncarol,carol@example.com\n");
+
+        MvcResult result = postRun(token, runRequest(datasetId));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(201);
+        String body = result.getResponse().getContentAsString();
+        String runId = objectMapper.readTree(body).get("id").asText();
+        assertThat(result.getResponse().getHeader("Location")).isEqualTo("/api/runs/" + runId);
+        assertThat(objectMapper.readTree(body).get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(objectMapper.readTree(body).get("inputRowCount").asLong()).isEqualTo(2L);
+        assertThat(objectMapper.readTree(body).get("outputRowCount").asLong()).isEqualTo(2L);
+        assertThat(objectMapper.readTree(body).get("columnCount").asInt()).isEqualTo(2);
+        assertThat(body).doesNotContain("ownerSubject", "bob@example.com", "carol@example.com");
+    }
+
+    @Test
+    void successfulRunStoresArtifactFromUploadedInput() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\n");
+
+        MvcResult result = postRun(token, runRequest(datasetId));
+
+        String body = result.getResponse().getContentAsString();
+        String runId = objectMapper.readTree(body).get("id").asText();
+        String artifact = readArtifact(artifacts, token, jwtDecoder, runId);
+        assertThat(artifact).startsWith("name,email\n");
+        assertThat(artifact).doesNotContain("bob@example.com");
+        assertThat(artifact).contains("example.invalid");
+    }
+
+    @Test
+    void foreignAndMissingDatasetsReturnSame404() throws Exception {
+        String tokenA = register(email());
+        String tokenB = register(email());
+        String foreignId = createDatasetViaApi(tokenA, "not-yours.csv");
+        uploadInput(tokenA, foreignId, "a,b\n1,2\n");
+
+        String foreignBody = mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + tokenB)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(foreignId)))
+                .andExpect(status().isNotFound())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String missingBody = mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + tokenB)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(UUID.randomUUID().toString())))
+                .andExpect(status().isNotFound())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(foreignBody).isEqualTo(missingBody);
+        assertThat(objectMapper.readTree(foreignBody).get("message").asText())
+                .isEqualTo("Dataset not found.");
+    }
+
+    @Test
+    void datasetWithoutInputReturns404AndCreatesNoRun() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "no-input.csv");
+
+        String body = mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(datasetId)))
+                .andExpect(status().isNotFound())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(objectMapper.readTree(body).get("message").asText()).isEqualTo("Dataset not found.");
+        MvcResult listing = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(listing.getResponse().getContentAsString()).isEqualTo("[]");
+    }
+
+    @Test
+    void invalidRequestsAreRejected400() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "a,b\n1,2\n");
+
+        mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"datasetId\":\"" + datasetId + "\",\"policyVersion\":\"v1\",\"rules\":[]}"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest("not-a-uuid")))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"datasetId\":\"" + datasetId
+                                + "\",\"policyName\":\"default\",\"policyVersion\":\"v1\","
+                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"NOPE\"}]}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void duplicateRulesAreRejected400() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "a,b\n1,2\n");
+
+        String body = mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"datasetId\":\"" + datasetId
+                                + "\",\"policyName\":\"default\",\"policyVersion\":\"v1\","
+                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"},"
+                                + "{\"piiType\":\"EMAIL\",\"strategy\":\"MASK\"}]}"))
+                .andExpect(status().isBadRequest())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(objectMapper.readTree(body).get("message").asText()).isEqualTo("Invalid run request.");
+    }
+
+    @Test
+    void unauthenticatedCreateIsRejected() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "guarded.csv");
+        uploadInput(token, datasetId, "a,b\n1,2\n");
+
+        mvc.perform(post("/api/runs")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(datasetId)))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer not-a-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(datasetId)))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void raggedCsvReturnsPersistedFailedRun() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "ragged.csv");
+        uploadInput(token, datasetId, "a,b\n1,2,3\n");
+
+        MvcResult result = postRun(token, runRequest(datasetId));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(201);
+        String body = result.getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(body).get("status").asText()).isEqualTo("FAILED");
+        assertThat(objectMapper.readTree(body).get("errorCode").asText()).isEqualTo("CSV_PARSE_ERROR");
+        assertThat(body).doesNotContain("1,2,3");
+    }
+
+    @Test
+    void policyGapReturnsPersistedFailedRun() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "phones.csv");
+        uploadInput(token, datasetId, "phone\n9876543210\n");
+
+        MvcResult result = mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"datasetId\":\"" + datasetId
+                                + "\",\"policyName\":\"custom\",\"policyVersion\":\"v1\","
+                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}"))
+                .andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(201);
+        String body = result.getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(body).get("status").asText()).isEqualTo("FAILED");
+        assertThat(objectMapper.readTree(body).get("errorCode").asText()).isEqualTo("POLICY_GAP");
+    }
+
+    @Test
+    void overflowingOutputReturnsFailedRunWithoutArtifact() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "ips.csv");
+        int rows = (int) (DatabaseArtifactStore.MAX_ARTIFACT_BYTES / 65) + 100;
+        StringBuilder csv = new StringBuilder("ip\n");
+        for (int index = 0; index < rows; index++) {
+            csv.append("1.1.1.1\n");
+        }
+        mvc.perform(post("/api/datasets/" + datasetId + "/input")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("text/csv")
+                        .content(csv.toString().getBytes(StandardCharsets.UTF_8)))
+                .andExpect(status().isOk());
+
+        MvcResult result = postRun(token, runRequest(datasetId));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(201);
+        String body = result.getResponse().getContentAsString();
+        String runId = objectMapper.readTree(body).get("id").asText();
+        assertThat(objectMapper.readTree(body).get("status").asText()).isEqualTo("FAILED");
+        assertThat(objectMapper.readTree(body).get("errorCode").asText()).isEqualTo("OUTPUT_TOO_LARGE");
+        String subject = jwtDecoder.decode(token).getSubject();
+        assertThatThrownBy(() -> artifacts.openArtifact(subject, UUID.fromString(runId)))
+                .isInstanceOf(SanitizationRunNotFoundException.class);
     }
 }

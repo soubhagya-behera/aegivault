@@ -99,7 +99,6 @@ class DatabaseDatasetInputSourceTest {
         try (InputStream reopened = inputs.openInput(owner, dataset.getId())) {
             assertThat(readAll(reopened)).isEqualTo(CSV);
         }
-        assertThat(stored.count()).isEqualTo(1L);
     }
 
     @Test

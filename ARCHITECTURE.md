@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (602 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (612 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,7 +75,7 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 602 total tests verified (context load, dataset persistence, identity persistence,
+* 612 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
   sanitization run domain/persistence/lifecycle/execution/retrieval),
@@ -261,7 +261,12 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   401 unauthenticated / 400 malformed UUID, mirroring the dataset endpoint
   conventions), plus an owner-scoped `GET /api/runs` listing returning the
   caller's runs newest-first (`createdAt` descending, id tiebreak; empty
-  owner gets `200 []`). The future creation payload (`CreateRunRequest`:
+  owner gets `200 []`). The application entry point is `POST /api/runs`
+  (thin controller: validated `CreateRunRequest` mapped to its exact
+  `TransformationPlan`, owner from JWT, straight into `executeStoredCsv`;
+  201 with `Location` plus the persisted view whether COMPLETED or FAILED,
+  identical 404 foreign-or-missing dataset/input, default 400 validation,
+  401 unauthenticated; no transaction around streaming, no bytes back). The future creation payload (`CreateRunRequest`:
   dataset id, policy labels, explicit rules reusing `TransformationRule`
   with no defaults filled) is validated but has no endpoint yet. Datasets
   persist metadata only — no CSV bytes exist in any table, file, or object
