@@ -198,7 +198,38 @@ as new numbers.
   data lifetime to the in-memory call.
 * **Consequences:** The engine cannot sanitize anything without a plan, and an
   incomplete plan fails loudly; adding stateful tokenization, salting/keyed
-  pseudonymization, streaming CSV rewriting, persistence, or REST integration
+  pseudonymization, persistence, or REST integration
   are deliberate later decisions. `KEEP` on a detected type is possible but
   always an explicit hand-written choice.
+* **Status:** Accepted.
+
+## ADR-011 — End-to-End CSV Sanitization Pipeline Reusing Existing Boundaries
+
+* **Decision:** Add a domain/service-level CSV pipeline (`CsvSanitizationService`
+  in `dataset.csv`, no REST, no persistence, no jobs) that orchestrates only
+  existing components: the shared `CsvTokenizer` with the same `CsvLimits`
+  column/field values as discovery, `PiiDetectorRegistry` per cell, an explicit
+  caller-supplied `TransformationPlan` applied through `DataSanitizationService`
+  plus `TransformationRegistry`, and a focused `CsvSanitizationWriter` (quote
+  only on comma/quote/LF/CR, `""` escapes, `LF` terminators) streaming to the
+  caller's `OutputStream`. Headers stay verbatim, blank data records are skipped
+  and counted, width mismatches and malformed quoting fail fast with structural
+  messages, blank cells pass through without detection, and one cell matching
+  several detectors resolves to the alphabetically-first `PiiType` (the registry
+  order, never bean order, never a score). Unmapped types and unregistered
+  strategies fail closed; only the convenience overload uses
+  `DefaultTransformationPolicy`. Both streams stay caller-owned (flushed, never
+  closed), records stream one at a time within the same input-byte default, and
+  the result (`CsvSanitizationResult`) carries counts only.
+* **Reason:** Profile and sanitize must share CSV semantics, so a second parser
+  with slightly different behaviour would be a defect source; reusing the
+  tokenizer and limits keeps discovery and sanitization consistent. Keeping
+  detection, planning, transformation, and writing in their existing homes keeps
+  the facade small and testable, while an explicit deterministic multi-match rule
+  avoids hidden dependence on Spring ordering.
+* **Consequences:** Inputs above the byte limit are rejected rather than
+  chunk-processed; outputs may differ in size; chunked processing of larger
+  inputs, upload APIs, persistence, jobs, and batch frameworks remain deliberate
+  later decisions. The limits bound one call and are not complete
+  denial-of-service protection.
 * **Status:** Accepted.

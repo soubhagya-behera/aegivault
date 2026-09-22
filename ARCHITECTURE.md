@@ -46,8 +46,8 @@ profiling, and CSV discovery modules:
   stateless security configuration.
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
-  and the sanitization/transformation engine (437 tests; see the verified
-  test count below).
+  sanitization/transformation engine, and the end-to-end CSV sanitization
+  pipeline (471 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,9 +75,9 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 437 total tests verified (context load, dataset persistence, identity persistence,
+* 471 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
-  sanitization/transformation engine),
+  sanitization/transformation engine, end-to-end CSV sanitization),
   0 failures, 0 errors, 0 skipped; the persistence/context suites run against the real
   PostgreSQL with no embedded database, and the CSV/profiling/sanitization suites are pure unit tests.
 
@@ -166,6 +166,47 @@ sanitized value
   pseudonymization-like transformation, not anonymization. No sanitization
   tables, repositories, migrations, REST endpoints, or new dependencies were
   added in this step.
+
+* End-to-end CSV sanitization pipeline (dataset.csv, implemented; not
+  persisted, no REST endpoint, no jobs):
+
+```text
+CSV Input (caller-owned InputStream)
+        |
+   CsvTokenizer, shared with discovery
+        |
+   header, verbatim / blank data records skipped / width checked
+        |
+   PiiDetectorRegistry per cell
+        |
+   first detection by PiiType name order, the multiple-PII rule
+        |
+   TransformationPlan, explicit policy
+        |
+   DataSanitizationService plus TransformationRegistry
+        |
+   CsvSanitizationWriter, LF-terminated escaped CSV
+        |
+sanitized CSV Output, caller-owned OutputStream, plus CsvSanitizationResult
+```
+
+  `CsvSanitizationService` orchestrates the existing components and nothing
+  else: it reuses `CsvTokenizer` with the same `CsvLimits` column and field
+  values as discovery, so profile and sanitize share quoting, width, and
+  header policy; it reuses `PiiDetectorRegistry` with no new regexes and
+  applies the single alphabetically-first `PiiType` when several detectors
+  match, never bean order and never a score; it reuses
+  `DataSanitizationService` and `TransformationRegistry` under the caller's
+  explicit plan, fail-closed on unmapped types or unregistered strategies,
+  and only the convenience overload uses `DefaultTransformationPolicy`.
+  Blank cells are preserved without detection. Input is buffered once within
+  the same 10 MiB byte limit, then records are parsed, transformed, and
+  written one at a time: there is no row list, sampling limits never truncate
+  sanitization, and output size may differ. The caller owns both streams:
+  neither is closed, output is flushed, and only structural counts leave the
+  call. Messages name rows, columns, limits, types, and strategies only. No
+  upload API, persistence, jobs, Spring Batch, Redis, or anonymization claim
+  was added.
 
 Everything below under "planned" is design intent, not implementation.
 
