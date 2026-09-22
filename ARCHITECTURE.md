@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (590 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (594 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,7 +75,7 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 590 total tests verified (context load, dataset persistence, identity persistence,
+* 594 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
   sanitization run domain/persistence/lifecycle/execution/retrieval),
@@ -284,9 +284,14 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   Sanitized output persists separately per run (`sanitization_artifacts`,
   V5, ADR-014): BYTEA like the input store, but with its own explicit
   40 MiB bound — output is not assumed within the 10 MiB input bound
-  because fixed substitutions expand short values several-fold — run-keyed
+  because fixed substitutions expand short values several-fold —   run-keyed
   with `ON DELETE CASCADE`, no reference from the run entity, and no bytes
-  in the view. Nothing captures into or serves from it yet. The V3 migration constrains the table the same way (`RESTRICT` on
+  in the view. The stored-input path captures output through a bounded tee
+  (single 40 MiB bound reused, never redefined) into the artifact store
+  after a successful sanitize but before completion — so a completed run
+  always has exactly one artifact, a failed run never leaves a partial one,
+  and bound overflow fails the run as `OUTPUT_TOO_LARGE` instead of
+  completing. Nothing captures into or serves from it yet beyond execution. The V3 migration constrains the table the same way (`RESTRICT` on
   dataset delete so history is never silently orphaned, error columns only on
   `FAILED`, `completed_at` required on terminal states, non-negative counts;
   indexes on `dataset_id` and `owner_subject` only — no status index until a

@@ -8,6 +8,11 @@ import com.aegivault.aegivault.dataset.csv.CsvSanitizationService;
 import com.aegivault.aegivault.sanitization.MissingTransformationException;
 import com.aegivault.aegivault.sanitization.SanitizationException;
 import com.aegivault.aegivault.sanitization.TransformationPlan;
+import com.aegivault.aegivault.sanitization.artifact.ArtifactTooLargeException;
+import com.aegivault.aegivault.sanitization.artifact.DatabaseArtifactStore;
+import com.aegivault.aegivault.sanitization.artifact.SanitizationArtifactStore;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -36,7 +41,11 @@ import org.springframework.stereotype.Service;
  * only passed through to the engine, which flushes output without closing
  * it. The stored-input path is the exception that proves the rule — this
  * coordinator opens that stream itself through {@link DatasetInputSource},
- * so it owns and closes it. Nothing
+ * so it owns and closes it. That path additionally captures output through
+ * a bounded tee into {@link SanitizationArtifactStore} after a successful
+ * sanitize but before completion, so a completed stored-input run always
+ * has exactly one artifact and a failed run never leaves a partial one;
+ * the capture buffer cannot exceed the single artifact bound. Nothing
  * is logged or persisted besides the safe counts in {@link RunResult} or
  * the safe metadata in {@link RunFailure}.
  *
@@ -59,6 +68,8 @@ public class SanitizationRunExecutor {
     private final CsvSanitizationService csv;
 
     private final DatasetInputSource inputs;
+
+    private final SanitizationArtifactStore artifacts;
 
     /**
      * Executes one CSV sanitization against an owned dataset.
@@ -92,27 +103,7 @@ public class SanitizationRunExecutor {
         String owner = requireOwner(ownerSubject);
         SanitizationRunView created = runs.createRun(owner, datasetId, plan, policyName, policyVersion);
         SanitizationRunView started = runs.startRun(owner, created.id());
-        CsvSanitizationResult result;
-        try {
-            result = csv.sanitize(input, output, plan);
-        } catch (CsvParseException ex) {
-            return runs.failRun(
-                    owner, started.id(), new RunFailure("CSV_PARSE_ERROR", "TOKENIZE", ex.getMessage()));
-        } catch (MissingTransformationException ex) {
-            return runs.failRun(
-                    owner, started.id(), new RunFailure("POLICY_GAP", "TRANSFORM", ex.getMessage()));
-        } catch (SanitizationException ex) {
-            return runs.failRun(
-                    owner, started.id(), new RunFailure("TRANSFORM_ERROR", "TRANSFORM", ex.getMessage()));
-        }
-        return runs.completeRun(
-                owner,
-                started.id(),
-                new RunResult(
-                        result.dataRowsRead(),
-                        result.dataRowsWritten(),
-                        result.blankRowsSkipped(),
-                        result.columnCount()));
+        return sanitizeCompleteOrFail(owner, started, plan, input, output, null);
     }
 
     /**
@@ -151,11 +142,107 @@ public class SanitizationRunExecutor {
         Objects.requireNonNull(output, "output must not be null");
         String owner = requireOwner(ownerSubject);
         try (InputStream input = inputs.openInput(owner, datasetId)) {
-            return executeCsv(owner, datasetId, plan, policyName, policyVersion, input, output);
+            SanitizationRunView created = runs.createRun(owner, datasetId, plan, policyName, policyVersion);
+            SanitizationRunView started = runs.startRun(owner, created.id());
+            BoundedCapture capture = new BoundedCapture(output);
+            return sanitizeCompleteOrFail(owner, started, plan, input, capture, capture);
         } catch (DatasetNotFoundException ex) {
             throw new ReferencedDatasetNotFoundException();
         } catch (IOException ex) {
             throw new CsvParseException("Unable to read CSV input.");
+        }
+    }
+
+    /**
+     * Shared sanitize-then-finish core: runs the engine, maps documented
+     * domain failures to {@code FAILED}, and completes with the structural
+     * counts on success.
+     *
+     * @param capture when non-null, output is captured through it and the
+     *        captured bytes are stored as the run's artifact after a
+     *        successful sanitize but before completion, so a completed run
+     *        never lacks its artifact and a failed store never reports
+     *        completion; null when the caller owns output directly and no
+     *        artifact applies
+     */
+    private SanitizationRunView sanitizeCompleteOrFail(
+            String owner,
+            SanitizationRunView started,
+            TransformationPlan plan,
+            InputStream input,
+            OutputStream csvOutput,
+            BoundedCapture capture) {
+        CsvSanitizationResult result;
+        try {
+            result = csv.sanitize(input, csvOutput, plan);
+        } catch (CsvParseException ex) {
+            return runs.failRun(
+                    owner, started.id(), new RunFailure("CSV_PARSE_ERROR", "TOKENIZE", ex.getMessage()));
+        } catch (MissingTransformationException ex) {
+            return runs.failRun(
+                    owner, started.id(), new RunFailure("POLICY_GAP", "TRANSFORM", ex.getMessage()));
+        } catch (SanitizationException ex) {
+            return runs.failRun(
+                    owner, started.id(), new RunFailure("TRANSFORM_ERROR", "TRANSFORM", ex.getMessage()));
+        } catch (ArtifactTooLargeException ex) {
+            return runs.failRun(
+                    owner, started.id(), new RunFailure("OUTPUT_TOO_LARGE", "WRITE", ex.getMessage()));
+        }
+        if (capture != null) {
+            artifacts.storeArtifact(owner, started.id(), new ByteArrayInputStream(capture.captured()));
+        }
+        return runs.completeRun(
+                owner,
+                started.id(),
+                new RunResult(
+                        result.dataRowsRead(),
+                        result.dataRowsWritten(),
+                        result.blankRowsSkipped(),
+                        result.columnCount()));
+    }
+
+    /**
+     * Forwards every byte to the caller's stream while retaining a bounded
+     * copy for artifact storage. The buffer never exceeds
+     * {@link DatabaseArtifactStore#MAX_ARTIFACT_BYTES} (the single artifact
+     * bound, reused here rather than redefined): beyond it sanitization
+     * aborts with {@link ArtifactTooLargeException}, so no truncation and
+     * no partial artifact are possible. Never closes the caller's stream.
+     */
+    private static final class BoundedCapture extends OutputStream {
+
+        private final OutputStream downstream;
+
+        private final ByteArrayOutputStream captured = new ByteArrayOutputStream();
+
+        private long total;
+
+        private BoundedCapture(OutputStream downstream) {
+            this.downstream = Objects.requireNonNull(downstream, "downstream must not be null");
+        }
+
+        @Override
+        public void write(int singleByte) throws IOException {
+            write(new byte[] {(byte) singleByte}, 0, 1);
+        }
+
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            total += length;
+            if (total > DatabaseArtifactStore.MAX_ARTIFACT_BYTES) {
+                throw new ArtifactTooLargeException(DatabaseArtifactStore.MAX_ARTIFACT_BYTES);
+            }
+            downstream.write(bytes, offset, length);
+            captured.write(bytes, offset, length);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            downstream.flush();
+        }
+
+        private byte[] captured() {
+            return captured.toByteArray();
         }
     }
 

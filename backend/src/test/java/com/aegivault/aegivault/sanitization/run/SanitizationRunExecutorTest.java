@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.aegivault.aegivault.dataset.Dataset;
 import com.aegivault.aegivault.dataset.DatasetRepository;
 import com.aegivault.aegivault.dataset.DatabaseDatasetInputSource;
+import com.aegivault.aegivault.sanitization.artifact.DatabaseArtifactStore;
 import com.aegivault.aegivault.pii.PiiType;
 import com.aegivault.aegivault.sanitization.DefaultTransformationPolicy;
 import com.aegivault.aegivault.sanitization.TransformationPlan;
@@ -47,6 +48,9 @@ class SanitizationRunExecutorTest {
 
     @Autowired
     private DatabaseDatasetInputSource inputs;
+
+    @Autowired
+    private DatabaseArtifactStore artifacts;
 
     private static String owner() {
         return "owner-" + UUID.randomUUID();
@@ -416,5 +420,86 @@ class SanitizationRunExecutorTest {
 
         assertThat(view.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(outputClosed.get()).isFalse();
+    }
+
+    @Test
+    void storedExecutionPersistsExactlyOneMatchingArtifact() throws Exception {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        inputs.storeInput(owner, dataset.getId(), stream(CSV));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        SanitizationRunView view =
+                executor.executeStoredCsv(owner, dataset.getId(), plan(), "default", "v1", output);
+
+        assertThat(view.status()).isEqualTo(RunStatus.COMPLETED);
+        String sanitized = output.toString(StandardCharsets.UTF_8);
+        try (InputStream reopened = artifacts.openArtifact(owner, view.id())) {
+            assertThat(new String(reopened.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo(sanitized);
+        }
+        assertThat(sanitized).doesNotContain("bob@example.com");
+    }
+
+    @Test
+    void storedArtifactBelongsToItsRunOnly() throws Exception {
+        String owner = owner();
+        Dataset firstDataset = dataset(owner);
+        Dataset secondDataset = dataset(owner);
+        inputs.storeInput(owner, firstDataset.getId(), stream(CSV));
+        inputs.storeInput(owner, secondDataset.getId(), stream(CSV));
+
+        SanitizationRunView first =
+                executor.executeStoredCsv(owner, firstDataset.getId(), plan(), "default", "v1",
+                        new ByteArrayOutputStream());
+        SanitizationRunView second =
+                executor.executeStoredCsv(owner, secondDataset.getId(), plan(), "default", "v1",
+                        new ByteArrayOutputStream());
+
+        try (InputStream firstArtifact = artifacts.openArtifact(owner, first.id());
+                InputStream secondArtifact = artifacts.openArtifact(owner, second.id())) {
+            assertThat(firstArtifact).isNotNull();
+            assertThat(secondArtifact).isNotNull();
+        }
+        assertThatThrownBy(() -> artifacts.openArtifact(owner, UUID.randomUUID()))
+                .isInstanceOf(SanitizationRunNotFoundException.class);
+        assertThat(first.id()).isNotEqualTo(second.id());
+    }
+
+    @Test
+    void failedStoredExecutionPersistsNoArtifact() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        inputs.storeInput(owner, dataset.getId(), stream("a,b\n1,2,3\n"));
+
+        SanitizationRunView view = executor.executeStoredCsv(
+                owner, dataset.getId(), plan(), "default", "v1", new ByteArrayOutputStream());
+
+        assertThat(view.status()).isEqualTo(RunStatus.FAILED);
+        assertThatThrownBy(() -> artifacts.openArtifact(owner, view.id()))
+                .isInstanceOf(SanitizationRunNotFoundException.class);
+    }
+
+    @Test
+    void overflowingOutputFailsRunWithoutArtifact() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        int rows = (int) (DatabaseArtifactStore.MAX_ARTIFACT_BYTES / 65) + 100;
+        StringBuilder input = new StringBuilder("ip\n");
+        for (int index = 0; index < rows; index++) {
+            input.append("1.1.1.1\n");
+        }
+        inputs.storeInput(owner, dataset.getId(), stream(input.toString()));
+
+        SanitizationRunView view = executor.executeStoredCsv(
+                owner, dataset.getId(), plan(), "default", "v1", new ByteArrayOutputStream());
+
+        assertThat(view.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(view.completedAt()).isNotNull();
+        assertThat(view.errorCode()).isEqualTo("OUTPUT_TOO_LARGE");
+        assertThat(view.errorStage()).isEqualTo("WRITE");
+        assertThat(view.errorMessage()).contains("41943040");
+        assertThat(view.errorMessage()).doesNotContain("1.1.1.1");
+        assertThatThrownBy(() -> artifacts.openArtifact(owner, view.id()))
+                .isInstanceOf(SanitizationRunNotFoundException.class);
     }
 }
