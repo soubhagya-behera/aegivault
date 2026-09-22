@@ -1,11 +1,14 @@
 package com.aegivault.aegivault.sanitization.run;
 
+import com.aegivault.aegivault.dataset.DatasetInputSource;
+import com.aegivault.aegivault.dataset.DatasetNotFoundException;
 import com.aegivault.aegivault.dataset.csv.CsvParseException;
 import com.aegivault.aegivault.dataset.csv.CsvSanitizationResult;
 import com.aegivault.aegivault.dataset.csv.CsvSanitizationService;
 import com.aegivault.aegivault.sanitization.MissingTransformationException;
 import com.aegivault.aegivault.sanitization.SanitizationException;
 import com.aegivault.aegivault.sanitization.TransformationPlan;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Objects;
@@ -29,8 +32,11 @@ import org.springframework.stereotype.Service;
  * while the engine streams; the engine itself runs outside any database
  * transaction. The coordinator holds no transaction on purpose.
  *
- * <p>Streams stay caller-owned: they are never closed here, only passed
- * through to the engine, which flushes output without closing it. Nothing
+ * <p>Caller-supplied streams stay caller-owned: they are never closed here,
+ * only passed through to the engine, which flushes output without closing
+ * it. The stored-input path is the exception that proves the rule — this
+ * coordinator opens that stream itself through {@link DatasetInputSource},
+ * so it owns and closes it. Nothing
  * is logged or persisted besides the safe counts in {@link RunResult} or
  * the safe metadata in {@link RunFailure}.
  *
@@ -51,6 +57,8 @@ public class SanitizationRunExecutor {
     private final SanitizationRunService runs;
 
     private final CsvSanitizationService csv;
+
+    private final DatasetInputSource inputs;
 
     /**
      * Executes one CSV sanitization against an owned dataset.
@@ -105,6 +113,50 @@ public class SanitizationRunExecutor {
                         result.dataRowsWritten(),
                         result.blankRowsSkipped(),
                         result.columnCount()));
+    }
+
+    /**
+     * Executes one CSV sanitization using the dataset's persisted input
+     * instead of a caller-supplied stream.
+     *
+     * <p>The input is opened through {@link DatasetInputSource} before any
+     * run row exists: a missing or foreign dataset/input fails here with
+     * {@link ReferencedDatasetNotFoundException} (translated from the
+     * input boundary's equally-worded signal), so no run is created and
+     * sanitization never starts. Dataset ownership is then enforced again
+     * by {@code createRun} — two checks on two resources (stored bytes,
+     * dataset row), not one check duplicated. The opened stream belongs to
+     * this coordinator and is closed here; the caller-provided output keeps
+     * its existing contract (flushed, never closed).
+     *
+     * @param ownerSubject calling owner, never blank; must own the dataset
+     * @param datasetId dataset to sanitize, must belong to the owner and
+     *        have stored input
+     * @param plan explicit plan frozen and executed, never null
+     * @param policyName policy label frozen into the run, never blank
+     * @param policyVersion version label frozen into the run, never blank
+     * @param output sanitized destination, flushed and never closed here
+     * @return the completed run view on success; the failed run view when
+     *         the engine reports a documented-safe domain failure
+     * @throws ReferencedDatasetNotFoundException when the dataset or its
+     *         stored input is missing or belongs to another owner
+     */
+    public SanitizationRunView executeStoredCsv(
+            String ownerSubject,
+            UUID datasetId,
+            TransformationPlan plan,
+            String policyName,
+            String policyVersion,
+            OutputStream output) {
+        Objects.requireNonNull(output, "output must not be null");
+        String owner = requireOwner(ownerSubject);
+        try (InputStream input = inputs.openInput(owner, datasetId)) {
+            return executeCsv(owner, datasetId, plan, policyName, policyVersion, input, output);
+        } catch (DatasetNotFoundException ex) {
+            throw new ReferencedDatasetNotFoundException();
+        } catch (IOException ex) {
+            throw new CsvParseException("Unable to read CSV input.");
+        }
     }
 
     private static String requireOwner(String ownerSubject) {

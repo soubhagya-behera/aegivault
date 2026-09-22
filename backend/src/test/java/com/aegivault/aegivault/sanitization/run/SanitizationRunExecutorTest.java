@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.aegivault.aegivault.dataset.Dataset;
 import com.aegivault.aegivault.dataset.DatasetRepository;
+import com.aegivault.aegivault.dataset.DatabaseDatasetInputSource;
 import com.aegivault.aegivault.pii.PiiType;
 import com.aegivault.aegivault.sanitization.DefaultTransformationPolicy;
 import com.aegivault.aegivault.sanitization.TransformationPlan;
@@ -43,6 +44,9 @@ class SanitizationRunExecutorTest {
 
     @Autowired
     private DatasetRepository datasets;
+
+    @Autowired
+    private DatabaseDatasetInputSource inputs;
 
     private static String owner() {
         return "owner-" + UUID.randomUUID();
@@ -305,6 +309,112 @@ class SanitizationRunExecutorTest {
 
         assertThat(view.status()).isEqualTo(RunStatus.FAILED);
         assertThat(inputClosed.get()).isFalse();
+        assertThat(outputClosed.get()).isFalse();
+    }
+
+    @Test
+    void storedInputExecutesPersistedBytes() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        inputs.storeInput(owner, dataset.getId(), stream(CSV));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        SanitizationRunView view =
+                executor.executeStoredCsv(owner, dataset.getId(), plan(), "default", "v1", output);
+
+        assertThat(view.status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(view.datasetId()).isEqualTo(dataset.getId());
+        assertThat(view.inputRowCount()).isEqualTo(2L);
+        assertThat(view.outputRowCount()).isEqualTo(2L);
+        assertThat(view.blankRowsSkipped()).isEqualTo(1L);
+        assertThat(view.columnCount()).isEqualTo(2);
+        assertThat(view.version()).isEqualTo(2L);
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertThat(text).startsWith("name,email\n");
+        assertThat(text).doesNotContain("bob@example.com");
+        assertThat(text).contains("example.invalid");
+    }
+
+    @Test
+    void foreignStoredInputCannotBeExecuted() {
+        String ownerA = owner();
+        String ownerB = owner();
+        Dataset dataset = dataset(ownerA);
+        inputs.storeInput(ownerA, dataset.getId(), stream(CSV));
+
+        assertThatThrownBy(() -> executor.executeStoredCsv(
+                        ownerB, dataset.getId(), plan(), "default", "v1", new ByteArrayOutputStream()))
+                .isInstanceOf(ReferencedDatasetNotFoundException.class)
+                .hasMessage("Dataset not found.");
+
+        assertThat(runs.listByDataset(ownerB, dataset.getId())).isEmpty();
+    }
+
+    @Test
+    void missingDatasetAndMissingInputBehaveIdentically() {
+        String owner = owner();
+        Dataset withoutInput = dataset(owner);
+
+        String missingMessage = null;
+        try {
+            executor.executeStoredCsv(
+                    owner, UUID.randomUUID(), plan(), "default", "v1", new ByteArrayOutputStream());
+        } catch (ReferencedDatasetNotFoundException ex) {
+            missingMessage = ex.getMessage();
+        }
+        String noInputMessage = null;
+        try {
+            executor.executeStoredCsv(
+                    owner, withoutInput.getId(), plan(), "default", "v1", new ByteArrayOutputStream());
+        } catch (ReferencedDatasetNotFoundException ex) {
+            noInputMessage = ex.getMessage();
+        }
+
+        assertThat(missingMessage).isNotNull();
+        assertThat(missingMessage).isEqualTo(noInputMessage);
+        assertThat(runs.listByDataset(owner, withoutInput.getId())).isEmpty();
+    }
+
+    @Test
+    void storedRaggedCsvProducesFailedRun() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        inputs.storeInput(owner, dataset.getId(), stream("a,b\n1,2,3\n"));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        SanitizationRunView view =
+                executor.executeStoredCsv(owner, dataset.getId(), plan(), "default", "v1", output);
+
+        assertThat(view.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(view.completedAt()).isNotNull();
+        assertThat(view.errorCode()).isEqualTo("CSV_PARSE_ERROR");
+        assertThat(view.errorMessage()).isEqualTo("CSV row 2 has 3 columns but the header has 2.");
+        assertThat(view.inputRowCount()).isNull();
+
+        SanitizationRunView reloaded = runs.get(owner, view.id());
+        assertThat(reloaded.status()).isEqualTo(RunStatus.FAILED);
+        assertThat(reloaded.errorMessage()).doesNotContain("1,2,3");
+    }
+
+    @Test
+    void storedExecutionLeavesOutputOpen() {
+        String owner = owner();
+        Dataset dataset = dataset(owner);
+        inputs.storeInput(owner, dataset.getId(), stream(CSV));
+        AtomicBoolean outputClosed = new AtomicBoolean(false);
+        OutputStream output = new ByteArrayOutputStream() {
+            @Override
+            public void close() throws IOException {
+                outputClosed.set(true);
+                super.close();
+            }
+        };
+
+        SanitizationRunView view =
+                executor.executeStoredCsv(owner, dataset.getId(), plan(), "default", "v1", output);
+
+        assertThat(view.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(outputClosed.get()).isFalse();
     }
 }
