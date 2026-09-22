@@ -83,8 +83,8 @@
   determinism, error safety, and CSV→profile integration.
 * Pure unit test totals: 474 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain), 0 failures, 0 errors, 0 skipped.
-* Repository total: 546 tests, 0 failures, 0 errors, 0 skipped — 474 pure unit
-  tests plus 72 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 551 tests, 0 failures, 0 errors, 0 skipped — 474 pure unit
+  tests plus 77 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Sanitization run domain and persistence (`sanitization.run`, V3 migration
   `sanitization_runs`): one operation record per run against one dataset —
@@ -111,8 +111,10 @@
   as `CSV_PARSE_ERROR`, `MissingTransformationException` as `POLICY_GAP`,
   other `SanitizationException`s as `TRANSFORM_ERROR`) are persisted through
   the existing `failRun` transition instead of propagating, while anything
-  else still propagates with the run left `RUNNING`. No
-  REST API, artifact storage, background workers, or audit ledger yet.
+  else still propagates with the run left `RUNNING`. The first HTTP exposure
+  exists (`GET /api/runs/{runId}`, thin controller over the owner-scoped
+  `get`, hardened view only). No
+  other REST endpoints, artifact storage, background workers, or audit ledger yet.
 * API-key test fixtures initially resembled provider credentials closely
   enough to trigger GitHub secret scanning; the fixtures were rewritten so
   provider-like values are assembled from harmless fragments at test
@@ -186,8 +188,8 @@
 
 Wire the proven CSV discovery/profiling boundary and the sanitization engine
 into the authenticated dataset flow (an upload/ingest path around the run
-lifecycle, plus a run
-REST API and persistence of profile metadata), then the audit ledger. The audit ledger remains
+lifecycle, plus remaining run
+REST endpoints and persistence of profile metadata), then the audit ledger. The audit ledger remains
 a later milestone: no CSV upload API, no profile persistence, no artifact
 storage, and no background processing is complete yet. The domain CSV sanitization pipeline
 and the run persistence/lifecycle foundation are implemented and tested.

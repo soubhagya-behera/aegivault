@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (546 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (551 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -75,10 +75,10 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
-* 546 total tests verified (context load, dataset persistence, identity persistence,
+* 551 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
-  sanitization run domain/persistence/lifecycle/execution),
+  sanitization run domain/persistence/lifecycle/execution/retrieval),
   0 failures, 0 errors, 0 skipped; the persistence/context suites run against the real
   PostgreSQL with no embedded database, and the CSV/profiling/sanitization/run-domain suites are pure unit tests.
 
@@ -254,11 +254,16 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   through the existing `failRun` with its safe message verbatim plus
   `completedAt`. Anything else (programming errors, infrastructure failures)
   still propagates untouched with the run left `RUNNING`; there are no
-  retries. The V3 migration constrains the table the same way (`RESTRICT` on
+  retries. The first HTTP exposure is `GET /api/runs/{runId}`
+  (`SanitizationRunController`, thin by design): JWT subject plus UUID
+  straight into the existing owner-scoped `get`, returning the hardened
+  `SanitizationRunView` (200 owner / identical 404 foreign-or-missing /
+  401 unauthenticated / 400 malformed UUID, mirroring the dataset endpoint
+  conventions). The V3 migration constrains the table the same way (`RESTRICT` on
   dataset delete so history is never silently orphaned, error columns only on
   `FAILED`, `completed_at` required on terminal states, non-negative counts;
   indexes on `dataset_id` and `owner_subject` only — no status index until a
-  real status query exists). No REST API, no artifact storage, no jobs,
+  real status query exists). No other REST endpoints, no artifact storage, no jobs,
   Spring Batch, Redis, background workers, or audit ledger was added.
 
 Everything below under "planned" is design intent, not implementation.
