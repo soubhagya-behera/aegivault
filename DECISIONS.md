@@ -305,3 +305,35 @@ as new numbers.
   multipart handling, and no executor wiring yet: the bytes are stored and
   servable, but nothing executes against them until `POST /api/runs`.
 * **Status:** Accepted.
+
+## ADR-014 — PostgreSQL BYTEA as the First Sanitized-Output Artifact Store
+
+* **Decision:** Store one run's sanitized CSV output in PostgreSQL BYTEA, in
+  a dedicated `sanitization_artifacts` table (V5 migration: primary key
+  `run_id` with a foreign key to `sanitization_runs`, denormalized owner,
+  `content BYTEA`, UTC stamps), served through a new
+  `SanitizationArtifactStore` seam by `DatabaseArtifactStore`. The output
+  bound is separate and explicit: 40 MiB (4x the 10 MiB input bound),
+  enforced while capturing (reject before persisting, never truncate) and
+  mirrored by a schema CHECK. The run FK is `ON DELETE CASCADE` — artifacts
+  are run output content, not history. `SanitizationRun` gains no reference
+  and the artifact entity holds no object association back, so metadata and
+  view queries can never load the payload; the view itself carries no
+  artifact bytes.
+* **Reason:** Output size is not bounded by input size — fixed substitutions
+  (33-char synthetic emails, 64-char hashes) expand short detected values
+  several-fold, so reusing the input limit would wrongly reject legitimate
+  hash-heavy output, while no fixed multiple is provably sufficient; 4x is
+  a documented policy choice covering realistic substitution expansion with
+  headroom, with denser extremes failing closed. BYTEA keeps the MVP on one
+  transactional store with zero new infrastructure, consistent with input
+  storage; a dedicated table over a blob column on the run keeps payload
+  I/O off every run query without relying on JPA lazy-basic behavior.
+* **Consequences:** Output above 40 MiB is rejected, not chunked or
+  streamed to external storage — accepted for the bounded MVP and explicitly
+  NOT a large-scale object-storage claim; no download endpoint, no executor
+  wiring yet (the executor keeps its `OutputStream` contract): bytes are
+  storable and servable, but nothing captures into them until the upload /
+  `POST /api/runs` milestone. No compliance or encryption-at-rest claim is
+  made beyond owner-scoped access and metadata-only error handling.
+* **Status:** Accepted.
