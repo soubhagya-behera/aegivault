@@ -83,9 +83,22 @@
   determinism, error safety, and CSV→profile integration.
 * Pure unit test totals: 488 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 14 run request), 0 failures, 0 errors, 0 skipped.
-* Repository total: 616 tests, 0 failures, 0 errors, 0 skipped — 488 pure unit
-  tests plus 128 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 627 tests, 0 failures, 0 errors, 0 skipped — 488 pure unit
+  tests plus 139 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
+* Sanitized-artifact download API (`GET /api/runs/{runId}/artifact`): owner
+  from the verified JWT subject only (never from parameters or body), bytes
+  from the existing owner-scoped `SanitizationArtifactStore`, streamed
+  straight to the response as `text/csv; charset=UTF-8` with
+  `Content-Disposition: attachment; filename="sanitized-<runId>.csv"` — the
+  filename derives from the validated run id only, never from dataset names,
+  original filenames, policy labels, or owner values. Foreign runs, missing
+  runs, unfinished runs, and completed runs without an artifact all return
+  the same safe 404 body, alongside 401 unauthenticated and 400 malformed
+  UUID; the artifact is served as stored (never re-parsed or re-sanitized),
+  no second full in-memory copy is created, and the run state machine, the
+  40 MiB bound, and every existing endpoint are unchanged. 11 new tests
+  (10 API + 1 store-level completed-run gate).
 * Security/integrity audit of the implemented input-upload → run → artifact flow
   (findings reported in that milestone's audit report). Two hardening fixes
   landed: the dataset input upload no longer reads the caller's CSV body inside
@@ -202,12 +215,12 @@
 Continue wiring the authenticated dataset flow. Dataset input storage exists as
 PostgreSQL BYTEA behind `DatasetInputSource`, the upload path
 (`POST /api/datasets/{id}/input`) and the run REST endpoints (`POST /api/runs`,
-`GET /api/runs`, `GET /api/runs/{runId}`) are implemented, and sanitized output
-is stored per run behind `SanitizationArtifactStore`. Still not implemented:
-profile metadata persistence, an artifact download endpoint, and background
-processing. The audit ledger remains a later milestone. The domain CSV
-sanitization pipeline and the run persistence/lifecycle foundation are
-implemented and tested.
+`GET /api/runs`, `GET /api/runs/{runId}`) and the artifact download
+(`GET /api/runs/{runId}/artifact`) are implemented, and sanitized output is
+stored per run behind `SanitizationArtifactStore`. Still not implemented:
+profile metadata persistence and background processing. The audit ledger
+remains a later milestone. The domain CSV sanitization pipeline and the run
+persistence/lifecycle foundation are implemented and tested.
 
 ## Future phases
 

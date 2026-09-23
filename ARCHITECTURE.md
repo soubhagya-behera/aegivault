@@ -304,7 +304,25 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   after a successful sanitize but before completion — so a completed run
   always has exactly one artifact, a failed run never leaves a partial one,
   and bound overflow fails the run as `OUTPUT_TOO_LARGE` instead of
-  completing. Nothing captures into or serves from it yet beyond execution. The V3 migration constrains the table the same way (`RESTRICT` on
+  completing. The artifact is served by `GET /api/runs/{runId}/artifact`
+  (`SanitizationRunController`, thin like the other run endpoints): owner
+  from JWT only, bytes from one `SanitizationArtifactStore.openArtifact`
+  call — ownership check, completed-run requirement, and missing-artifact
+  rule applied inside the store as one indistinguishable 404
+  (`{"message": "Sanitization run not found."}`) for foreign runs,
+  missing runs, unfinished runs, and runs without an artifact, alongside
+  401 unauthenticated and 400 malformed UUID. Success returns 200 with
+  `text/csv; charset=UTF-8` and
+  `Content-Disposition: attachment; filename="sanitized-<runId>.csv"`,
+  where the filename is derived only from the validated run id (never a
+  dataset name, original filename, policy label, or owner value) and is
+  built with `ContentDisposition` so header injection cannot occur. The
+  stored bytes are streamed as the store's `InputStream` wrapped in an
+  `InputStreamResource` — no `byte[]` body, no second full in-memory copy,
+  chunked rather than read twice — and they are never parsed, rebuilt, or
+  re-sanitized on download. The state machine, the 40 MiB bound, and the
+  storage layout are unchanged. The V3
+  migration constrains the table the same way (`RESTRICT` on
   dataset delete so history is never silently orphaned, error columns only on
   `FAILED`, `completed_at` required on terminal states, non-negative counts;
   indexes on `dataset_id` and `owner_subject` only — no status index until a

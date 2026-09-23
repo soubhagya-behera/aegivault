@@ -181,4 +181,25 @@ class DatabaseArtifactStoreTest {
                 .doesNotContain("content", "artifact", "bytes", "payload", "output");
         assertThat(reloaded.toString()).doesNotContain("user-abc123def456");
     }
+
+    @Test
+    void artifactOfAnUnfinishedRunIsNotServableUntilTheRunCompletes() throws Exception {
+        String owner = owner();
+        Dataset dataset = datasets.save(new Dataset("customers.csv", owner));
+        SanitizationRunView created = runs.createRun(
+                owner, dataset.getId(), DefaultTransformationPolicy.plan(), "default", "v1");
+        runs.startRun(owner, created.id());
+        artifacts.storeArtifact(owner, created.id(), stream(OUTPUT));
+
+        assertThatThrownBy(() -> artifacts.openArtifact(owner, created.id()))
+                .isInstanceOf(SanitizationRunNotFoundException.class)
+                .hasMessage("Sanitization run not found.");
+        assertThat(stored.findByRunIdAndOwnerSubject(created.id(), owner)).isPresent();
+
+        runs.completeRun(owner, created.id(), new RunResult(1L, 1L, 0L, 2));
+
+        try (InputStream reopened = artifacts.openArtifact(owner, created.id())) {
+            assertThat(readAll(reopened)).isEqualTo(OUTPUT);
+        }
+    }
 }

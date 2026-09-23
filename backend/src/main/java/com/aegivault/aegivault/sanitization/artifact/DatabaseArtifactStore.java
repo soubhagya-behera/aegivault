@@ -1,6 +1,8 @@
 package com.aegivault.aegivault.sanitization.artifact;
 
 import com.aegivault.aegivault.dataset.csv.CsvLimits;
+import com.aegivault.aegivault.sanitization.run.RunStatus;
+import com.aegivault.aegivault.sanitization.run.SanitizationRun;
 import com.aegivault.aegivault.sanitization.run.SanitizationRunNotFoundException;
 import com.aegivault.aegivault.sanitization.run.SanitizationRunRepository;
 import java.io.ByteArrayInputStream;
@@ -33,6 +35,16 @@ import org.springframework.transaction.annotation.Transactional;
  * through the existing owner-scoped run lookup on store; reads predicate
  * on the artifact row's own owner, so missing runs, foreign runs, and
  * missing artifacts behave identically.
+ *
+ * <p>Reads additionally require the run to be {@code COMPLETED}, so a
+ * stored artifact is servable only for a finished run — a second
+ * enforcement point for the executor's "completed run has exactly one
+ * artifact, failed run has none" invariant, this time on the read path.
+ * Every refusal (missing run, foreign run, unfinished run, missing
+ * artifact) is the same {@link SanitizationRunNotFoundException} with the
+ * same message, so a caller cannot learn which of those is true. Writes
+ * stay ungated: the executor stores the artifact before it completes the
+ * run.
  */
 @Service
 @RequiredArgsConstructor
@@ -70,6 +82,11 @@ public class DatabaseArtifactStore implements SanitizationArtifactStore {
     public InputStream openArtifact(String ownerSubject, UUID runId) {
         String owner = requireOwner(ownerSubject);
         Objects.requireNonNull(runId, "runId must not be null");
+        SanitizationRun run = runs.findByIdAndOwnerSubject(runId, owner)
+                .orElseThrow(SanitizationRunNotFoundException::new);
+        if (run.getStatus() != RunStatus.COMPLETED) {
+            throw new SanitizationRunNotFoundException();
+        }
         SanitizationArtifact stored = artifacts
                 .findByRunIdAndOwnerSubject(runId, owner)
                 .orElseThrow(SanitizationRunNotFoundException::new);
