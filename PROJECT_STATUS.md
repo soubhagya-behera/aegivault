@@ -81,11 +81,23 @@
   86 tests covering parser behavior, header policy, duplicate-header rejection,
   row-width policy, malformed quoting, safety limits, bounded sampling,
   determinism, error safety, and CSV→profile integration.
-* Pure unit test totals: 487 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
-  + 34 CSV sanitization pipeline + 28 run domain + 13 run request), 0 failures, 0 errors, 0 skipped.
-* Repository total: 612 tests, 0 failures, 0 errors, 0 skipped — 487 pure unit
-  tests plus 125 context/persistence/API/lifecycle/execution tests run against the real local
+* Pure unit test totals: 488 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
+  + 34 CSV sanitization pipeline + 28 run domain + 14 run request), 0 failures, 0 errors, 0 skipped.
+* Repository total: 616 tests, 0 failures, 0 errors, 0 skipped — 488 pure unit
+  tests plus 128 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
+* Security/integrity audit of the implemented input-upload → run → artifact flow
+  (findings reported in that milestone's audit report). Two hardening fixes
+  landed: the dataset input upload no longer reads the caller's CSV body inside
+  a database transaction (only the owner check and the upsert are transactional,
+  so a slow client can no longer pin a pooled connection and an open transaction
+  for the length of its upload), and `CreateRunRequest` policy labels are now
+  bounded at 255 characters like the dataset name instead of being unbounded
+  client text stored on the run row and echoed in every run view. Both fixes
+  carry focused regression tests (a transaction-scope probe over the upload
+  path plus an overlong-label validator test and API rejection test). No other
+  finding required a code change; the remaining observations are recorded as
+  limitations rather than silently changed.
 * Sanitization run domain and persistence (`sanitization.run`, V3 migration
   `sanitization_runs`): one operation record per run against one dataset —
   dataset FK (`ON DELETE RESTRICT`, history is never silently orphaned),
@@ -167,7 +179,8 @@
   not anonymization. 77 pure unit tests cover strategies, plans, the service,
   column sanitization, determinism, and the default policy.
 * Sanitization run persistence exists (`sanitization.run`, V3
-  `sanitization_runs`; operation metadata only, no REST API yet). The CSV rewrite pipeline now exists as a
+  `sanitization_runs`; operation metadata only, exposed through `POST /api/runs`,
+  `GET /api/runs`, and `GET /api/runs/{runId}`). The CSV rewrite pipeline now exists as a
   domain/service-level operation only: `CsvSanitizationService` in `dataset.csv` orchestrates the
   existing `CsvTokenizer`, `PiiDetectorRegistry`, `DataSanitizationService`/`TransformationRegistry`,
   and a focused `CsvSanitizationWriter` to turn one caller-owned CSV `InputStream` plus an explicit
@@ -186,15 +199,15 @@
 
 ## Next planned step
 
-Wire the proven CSV discovery/profiling boundary and the sanitization engine
-into the authenticated dataset flow (dataset input storage now exists as
-PostgreSQL BYTEA behind DatasetInputSource — next: an
-upload/ingest path around the run
-lifecycle, plus remaining run
-REST endpoints and persistence of profile metadata), then the audit ledger. The audit ledger remains
-a later milestone: no CSV upload API, no profile persistence, no artifact
-storage, and no background processing is complete yet. The domain CSV sanitization pipeline
-and the run persistence/lifecycle foundation are implemented and tested.
+Continue wiring the authenticated dataset flow. Dataset input storage exists as
+PostgreSQL BYTEA behind `DatasetInputSource`, the upload path
+(`POST /api/datasets/{id}/input`) and the run REST endpoints (`POST /api/runs`,
+`GET /api/runs`, `GET /api/runs/{runId}`) are implemented, and sanitized output
+is stored per run behind `SanitizationArtifactStore`. Still not implemented:
+profile metadata persistence, an artifact download endpoint, and background
+processing. The audit ledger remains a later milestone. The domain CSV
+sanitization pipeline and the run persistence/lifecycle foundation are
+implemented and tested.
 
 ## Future phases
 

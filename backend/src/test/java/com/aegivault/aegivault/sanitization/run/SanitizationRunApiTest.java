@@ -423,6 +423,27 @@ class SanitizationRunApiTest {
     }
 
     @Test
+    void overlongPolicyLabelIsRejected400WithoutCreatingRun() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\n");
+
+        mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"datasetId\":\"" + datasetId
+                                + "\",\"policyName\":\"" + "p".repeat(300)
+                                + "\",\"policyVersion\":\"v1\","
+                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}"))
+                .andExpect(status().isBadRequest());
+
+        MvcResult listing = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(listing.getResponse().getContentAsString()).isEqualTo("[]");
+    }
+
+    @Test
     void unauthenticatedCreateIsRejected() throws Exception {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "guarded.csv");

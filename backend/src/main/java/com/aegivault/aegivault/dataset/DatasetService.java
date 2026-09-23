@@ -49,13 +49,16 @@ public class DatasetService {
     /**
      * Stores (or replaces) the CSV input of an owned dataset. Delegates to
      * the input storage boundary, which enforces ownership and the shared
-     * 10 MiB bound; this method holds no byte logic of its own.
+     * 10 MiB bound; this method holds no byte logic and no transaction of
+     * its own — deliberately, because a caller-supplied stream is
+     * client-paced and a transaction held across that read would pin a
+     * pooled connection for its whole duration. The storage boundary wraps
+     * only its own check-and-write work in short transactions.
      *
      * @throws DatasetNotFoundException when the dataset is missing or
      *         belongs to another owner
      * @throws DatasetInputTooLargeException when the input exceeds 10 MiB
      */
-    @Transactional
     public void storeInput(String ownerSubject, UUID id, InputStream input) {
         inputs.storeInput(ownerSubject, id, input);
     }

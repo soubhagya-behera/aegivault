@@ -33,14 +33,21 @@ import java.util.UUID;
  * </pre>
  *
  * @param datasetId dataset to sanitize, never null
- * @param policyName policy label frozen into the run, never blank
- * @param policyVersion version label frozen into the run, never blank
- * @param rules explicit rules, never null, never empty, no null entries
+ * @param policyName policy label frozen into the run, never blank, at most
+ *        255 characters (the same bound the dataset name uses; a label is
+ *        stored on the run row and echoed in every run view, so it is
+ *        bounded at the boundary instead of being trusted to stay small)
+ * @param policyVersion version label frozen into the run, never blank, at
+ *        most 255 characters, same reasoning as {@code policyName}
+ * @param rules explicit rules, never null, never empty, no null entries; the
+ *        list is implicitly bounded — two rules for one {@link PiiType} are
+ *        rejected by {@link TransformationPlan#of(List)}, so a longer list
+ *        always fails validation
  */
 public record CreateRunRequest(
         @NotNull UUID datasetId,
-        @NotBlank String policyName,
-        @NotBlank String policyVersion,
+        @NotBlank @Size(max = 255) String policyName,
+        @NotBlank @Size(max = 255) String policyVersion,
         @NotNull @Size(min = 1) List<@NotNull TransformationRule> rules) {
 
     public CreateRunRequest {

@@ -105,6 +105,23 @@ class CreateRunRequestTest {
     }
 
     @Test
+    void overlongPolicyLabelsAreRejected() {
+        String tooLong = "p".repeat(256);
+        List<TransformationRule> rules =
+                List.of(new TransformationRule(PiiType.EMAIL, TransformationStrategy.REDACT));
+        CreateRunRequest longName = new CreateRunRequest(UUID.randomUUID(), tooLong, "v1", rules);
+        CreateRunRequest longVersion = new CreateRunRequest(UUID.randomUUID(), "default", tooLong, rules);
+
+        assertThat(VALIDATOR.validate(longName)).extracting(v -> v.getPropertyPath().toString())
+                .containsExactly("policyName");
+        assertThat(VALIDATOR.validate(longVersion)).extracting(v -> v.getPropertyPath().toString())
+                .containsExactly("policyVersion");
+        assertThat(VALIDATOR.validate(
+                        new CreateRunRequest(UUID.randomUUID(), "p".repeat(255), "v".repeat(255), rules)))
+                .isEmpty();
+    }
+
+    @Test
     void emptyRulesAreRejected() {
         CreateRunRequest request =
                 new CreateRunRequest(UUID.randomUUID(), "default", "v1", List.of());

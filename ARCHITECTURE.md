@@ -266,15 +266,13 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   `TransformationPlan`, owner from JWT, straight into `executeStoredCsv`;
   201 with `Location` plus the persisted view whether COMPLETED or FAILED,
   identical 404 foreign-or-missing dataset/input, default 400 validation,
-  401 unauthenticated; no transaction around streaming, no bytes back). The future creation payload (`CreateRunRequest`:
-  dataset id, policy labels, explicit rules reusing `TransformationRule`
-  with no defaults filled) is validated but has no endpoint yet. Datasets
-  persist metadata only — no CSV bytes exist in any table, file, or object
-  store — so the executor still takes caller-supplied streams; the
-  `DatasetInputSource` seam (owner in, fresh caller-owned stream out, no
-  production implementation yet) names exactly what a future input-storage
-  milestone must provide before `POST /api/runs` can execute against a
-  stored dataset. That milestone is now implemented as PostgreSQL BYTEA
+  401 unauthenticated; no transaction around streaming, no bytes back). The creation payload (`CreateRunRequest`:
+  dataset id, policy labels bounded at 255 characters like the dataset name
+  — a label is stored on the run row and echoed in every run view — and
+  explicit rules reusing `TransformationRule` with no defaults filled,
+  implicitly bounded because two rules for one `PiiType` are rejected) is
+  validated before any domain work runs. Stored input is implemented as
+  PostgreSQL BYTEA
   (ADR-013): one `dataset_inputs` row per dataset (primary-key dataset id,
   denormalized owner, `content BYTEA`, 10 MiB schema CHECK mirroring
   `CsvLimits`, `ON DELETE CASCADE` because bytes are dataset content, not
@@ -287,7 +285,12 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   servlet request straight into storage — never pre-buffered by a message
   converter — owner from JWT, replace semantics, 200 with dataset id only;
   identical 404 foreign-or-missing, 401 unauthenticated, 400 malformed UUID,
-  413 over the shared 10 MiB bound). Execution reads stored bytes
+  413 over the shared 10 MiB bound). The bounded read itself runs outside
+  any database transaction: the owner check comes first (so a missing or
+  foreign dataset is rejected without its body being read) and the upsert
+  last, each in its own short transaction, so a slow client cannot pin a
+  pooled connection and an open transaction for the length of its upload.
+  Execution reads stored bytes
   through the seam (`executeStoredCsv`: open input first so missing/foreign
   input fails before any run row exists, then the unchanged
   create-start-sanitize-complete/fail flow on caller-provided output).

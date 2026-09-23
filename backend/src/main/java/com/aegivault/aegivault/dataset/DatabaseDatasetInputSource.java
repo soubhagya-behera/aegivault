@@ -11,6 +11,7 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * PostgreSQL-BYTEA {@link DatasetInputSource}: stores and serves one
@@ -27,6 +28,17 @@ import org.springframework.transaction.annotation.Transactional;
  * independent copy of the stored bytes: callers can read and close freely,
  * and closing never affects the caller (nothing caller-owned is ever
  * closed here) or the persistence context.
+ *
+ * <p>Transaction boundary: the bounded byte read happens outside any
+ * database transaction. Only the ownership check and the upsert run in
+ * (short) transactions. The reason is availability, not style — the
+ * caller's stream is client-paced, so a read performed inside a
+ * transaction would pin a pooled connection and an open transaction for as
+ * long as the client takes (indefinitely, for a deliberately slow client),
+ * and a handful of such uploads would starve every other request. The
+ * ownership check stays ahead of the read so a missing or foreign dataset
+ * is still rejected without reading its body, and it is repeated inside the
+ * write transaction so check and write commit together.
  */
 @Service
 @RequiredArgsConstructor
@@ -35,6 +47,8 @@ public class DatabaseDatasetInputSource implements DatasetInputSource {
     private final DatasetRepository datasets;
 
     private final DatasetInputRepository inputs;
+
+    private final TransactionTemplate transactions;
 
     /**
      * Stores (or replaces) the input bytes of an owned dataset.
@@ -47,19 +61,13 @@ public class DatabaseDatasetInputSource implements DatasetInputSource {
      * @throws DatasetInputTooLargeException when the input exceeds 10 MiB;
      *         nothing is persisted in that case
      */
-    @Transactional
     public void storeInput(String ownerSubject, UUID datasetId, InputStream input) {
         String owner = requireOwner(ownerSubject);
         Objects.requireNonNull(datasetId, "datasetId must not be null");
         Objects.requireNonNull(input, "input must not be null");
-        Dataset dataset = datasets
-                .findByIdAndOwnerSubject(datasetId, owner)
-                .orElseThrow(DatasetNotFoundException::new);
+        requireOwnedDataset(owner, datasetId);
         byte[] content = readBounded(input);
-        inputs.findByDatasetIdAndOwnerSubject(datasetId, owner)
-                .ifPresentOrElse(
-                        existing -> existing.replaceContent(content),
-                        () -> inputs.save(new DatasetInput(dataset.getId(), owner, content)));
+        transactions.executeWithoutResult(status -> storeContent(owner, datasetId, content));
     }
 
     @Override
@@ -71,6 +79,27 @@ public class DatabaseDatasetInputSource implements DatasetInputSource {
                 .findByDatasetIdAndOwnerSubject(datasetId, owner)
                 .orElseThrow(DatasetNotFoundException::new);
         return new ByteArrayInputStream(stored.contentCopy());
+    }
+
+    /**
+     * Owner-scoped existence check; a missing dataset and another owner's
+     * dataset behave identically. Runs in its own short transaction, before
+     * the caller's body is read.
+     */
+    private void requireOwnedDataset(String owner, UUID datasetId) {
+        datasets.findByIdAndOwnerSubject(datasetId, owner).orElseThrow(DatasetNotFoundException::new);
+    }
+
+    /**
+     * One transaction around the check, the upsert, and the commit, so the
+     * stored bytes always belong to an owned dataset at commit time.
+     */
+    private void storeContent(String owner, UUID datasetId, byte[] content) {
+        requireOwnedDataset(owner, datasetId);
+        inputs.findByDatasetIdAndOwnerSubject(datasetId, owner)
+                .ifPresentOrElse(
+                        existing -> existing.replaceContent(content),
+                        () -> inputs.save(new DatasetInput(datasetId, owner, content)));
     }
 
     private static byte[] readBounded(InputStream input) {
