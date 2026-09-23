@@ -1,6 +1,7 @@
 package com.aegivault.aegivault.sanitization.policy;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -9,6 +10,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.aegivault.aegivault.auth.RegisterRequest;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
@@ -43,6 +46,9 @@ class SanitizationPolicyApiTest {
 
     @Autowired
     private JwtDecoder jwtDecoder;
+
+    @PersistenceContext
+    private EntityManager entities;
 
     private static String email() {
         return "policy-" + UUID.randomUUID() + "@example.com";
@@ -84,6 +90,21 @@ class SanitizationPolicyApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andReturn();
+    }
+
+    private MvcResult deletePolicy(String token, String policyId) throws Exception {
+        return mvc.perform(delete("/api/policies/" + policyId)
+                        .header("Authorization", "Bearer " + token))
+                .andReturn();
+    }
+
+    private long ruleRowCount(String policyId) {
+        return ((Number) entities
+                        .createNativeQuery(
+                                "SELECT count(*) FROM sanitization_policy_rules WHERE policy_id = '"
+                                        + policyId + "'")
+                        .getSingleResult())
+                .longValue();
     }
 
     private JsonNode getPolicy(String token, String policyId) throws Exception {
@@ -571,5 +592,69 @@ class SanitizationPolicyApiTest {
         assertThat(created.get("csv")).isNull();
         assertThat(created.get("content")).isNull();
         assertThat(created.get("values")).isNull();
+    }
+
+    @Test
+    void ownerDeletesPolicyWith204AndItsRulesDisappear() throws Exception {
+        String token = register(email());
+        String id = create(token,
+                "{\"name\":\"doomed\",\"version\":\"v1\","
+                        + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"},"
+                        + "{\"piiType\":\"PHONE\",\"strategy\":\"MASK\"}]}")
+                .get("id")
+                .asText();
+        assertThat(ruleRowCount(id)).isEqualTo(2L);
+
+        MvcResult result = deletePolicy(token, id);
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(204);
+        assertThat(result.getResponse().getContentAsString()).isEmpty();
+        mvc.perform(get("/api/policies/" + id).header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Policy not found."));
+        assertThat(listPolicies(token)).isEmpty();
+        assertThat(ruleRowCount(id)).isZero();
+    }
+
+    @Test
+    void foreignPolicyIdReturnsTheSame404AsAMissingPolicyIdOnDelete() throws Exception {
+        String owner = register(email());
+        String stranger = register(email());
+        String mine = create(owner, oneRule("mine", "v1")).get("id").asText();
+
+        MvcResult foreign = deletePolicy(stranger, mine);
+        MvcResult missing = deletePolicy(stranger, UUID.randomUUID().toString());
+
+        assertThat(foreign.getResponse().getStatus()).isEqualTo(404);
+        String foreignBody = foreign.getResponse().getContentAsString();
+        assertThat(foreignBody).isEqualTo("{\"message\":\"Policy not found.\"}");
+        assertThat(foreignBody).isEqualTo(missing.getResponse().getContentAsString());
+        assertThat(listPolicies(owner)).hasSize(1);
+        assertThat(ruleRowCount(mine)).isEqualTo(1L);
+    }
+
+    @Test
+    void unauthenticatedDeleteIsRejected401() throws Exception {
+        String token = register(email());
+        String id = create(token, oneRule("mine", "v1")).get("id").asText();
+
+        mvc.perform(delete("/api/policies/" + id)).andExpect(status().isUnauthorized());
+        mvc.perform(delete("/api/policies/" + id).header("Authorization", "Bearer not-a-token"))
+                .andExpect(status().isUnauthorized());
+
+        assertThat(listPolicies(token)).hasSize(1);
+    }
+
+    @Test
+    void malformedPolicyUuidReturns400OnDelete() throws Exception {
+        String token = register(email());
+
+        MvcResult result = mvc.perform(delete("/api/policies/not-a-uuid")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        assertThat(result.getResponse().getContentAsString())
+                .isEqualTo("{\"message\":\"Invalid policy id.\"}");
     }
 }

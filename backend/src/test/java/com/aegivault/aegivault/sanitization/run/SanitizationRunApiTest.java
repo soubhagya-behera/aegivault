@@ -2,6 +2,7 @@ package com.aegivault.aegivault.sanitization.run;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -389,6 +390,56 @@ class SanitizationRunApiTest {
         assertThat(secondBody.get("policyVersion").asText()).isEqualTo("v2");
         assertThat(secondBody.get("policySnapshot").asText()).contains("\"EMAIL\":\"REDACT\"");
         assertThat(secondBody.get("policySnapshot").asText()).isNotEqualTo(originalSnapshot);
+    }
+
+    @Test
+    void existingRunAndArtifactSurvivePolicyDeletion() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\n");
+        String policyId = registerPolicy(token, "doomed", "v1");
+
+        MvcResult created = postRun(token, runRequest(datasetId, policyId));
+        assertThat(created.getResponse().getStatus()).isEqualTo(201);
+        JsonNode runBody = objectMapper.readTree(created.getResponse().getContentAsString());
+        String runId = runBody.get("id").asText();
+        String snapshot = runBody.get("policySnapshot").asText();
+
+        byte[] before = mvc.perform(get("/api/runs/" + runId + "/artifact")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsByteArray();
+
+        mvc.perform(delete("/api/policies/" + policyId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isNoContent());
+
+        // The run is unchanged: same name, version, and snapshot.
+        String body = mvc.perform(get("/api/runs/" + runId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(body).get("policyName").asText()).isEqualTo("doomed");
+        assertThat(objectMapper.readTree(body).get("policyVersion").asText()).isEqualTo("v1");
+        assertThat(objectMapper.readTree(body).get("policySnapshot").asText()).isEqualTo(snapshot);
+
+        // The artifact still downloads with identical bytes.
+        MvcResult downloaded = mvc.perform(get("/api/runs/" + runId + "/artifact")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(downloaded.getResponse().getContentAsByteArray()).isEqualTo(before);
+
+        // The deleted policy can no longer back a new run.
+        mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(datasetId, policyId)))
+                .andExpect(status().isNotFound());
     }
 
     @Test

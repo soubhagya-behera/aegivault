@@ -116,6 +116,28 @@ public class SanitizationPolicyService {
         return PolicyResponse.from(policies.saveAndFlush(policy));
     }
 
+    /**
+     * Deletes one caller's policy and its rules in one transaction. Rule rows
+     * disappear with their policy (cascade plus orphan removal); runs created
+     * earlier are untouched because they hold copied snapshot columns, not a
+     * reference to the policy.
+     *
+     * @param ownerSubject calling owner, never blank (the JWT subject only);
+     *        must own the policy
+     * @param policyId policy to delete, never null
+     * @throws PolicyNotFoundException when the policy is missing or belongs
+     *         to another owner (identical either way)
+     */
+    @Transactional
+    public void delete(String ownerSubject, UUID policyId) {
+        String owner = requireOwner(ownerSubject);
+        Objects.requireNonNull(policyId, "policyId must not be null");
+        SanitizationPolicy policy = policies
+                .findByIdAndOwnerSubject(policyId, owner)
+                .orElseThrow(PolicyNotFoundException::new);
+        policies.delete(policy);
+    }
+
     private static String requireOwner(String ownerSubject) {
         if (ownerSubject == null || ownerSubject.isBlank()) {
             throw new IllegalArgumentException("ownerSubject must not be blank");

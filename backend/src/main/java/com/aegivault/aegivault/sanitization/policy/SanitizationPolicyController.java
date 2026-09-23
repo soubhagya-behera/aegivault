@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -25,8 +26,9 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * the verified JWT subject; the client can never supply or override it
  * (an attempted {@code ownerSubject} property is not bound). This controller
  * is thin by design: it validates and delegates, and it owns no
- * persistence, ownership, or rule logic. There is deliberately no delete
- * endpoint.
+ * persistence, ownership, or rule logic. Deletion removes one owned policy
+ * and its rules only: runs created earlier hold copied snapshots, not a
+ * reference to the policy, so they are never touched by a delete.
  */
 @RestController
 @RequestMapping("/api/policies")
@@ -79,6 +81,18 @@ public class SanitizationPolicyController {
                 request.version(),
                 request.description(),
                 request.rules());
+    }
+
+    /**
+     * Deletes one caller's policy and its rules: 204 with no body. Foreign
+     * and missing ids are identical 404s. Runs created earlier keep the
+     * snapshots they froze at creation — and their artifacts stay
+     * downloadable — because neither references the policy row.
+     */
+    @DeleteMapping("/{policyId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID policyId) {
+        policyService.delete(jwt.getSubject(), policyId);
     }
 
     @ExceptionHandler(PolicyNotFoundException.class)

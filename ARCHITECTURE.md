@@ -341,12 +341,14 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   `(policy_id, pii_type)` plus enum CHECKs make "one strategy per PII type
   per policy" a database guarantee as well as an aggregate one, while labels
   are bounded (255/255/1024) at the request, the aggregate, and the schema.
-  The four endpoints (`POST /api/policies` returning 201 + `Location:
+  The five endpoints (`POST /api/policies` returning 201 + `Location:
   /api/policies/{id}`, `GET /api/policies` listing only the caller's rows
   newest-first, `GET /api/policies/{policyId}` with identical 404 for
-  foreign and missing ids, and `PUT /api/policies/{policyId}` replacing one
+  foreign and missing ids, `PUT /api/policies/{policyId}` replacing one
   owned policy's labels and entire rule set in place — same id, same owner,
-  no new row, `updatedAt` advanced, same response shape as the GET) behave
+  no new row, `updatedAt` advanced, same response shape as the GET — and
+  `DELETE /api/policies/{policyId}` removing one owned policy and its rules
+  with 204 and no body) behave
   like the dataset and run APIs: owner from
   the JWT subject only, same error-body shape. The response carries `id`,
   labels, ordered rules (`{"piiType": "...", "strategy": "..."}`), and
@@ -355,9 +357,10 @@ failRun     -> FAILED (error code/stage/message + completed_at)
    consumes a persisted policy: `POST /api/runs` takes `{"datasetId":
    "...", "policyId": "..."}`, requires the JWT subject to own both
    resources, and freezes the policy's name/version/rules into the run's
-  immutable snapshot; there is no inline-rules path and no policy
-  delete endpoint. A policy update never touches existing runs: runs hold
-  copied snapshot columns, not a foreign key to the mutable policy. Beyond the
+  immutable snapshot; there is no inline-rules path. A policy update or
+  delete never touches existing runs: runs hold
+  copied snapshot columns, not a foreign key to the mutable policy, so a
+  deleted policy leaves every run readable and every artifact downloadable. Beyond the
   endpoints described above (datasets, runs, artifact download, and
   reusable policies), no jobs, Spring Batch, Redis, background workers, or
   audit ledger was added.

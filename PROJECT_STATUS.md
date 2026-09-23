@@ -83,8 +83,8 @@
   determinism, error safety, and CSV→profile integration.
 * Pure unit test totals: 479 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 5 run request), 0 failures, 0 errors, 0 skipped.
-* Repository total: 662 tests, 0 failures, 0 errors, 0 skipped — 479 pure unit
-  tests plus 183 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 667 tests, 0 failures, 0 errors, 0 skipped — 479 pure unit
+  tests plus 188 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Persistent sanitization policies (`sanitization.policy`, V6): owner-scoped
   reusable `SanitizationPolicy` aggregates with normalized
@@ -94,7 +94,10 @@
   `GET /api/policies/{policyId}` (identical 404 for foreign and missing
   ids), and `PUT /api/policies/{policyId}` (owner-only in-place replacement
   of labels and the full rule set: same id, `updatedAt` advanced, same
-  response shape; earlier runs keep their frozen snapshots). The rule vocabulary is exactly the existing PII types and
+  response shape; earlier runs keep their frozen snapshots), and
+  `DELETE /api/policies/{policyId}` (owner-only, 204 with no body; the
+  policy and its rules vanish while earlier runs and their artifacts stay
+  readable). The rule vocabulary is exactly the existing PII types and
   transformation strategies, `rules` are exposed as
   `{"piiType": "...", "strategy": "..."}` with no owner or persistence
   details, and nothing raw (PII, CSV) is stored. Run creation consumes a
