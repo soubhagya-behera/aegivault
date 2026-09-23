@@ -19,6 +19,7 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -95,9 +96,7 @@ public class SanitizationPolicy {
     private Instant updatedAt;
 
     /**
-     * Creates a policy in its final form: nothing about a stored policy
-     * changes after creation (there is no update path yet), so all state is
-     * set here.
+     * Creates a policy with its initial labels and rule set.
      *
      * @param ownerSubject calling owner, never blank (the JWT subject only)
      * @param name human label, never blank, at most 255 characters
@@ -129,6 +128,63 @@ public class SanitizationPolicy {
         for (Map.Entry<PiiType, TransformationStrategy> entry : ordered.entrySet()) {
             this.rules.add(new PolicyRule(this, entry.getKey(), entry.getValue()));
         }
+    }
+
+    /**
+     * Replaces this policy's labels and its entire rule set in place. The
+     * policy id and owner never change, and no new policy row is created —
+     * runs created earlier keep the snapshot they froze at creation and can
+     * never observe this change.
+     *
+     * <p>Every supplied value is validated before anything is mutated, so a
+     * rejected update leaves the aggregate exactly as it was; callers apply
+     * this inside one transaction, so the replacement is atomic.
+     *
+     * @param name human label, never blank, at most 255 characters
+     * @param version version label, never blank, at most 255 characters
+     * @param description optional free text, null or at most 1024 characters
+     * @param rules complete replacement rule set, never null, never empty,
+     *        no null entries, no duplicate PII types
+     * @throws IllegalArgumentException when a label is blank or too long, or
+     *         when the rule set is empty (duplicates and nulls are rejected
+     *         by {@link TransformationPlan#of(List)})
+     */
+    public void update(String name, String version, String description, List<TransformationRule> rules) {
+        String validName = requireText(name, "name", NAME_MAX);
+        String validVersion = requireText(version, "version", VERSION_MAX);
+        String validDescription = normalizeDescription(description);
+        Map<PiiType, TransformationStrategy> plan = TransformationPlan.of(rules).strategies();
+        if (plan.isEmpty()) {
+            throw new IllegalArgumentException("policy must cover at least one PII type");
+        }
+        Map<PiiType, TransformationStrategy> remaining =
+                new TreeMap<>(Comparator.comparing(PiiType::name));
+        remaining.putAll(plan);
+        // Update surviving rows in place and drop removed ones: clearing and
+        // re-adding in one persistence context would associate two objects
+        // with the same (policy_id, pii_type) key, so a strategy change stays
+        // an UPDATE and only genuinely new types are INSERTed.
+        Iterator<PolicyRule> existing = this.rules.iterator();
+        while (existing.hasNext()) {
+            PolicyRule rule = existing.next();
+            TransformationStrategy next = remaining.remove(rule.getPiiType());
+            if (next == null) {
+                existing.remove();
+            } else {
+                rule.setTransformationStrategy(next);
+            }
+        }
+        for (Map.Entry<PiiType, TransformationStrategy> entry : remaining.entrySet()) {
+            this.rules.add(new PolicyRule(this, entry.getKey(), entry.getValue()));
+        }
+        // The mapping carries no index column, so this in-memory sort changes
+        // no stored state: it only keeps the API order alphabetical, like
+        // construction does (a fresh read would order the same via @OrderBy).
+        this.rules.sort(Comparator.comparing(PolicyRule::getPiiType, Comparator.comparing(PiiType::name)));
+        this.name = validName;
+        this.version = validVersion;
+        this.description = validDescription;
+        this.updatedAt = Instant.now();
     }
 
     private static String requireText(String value, String field, int max) {

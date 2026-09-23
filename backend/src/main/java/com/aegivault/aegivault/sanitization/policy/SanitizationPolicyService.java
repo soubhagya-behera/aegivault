@@ -79,6 +79,43 @@ public class SanitizationPolicyService {
                 .orElseThrow(PolicyNotFoundException::new));
     }
 
+    /**
+     * Replaces one caller's policy — labels and the entire rule set — in
+     * place, in one transaction. The policy id and owner never change, no
+     * new row is created, and runs created earlier keep the snapshots they
+     * froze at creation.
+     *
+     * @param ownerSubject calling owner, never blank (the JWT subject only);
+     *        must own the policy
+     * @param policyId policy to replace, never null
+     * @param name human label, never blank, at most 255 characters
+     * @param version version label, never blank, at most 255 characters
+     * @param description optional free text, null or at most 1024 characters
+     * @param rules complete replacement rule set, never null, never empty,
+     *        no duplicate PII types
+     * @return the updated view
+     * @throws PolicyNotFoundException when the policy is missing or belongs
+     *         to another owner (identical either way)
+     * @throws IllegalArgumentException when the aggregate rejects its input;
+     *         the transaction rolls back, so the stored policy is untouched
+     */
+    @Transactional
+    public PolicyResponse update(
+            String ownerSubject,
+            UUID policyId,
+            String name,
+            String version,
+            String description,
+            List<TransformationRule> rules) {
+        String owner = requireOwner(ownerSubject);
+        Objects.requireNonNull(policyId, "policyId must not be null");
+        SanitizationPolicy policy = policies
+                .findByIdAndOwnerSubject(policyId, owner)
+                .orElseThrow(PolicyNotFoundException::new);
+        policy.update(name, version, description, rules);
+        return PolicyResponse.from(policies.saveAndFlush(policy));
+    }
+
     private static String requireOwner(String ownerSubject) {
         if (ownerSubject == null || ownerSubject.isBlank()) {
             throw new IllegalArgumentException("ownerSubject must not be blank");

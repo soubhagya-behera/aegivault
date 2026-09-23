@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -25,6 +26,7 @@ import org.springframework.http.MediaType;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -345,6 +347,48 @@ class SanitizationRunApiTest {
         assertThat(snapshot).contains("\"PHONE\":\"SYNTHETIC_PHONE\"");
         assertThat(snapshot).contains("\"PERSON_NAME\":\"REDACT\"");
         assertThat(body).doesNotContain("ownerSubject", "bob@example.com");
+    }
+
+    @Test
+    void existingRunSnapshotRemainsUnchangedAfterPolicyUpdate() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\n");
+        String policyId = registerPolicy(token, "original", "v1");
+
+        MvcResult first = postRun(token, runRequest(datasetId, policyId));
+        assertThat(first.getResponse().getStatus()).isEqualTo(201);
+        JsonNode firstBody = objectMapper.readTree(first.getResponse().getContentAsString());
+        String runId = firstBody.get("id").asText();
+        String originalSnapshot = firstBody.get("policySnapshot").asText();
+
+        // Replace every label and rule of the policy.
+        mvc.perform(put("/api/policies/" + policyId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"changed\",\"version\":\"v2\","
+                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}"))
+                .andExpect(status().isOk());
+
+        // The earlier run still carries exactly what it froze at creation.
+        String body = mvc.perform(get("/api/runs/" + runId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(objectMapper.readTree(body).get("policyName").asText()).isEqualTo("original");
+        assertThat(objectMapper.readTree(body).get("policyVersion").asText()).isEqualTo("v1");
+        assertThat(objectMapper.readTree(body).get("policySnapshot").asText())
+                .isEqualTo(originalSnapshot);
+
+        // A run created after the update freezes the new policy instead.
+        MvcResult second = postRun(token, runRequest(datasetId, policyId));
+        assertThat(second.getResponse().getStatus()).isEqualTo(201);
+        JsonNode secondBody = objectMapper.readTree(second.getResponse().getContentAsString());
+        assertThat(secondBody.get("policyVersion").asText()).isEqualTo("v2");
+        assertThat(secondBody.get("policySnapshot").asText()).contains("\"EMAIL\":\"REDACT\"");
+        assertThat(secondBody.get("policySnapshot").asText()).isNotEqualTo(originalSnapshot);
     }
 
     @Test

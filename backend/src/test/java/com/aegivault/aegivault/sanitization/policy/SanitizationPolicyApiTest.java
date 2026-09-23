@@ -3,11 +3,14 @@ package com.aegivault.aegivault.sanitization.policy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.aegivault.aegivault.auth.RegisterRequest;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -73,6 +76,22 @@ class SanitizationPolicyApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andReturn();
+    }
+
+    private MvcResult putPolicy(String token, String policyId, String body) throws Exception {
+        return mvc.perform(put("/api/policies/" + policyId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andReturn();
+    }
+
+    private JsonNode getPolicy(String token, String policyId) throws Exception {
+        MvcResult result = mvc.perform(get("/api/policies/" + policyId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString());
     }
 
     private JsonNode create(String token, String body) throws Exception {
@@ -326,6 +345,202 @@ class SanitizationPolicyApiTest {
         assertThat(listed.get(0).get("name").asText()).hasSize(255);
         assertThat(listed.get(0).get("version").asText()).hasSize(255);
         assertThat(listed.get(0).get("description").asText()).hasSize(1024);
+    }
+
+    @Test
+    void ownerUpdatesPolicyInPlaceWithSameId() throws Exception {
+        String token = register(email());
+        JsonNode created = create(token,
+                "{\"name\":\"original\",\"version\":\"v1\",\"description\":\"before\","
+                        + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"},"
+                        + "{\"piiType\":\"PHONE\",\"strategy\":\"MASK\"}]}");
+        String id = created.get("id").asText();
+        Thread.sleep(20L);
+
+        // The PHONE rule is dropped and the EMAIL strategy changes on the
+        // same primary key: this exercises rule-row delete plus re-insert.
+        // A smuggled ownerSubject is ignored, like on creation.
+        MvcResult result = putPolicy(token, id,
+                "{\"name\":\"updated\",\"version\":\"v2\",\"description\":\"after\","
+                        + "\"ownerSubject\":\"attacker\","
+                        + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"MASK\"}]}");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        JsonNode body = objectMapper.readTree(result.getResponse().getContentAsString());
+        assertThat(body.get("id").asText()).isEqualTo(id);
+        assertThat(body.get("name").asText()).isEqualTo("updated");
+        assertThat(body.get("version").asText()).isEqualTo("v2");
+        assertThat(body.get("description").asText()).isEqualTo("after");
+        assertThat(body.get("rules")).hasSize(1);
+        assertThat(body.get("rules").get(0).get("piiType").asText()).isEqualTo("EMAIL");
+        assertThat(body.get("rules").get(0).get("strategy").asText()).isEqualTo("MASK");
+        assertThat(body.get("createdAt").asText()).isNotBlank();
+        // createdAt survives the update: compared at millisecond precision
+        // because PostgreSQL truncates sub-microsecond nanos on the round trip.
+        assertThat(Instant.parse(body.get("createdAt").asText())
+                        .truncatedTo(ChronoUnit.MILLIS))
+                .isEqualTo(Instant.parse(created.get("createdAt").asText())
+                        .truncatedTo(ChronoUnit.MILLIS));
+        assertThat(Instant.parse(body.get("updatedAt").asText()))
+                .isAfter(Instant.parse(created.get("updatedAt").asText()));
+        assertThat(body.get("ownerSubject")).isNull();
+        assertThat(result.getResponse().getContentAsString()).doesNotContain("\"ownerSubject\"");
+
+        JsonNode stored = getPolicy(token, id);
+        assertThat(stored.get("name").asText()).isEqualTo("updated");
+        assertThat(stored.get("rules")).hasSize(1);
+        assertThat(listPolicies(token)).hasSize(1);
+    }
+
+    @Test
+    void foreignPolicyIdReturnsTheSame404AsAMissingPolicyIdOnUpdate() throws Exception {
+        String owner = register(email());
+        String stranger = register(email());
+        String mine = create(owner, oneRule("mine", "v1")).get("id").asText();
+        String update = oneRule("changed", "v2");
+
+        MvcResult foreign = putPolicy(stranger, mine, update);
+        assertThat(foreign.getResponse().getStatus()).isEqualTo(404);
+        String foreignBody = foreign.getResponse().getContentAsString();
+        String missingBody = putPolicy(stranger, UUID.randomUUID().toString(), update)
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(foreignBody).isEqualTo("{\"message\":\"Policy not found.\"}");
+        assertThat(foreignBody).isEqualTo(missingBody);
+        JsonNode untouched = getPolicy(owner, mine);
+        assertThat(untouched.get("name").asText()).isEqualTo("mine");
+        assertThat(untouched.get("version").asText()).isEqualTo("v1");
+    }
+
+    @Test
+    void unauthenticatedUpdateIsRejected401() throws Exception {
+        String token = register(email());
+        String id = create(token, oneRule("mine", "v1")).get("id").asText();
+
+        mvc.perform(put("/api/policies/" + id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oneRule("x", "v2")))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(put("/api/policies/" + id)
+                        .header("Authorization", "Bearer not-a-token")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oneRule("x", "v2")))
+                .andExpect(status().isUnauthorized());
+
+        assertThat(getPolicy(token, id).get("name").asText()).isEqualTo("mine");
+    }
+
+    @Test
+    void malformedPolicyUuidReturns400OnUpdate() throws Exception {
+        String token = register(email());
+
+        MvcResult result = mvc.perform(put("/api/policies/not-a-uuid")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(oneRule("x", "v2")))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        assertThat(result.getResponse().getContentAsString())
+                .isEqualTo("{\"message\":\"Invalid policy id.\"}");
+    }
+
+    @Test
+    void duplicatePiiTypeReturns400AndLeavesOriginalUnchanged() throws Exception {
+        String token = register(email());
+        String id = create(token, oneRule("mine", "v1")).get("id").asText();
+
+        MvcResult result = putPolicy(token, id,
+                "{\"name\":\"changed\",\"version\":\"v2\",\"rules\":"
+                        + "[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"},"
+                        + "{\"piiType\":\"EMAIL\",\"strategy\":\"MASK\"}]}");
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(400);
+        assertThat(result.getResponse().getContentAsString())
+                .isEqualTo("{\"message\":\"Invalid policy request.\"}");
+        JsonNode stored = getPolicy(token, id);
+        assertThat(stored.get("name").asText()).isEqualTo("mine");
+        assertThat(stored.get("version").asText()).isEqualTo("v1");
+        assertThat(stored.get("rules")).hasSize(1);
+        assertThat(stored.get("rules").get(0).get("strategy").asText()).isEqualTo("SYNTHETIC_EMAIL");
+    }
+
+    @Test
+    void emptyOrMissingRulesReturn400AndLeaveOriginalUnchanged() throws Exception {
+        String token = register(email());
+        String id = create(token, oneRule("mine", "v1")).get("id").asText();
+
+        assertThat(putPolicy(token, id, "{\"name\":\"n\",\"version\":\"v2\",\"rules\":[]}")
+                        .getResponse()
+                        .getStatus())
+                .isEqualTo(400);
+        assertThat(putPolicy(token, id, "{\"name\":\"n\",\"version\":\"v2\"}")
+                        .getResponse()
+                        .getStatus())
+                .isEqualTo(400);
+
+        JsonNode stored = getPolicy(token, id);
+        assertThat(stored.get("name").asText()).isEqualTo("mine");
+        assertThat(stored.get("rules")).hasSize(1);
+    }
+
+    @Test
+    void invalidEnumValuesReturn400AndLeaveOriginalUnchanged() throws Exception {
+        String token = register(email());
+        String id = create(token, oneRule("mine", "v1")).get("id").asText();
+
+        assertThat(putPolicy(token,
+                                id,
+                                "{\"name\":\"n\",\"version\":\"v2\",\"rules\":"
+                                        + "[{\"piiType\":\"NOT_A_TYPE\",\"strategy\":\"REDACT\"}]}")
+                        .getResponse()
+                        .getStatus())
+                .isEqualTo(400);
+        assertThat(putPolicy(token,
+                                id,
+                                "{\"name\":\"n\",\"version\":\"v2\",\"rules\":"
+                                        + "[{\"piiType\":\"EMAIL\",\"strategy\":\"SHRED\"}]}")
+                        .getResponse()
+                        .getStatus())
+                .isEqualTo(400);
+
+        assertThat(getPolicy(token, id).get("rules")).hasSize(1);
+    }
+
+    @Test
+    void labelLengthBoundariesAreEnforcedOnUpdate() throws Exception {
+        String token = register(email());
+        String id = create(token, oneRule("mine", "v1")).get("id").asText();
+
+        MvcResult accepted = putPolicy(token, id,
+                "{\"name\":\"" + "n".repeat(255) + "\",\"version\":\"" + "v".repeat(255)
+                        + "\",\"description\":\"" + "d".repeat(1024)
+                        + "\",\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}");
+        assertThat(accepted.getResponse().getStatus()).isEqualTo(200);
+
+        assertThat(putPolicy(token, id, oneRule("n".repeat(256), "v2"))
+                        .getResponse()
+                        .getStatus())
+                .isEqualTo(400);
+        assertThat(putPolicy(token, id, oneRule("n", "v".repeat(256)))
+                        .getResponse()
+                        .getStatus())
+                .isEqualTo(400);
+        assertThat(putPolicy(
+                                token,
+                                id,
+                                "{\"name\":\"n\",\"version\":\"v2\",\"description\":\""
+                                        + "d".repeat(1025)
+                                        + "\",\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}")
+                        .getResponse()
+                        .getStatus())
+                .isEqualTo(400);
+
+        JsonNode stored = getPolicy(token, id);
+        assertThat(stored.get("name").asText()).hasSize(255);
+        assertThat(stored.get("version").asText()).hasSize(255);
+        assertThat(stored.get("description").asText()).hasSize(1024);
     }
 
     @Test
