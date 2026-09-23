@@ -34,34 +34,40 @@ public class AuditLedgerVerificationService {
      * Replays the whole chain oldest-first.
      *
      * @return {@code valid} when the ledger is empty or every entry checks
-     *         out, otherwise the first broken entry and its cause
+     *         out, otherwise the first broken entry and its cause; either
+     *         way the count of replayed entries travels with the verdict so
+     *         callers never report a stale count
      */
     @Transactional(readOnly = true)
     public AuditVerificationResult verify() {
         List<AuditLedgerEntry> chain = entries.findAllByOrderBySequenceNumberAsc();
         if (chain.isEmpty()) {
-            return AuditVerificationResult.ok();
+            return AuditVerificationResult.ok(0L);
         }
         AuditLedgerEntry previous = null;
         for (AuditLedgerEntry entry : chain) {
             if (previous == null && entry.getSequenceNumber() != 1L) {
-                return AuditVerificationResult.broken("FIRST_SEQUENCE_MUST_BE_ONE", entry.getSequenceNumber());
+                return AuditVerificationResult.broken(
+                        "FIRST_SEQUENCE_MUST_BE_ONE", entry.getSequenceNumber(), chain.size());
             }
             if (previous != null && entry.getSequenceNumber() != previous.getSequenceNumber() + 1L) {
-                return AuditVerificationResult.broken("SEQUENCE_GAP", entry.getSequenceNumber());
+                return AuditVerificationResult.broken(
+                        "SEQUENCE_GAP", entry.getSequenceNumber(), chain.size());
             }
             String recomputed = AuditEntryHasher.hash(
                     entry.getSequenceNumber(), entry.getEventType(), entry.getActorSubject(),
                     entry.getResourceType(), entry.getResourceId(), entry.getEventData(),
                     entry.getPreviousHash());
             if (!recomputed.equals(entry.getEntryHash())) {
-                return AuditVerificationResult.broken("ENTRY_HASH_MISMATCH", entry.getSequenceNumber());
+                return AuditVerificationResult.broken(
+                        "ENTRY_HASH_MISMATCH", entry.getSequenceNumber(), chain.size());
             }
             if (previous != null && !entry.getPreviousHash().equals(previous.getEntryHash())) {
-                return AuditVerificationResult.broken("PREVIOUS_HASH_LINK_BROKEN", entry.getSequenceNumber());
+                return AuditVerificationResult.broken(
+                        "PREVIOUS_HASH_LINK_BROKEN", entry.getSequenceNumber(), chain.size());
             }
             previous = entry;
         }
-        return AuditVerificationResult.ok();
+        return AuditVerificationResult.ok(chain.size());
     }
 }

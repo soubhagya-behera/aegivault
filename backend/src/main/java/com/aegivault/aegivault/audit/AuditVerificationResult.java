@@ -11,14 +11,18 @@ package com.aegivault.aegivault.audit;
  * @param failureReason machine-readable cause when invalid, null when valid
  * @param failedSequenceNumber 1-based sequence of the first broken entry,
  *        null when valid
+ * @param entriesChecked how many entries the replay examined — the whole
+ *        chain as read in one pass, so the count always matches the verdict
  */
-public record AuditVerificationResult(boolean valid, String failureReason, Long failedSequenceNumber) {
+public record AuditVerificationResult(
+        boolean valid, String failureReason, Long failedSequenceNumber, long entriesChecked) {
 
-    static AuditVerificationResult ok() {
-        return new AuditVerificationResult(true, null, null);
+    static AuditVerificationResult ok(long entriesChecked) {
+        return new AuditVerificationResult(true, null, null, entriesChecked);
     }
 
-    static AuditVerificationResult broken(String failureReason, long failedSequenceNumber) {
-        return new AuditVerificationResult(false, failureReason, failedSequenceNumber);
+    static AuditVerificationResult broken(
+            String failureReason, long failedSequenceNumber, long entriesChecked) {
+        return new AuditVerificationResult(false, failureReason, failedSequenceNumber, entriesChecked);
     }
 }

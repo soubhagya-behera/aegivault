@@ -43,6 +43,12 @@ class AuditLedgerServiceTest {
     void services() {
         ledger = new AuditLedgerService(entries);
         verification = new AuditLedgerVerificationService(entries);
+        // The ledger table is global and other suites commit rows into it,
+        // so every test starts from a pristine chain. The surrounding test
+        // transaction rolls the wipe back afterwards.
+        entities.createNativeQuery("DELETE FROM audit_ledger_entries").executeUpdate();
+        entities.flush();
+        entities.clear();
     }
 
     private AuditLedgerEntryView append(String eventType, String actor, String data) {

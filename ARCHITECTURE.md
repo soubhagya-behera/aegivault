@@ -382,7 +382,14 @@ failRun     -> FAILED (error code/stage/message + completed_at)
    infrastructure failure is never swallowed and never reported as success:
    it surfaces as a generic 500 with no storage details. There are no REST
    endpoints and no other integration yet: nothing else appends, and there
-   is no retry queue or background worker. Single-instance
+   is no retry queue or background worker. Ledger integrity is verifiable
+   through `GET /api/audit/verify` (authenticated, USER and ADMIN alike;
+   the shared ledger needs no owner filtering): one full replay per call
+   returning the verdict, the replayed-entry count, and — only when
+   invalid — the failure code, never ledger content. A verification that
+   ran and found a break stays a normal 200 with `valid=false`; only an
+   infrastructure failure that prevented the replay becomes a generic 500
+   with no storage details. Single-instance
    sequencing only — concurrent appends fail loudly on the UNIQUE
    constraint instead of forking, with no distributed locking. Beyond the
    endpoints described above (datasets, runs, artifact download, and
