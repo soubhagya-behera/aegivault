@@ -81,10 +81,11 @@
   86 tests covering parser behavior, header policy, duplicate-header rejection,
   row-width policy, malformed quoting, safety limits, bounded sampling,
   determinism, error safety, and CSV→profile integration.
-* Pure unit test totals: 479 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
-  + 34 CSV sanitization pipeline + 28 run domain + 5 run request), 0 failures, 0 errors, 0 skipped.
-* Repository total: 667 tests, 0 failures, 0 errors, 0 skipped — 479 pure unit
-  tests plus 188 context/persistence/API/lifecycle/execution tests run against the real local
+* Pure unit test totals: 485 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
+  + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash),
+  0 failures, 0 errors, 0 skipped.
+* Repository total: 684 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
+  tests plus 199 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Persistent sanitization policies (`sanitization.policy`, V6): owner-scoped
   reusable `SanitizationPolicy` aggregates with normalized
@@ -119,6 +120,17 @@
   no second full in-memory copy is created, and the run state machine, the
   40 MiB bound, and every existing endpoint are unchanged. 11 new tests
   (10 API + 1 store-level completed-run gate).
+* Tamper-evident audit ledger foundation (`audit`, V7): append-only
+  `audit_ledger_entries` rows (1-based gapless `sequence_number` UNIQUE,
+  `entry_hash` UNIQUE, safe-metadata `event_data` only) with server-derived
+  SHA-256 over an explicit length-prefixed canonical form plus the previous
+  hash (`GENESIS` for the first entry). `AuditLedgerService` appends one
+  entry per transaction; `AuditLedgerVerificationService` replays the chain
+  recomputing every hash and reports the first break as a value, with an
+  empty ledger verifying valid. No REST endpoints and no integration yet —
+  nothing appends from other modules. Single-instance sequencing only:
+  concurrent appends fail loudly on the UNIQUE constraint; no distributed
+  locking by design (documented limitation).
 * Security/integrity audit of the implemented input-upload → run → artifact flow
   (findings reported in that milestone's audit report). Two hardening fixes
   landed: the dataset input upload no longer reads the caller's CSV body inside
@@ -225,7 +237,9 @@
   no sampling truncation). 34 pure unit tests cover headers, syntax, all eleven PII types, policy,
   deterministic multi-match resolution, relationships, structure, escaping, limits, and stream
   ownership.
-* No audit ledger exists.
+* Audit ledger foundation exists (`audit`, V7) as persistence plus hash-chain
+  integrity only: appends, replay verification, no REST endpoints, and no
+  integration with other modules yet.
 * No AI gateway exists.
 * No Redis implementation exists.
 * No frontend exists yet.

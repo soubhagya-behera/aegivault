@@ -360,10 +360,27 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   immutable snapshot; there is no inline-rules path. A policy update or
   delete never touches existing runs: runs hold
   copied snapshot columns, not a foreign key to the mutable policy, so a
-  deleted policy leaves every run readable and every artifact downloadable. Beyond the
-  endpoints described above (datasets, runs, artifact download, and
-  reusable policies), no jobs, Spring Batch, Redis, background workers, or
-  audit ledger was added.
+   deleted policy leaves every run readable and every artifact downloadable. Tamper-evident audit ledger
+   foundation (`audit`, V7): `audit_ledger_entries` rows (1-based gapless
+   `sequence_number` with a UNIQUE constraint, event type/actor/resource
+   labels, an optional resource id, a safe-metadata `event_data` document,
+   `previous_hash`, and a server-derived SHA-256 `entry_hash` that is UNIQUE
+   itself) appended through `AuditLedgerService` (tail supplies sequence and
+   previous hash; the first entry uses the deterministic `GENESIS` previous
+   hash) and replayed by `AuditLedgerVerificationService`, which recomputes
+   every hash from the stored fields — never trusting the stored hash — and
+   reports the first broken sequence, mismatch, or link as a value, with an
+   empty ledger verifying valid. The canonical hashed form is an explicit
+   length-prefixed format, so no delimiter can alias another field tuple;
+   `event_data` holds safe metadata only (no CSV, PII, secrets, or request
+   bodies — a caller contract the schema cannot see). There are no REST
+   endpoints and no integration yet: nothing appends from datasets,
+   policies, runs, uploads, authentication, or artifacts. Single-instance
+   sequencing only — concurrent appends fail loudly on the UNIQUE
+   constraint instead of forking, with no distributed locking. Beyond the
+   endpoints described above (datasets, runs, artifact download, and
+   reusable policies), no jobs, Spring Batch, Redis, background workers, or
+   audit event integration was added.
 
 Everything below under "planned" is design intent, not implementation.
 
@@ -432,13 +449,16 @@ The policy engine evaluates findings against the active policy set in a
 defined precedence order and returns the winning action per finding.
 Policy changes are versioned so past sanitization runs stay explainable.
 
-### Cryptographically linked audit ledger concept (planned)
+### Cryptographically linked audit ledger concept (foundation implemented)
 
-Each audit entry stores a hash of its own payload plus the hash of the
+The foundation above is implemented: hash-chained PostgreSQL rows plus a
+verification replay. Each audit entry stores a hash of its own payload plus the hash of the
 previous entry, forming a tamper-evident chain in PostgreSQL. Verification
 replays the chain and reports the first broken link, if any. This is a
 hash-chained database ledger — not a blockchain — and it provides
 tamper-evidence (detection of modification), not absolute tamper-proofing.
+Event integration (which operations append) and any read API are still
+planned, not implemented.
 
 ### AI security gateway concept (planned)
 
