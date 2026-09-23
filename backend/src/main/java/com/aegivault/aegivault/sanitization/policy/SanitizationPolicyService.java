@@ -15,8 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
  * ids are indistinguishable from other owners' ids.
  *
  * <p>The service persists and reads the {@link SanitizationPolicy} aggregate
- * only. It never invents rules, never resolves a run's policy — run creation
- * still carries its own inline rules — and never touches CSV reading,
+ * only. It never invents rules — run creation resolves its policy through
+ * {@link #get} — and never touches CSV reading,
  * detection, or transformation code: those boundaries stay where they are.
  * Every label bound, the at-least-one-rule rule, and the one-strategy-per-PII-type
  * invariant are enforced by the aggregate itself, so they hold for any

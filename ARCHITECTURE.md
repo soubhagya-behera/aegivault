@@ -260,18 +260,24 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   `SanitizationRunView` (200 owner / identical 404 foreign-or-missing /
   401 unauthenticated / 400 malformed UUID, mirroring the dataset endpoint
   conventions), plus an owner-scoped `GET /api/runs` listing returning the
-  caller's runs newest-first (`createdAt` descending, id tiebreak; empty
-  owner gets `200 []`). The application entry point is `POST /api/runs`
-  (thin controller: validated `CreateRunRequest` mapped to its exact
-  `TransformationPlan`, owner from JWT, straight into `executeStoredCsv`;
-  201 with `Location` plus the persisted view whether COMPLETED or FAILED,
-  identical 404 foreign-or-missing dataset/input, default 400 validation,
-  401 unauthenticated; no transaction around streaming, no bytes back). The creation payload (`CreateRunRequest`:
-  dataset id, policy labels bounded at 255 characters like the dataset name
-  — a label is stored on the run row and echoed in every run view — and
-  explicit rules reusing `TransformationRule` with no defaults filled,
-  implicitly bounded because two rules for one `PiiType` are rejected) is
-  validated before any domain work runs. Stored input is implemented as
+   caller's runs newest-first (`createdAt` descending, id tiebreak; empty
+   owner gets `200 []`). The application entry point is `POST /api/runs`
+   (thin controller: validated `CreateRunRequest` carrying a dataset id plus
+   a persisted-policy id, policy resolved owner-scoped through
+   `SanitizationPolicyService.get` and mapped via `TransformationPlan.of`
+   to the exact plan it declares, owner from JWT, straight into
+   `executeStoredCsv`; 201 with `Location` plus the persisted view whether
+   COMPLETED or FAILED, identical 404 for foreign-or-missing dataset/input
+   and foreign-or-missing policy (one generic `{"message": "Dataset not
+   found."}` that never reveals which reference failed), default 400
+   validation, 401 unauthenticated; no transaction around streaming, no
+   bytes back). The creation payload (`CreateRunRequest`: dataset id plus
+   persisted-policy id, both `@NotNull` UUIDs, references only — never
+   policy content) is validated before any domain work runs; the policy's
+   name, version, and rules are read server-side and frozen into the run's
+   immutable `PolicySnapshot`, so the run never follows later policy
+   changes and the engine sees the resolved `TransformationPlan` only,
+   exactly as before. Stored input is implemented as
   PostgreSQL BYTEA
   (ADR-013): one `dataset_inputs` row per dataset (primary-key dataset id,
   denormalized owner, `content BYTEA`, 10 MiB schema CHECK mirroring
@@ -342,10 +348,12 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   the JWT subject only, same error-body shape. The response carries `id`,
   labels, ordered rules (`{"piiType": "...", "strategy": "..."}`), and
   timestamps only — never `ownerSubject`, never persistence details, and
-  never raw PII or CSV data, because no such column exists. Run creation
-  still takes its policy inline: using a persisted policy from
-  `POST /api/runs` remains the next integration step and is deliberately
-  not wired yet; there is no policy update or delete endpoint. Beyond the
+   never raw PII or CSV data, because no such column exists. Run creation
+   consumes a persisted policy: `POST /api/runs` takes `{"datasetId":
+   "...", "policyId": "..."}`, requires the JWT subject to own both
+   resources, and freezes the policy's name/version/rules into the run's
+   immutable snapshot; there is no inline-rules path and no policy update
+   or delete endpoint. Beyond the
   endpoints described above (datasets, runs, artifact download, and
   reusable policies), no jobs, Spring Batch, Redis, background workers, or
   audit ledger was added.

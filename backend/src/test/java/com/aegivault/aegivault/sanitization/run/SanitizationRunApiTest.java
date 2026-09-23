@@ -57,6 +57,33 @@ class SanitizationRunApiTest {
         return "run-" + UUID.randomUUID() + "@example.com";
     }
 
+    private String registerPolicy(String token, String name, String version) throws Exception {
+        MvcResult result = mvc.perform(post("/api/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(policyRequest(name, version)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText();
+    }
+
+    private static String policyRequest(String name, String version) {
+        return "{\"name\":\"" + name + "\",\"version\":\"" + version + "\","
+                + "\"rules\":["
+                + "{\"piiType\":\"EMAIL\",\"strategy\":\"SYNTHETIC_EMAIL\"},"
+                + "{\"piiType\":\"PHONE\",\"strategy\":\"SYNTHETIC_PHONE\"},"
+                + "{\"piiType\":\"PERSON_NAME\",\"strategy\":\"REDACT\"},"
+                + "{\"piiType\":\"ADDRESS\",\"strategy\":\"REDACT\"},"
+                + "{\"piiType\":\"CREDIT_CARD\",\"strategy\":\"MASK\"},"
+                + "{\"piiType\":\"IP_ADDRESS\",\"strategy\":\"HASH_SHA256\"},"
+                + "{\"piiType\":\"UUID\",\"strategy\":\"HASH_SHA256\"},"
+                + "{\"piiType\":\"API_KEY\",\"strategy\":\"REDACT\"},"
+                + "{\"piiType\":\"PASSWORD\",\"strategy\":\"HASH_SHA256\"},"
+                + "{\"piiType\":\"JWT\",\"strategy\":\"REDACT\"},"
+                + "{\"piiType\":\"CUSTOM_IDENTIFIER\",\"strategy\":\"HASH_SHA256\"}"
+                + "]}";
+    }
+
     private String register(String email) throws Exception {
         String body = objectMapper.writeValueAsString(new RegisterRequest(email, "run-api-pass-1", null));
         MvcResult result = mvc.perform(post("/api/auth/register")
@@ -258,21 +285,8 @@ class SanitizationRunApiTest {
                 .andExpect(status().isOk());
     }
 
-    private String runRequest(String datasetId) {
-        return "{\"datasetId\":\"" + datasetId + "\",\"policyName\":\"default\",\"policyVersion\":\"v1\","
-                + "\"rules\":["
-                + "{\"piiType\":\"EMAIL\",\"strategy\":\"SYNTHETIC_EMAIL\"},"
-                + "{\"piiType\":\"PHONE\",\"strategy\":\"SYNTHETIC_PHONE\"},"
-                + "{\"piiType\":\"PERSON_NAME\",\"strategy\":\"REDACT\"},"
-                + "{\"piiType\":\"ADDRESS\",\"strategy\":\"REDACT\"},"
-                + "{\"piiType\":\"CREDIT_CARD\",\"strategy\":\"MASK\"},"
-                + "{\"piiType\":\"IP_ADDRESS\",\"strategy\":\"HASH_SHA256\"},"
-                + "{\"piiType\":\"UUID\",\"strategy\":\"HASH_SHA256\"},"
-                + "{\"piiType\":\"API_KEY\",\"strategy\":\"REDACT\"},"
-                + "{\"piiType\":\"PASSWORD\",\"strategy\":\"HASH_SHA256\"},"
-                + "{\"piiType\":\"JWT\",\"strategy\":\"REDACT\"},"
-                + "{\"piiType\":\"CUSTOM_IDENTIFIER\",\"strategy\":\"HASH_SHA256\"}"
-                + "]}";
+    private String runRequest(String datasetId, String policyId) {
+        return "{\"datasetId\":\"" + datasetId + "\",\"policyId\":\"" + policyId + "\"}";
     }
 
     private MvcResult postRun(String token, String body) throws Exception {
@@ -296,8 +310,9 @@ class SanitizationRunApiTest {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "customers.csv");
         uploadInput(token, datasetId, "name,email\nbob,bob@example.com\ncarol,carol@example.com\n");
+        String policyId = registerPolicy(token, "default", "v1");
 
-        MvcResult result = postRun(token, runRequest(datasetId));
+        MvcResult result = postRun(token, runRequest(datasetId, policyId));
 
         assertThat(result.getResponse().getStatus()).isEqualTo(201);
         String body = result.getResponse().getContentAsString();
@@ -311,12 +326,69 @@ class SanitizationRunApiTest {
     }
 
     @Test
+    void runSnapshotFreezesPersistedPolicyNameVersionAndRules() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\n");
+        String policyId = registerPolicy(token, "snapshot-check", "v7");
+
+        MvcResult result = postRun(token, runRequest(datasetId, policyId));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(201);
+        String body = result.getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(body).get("policyName").asText()).isEqualTo("snapshot-check");
+        assertThat(objectMapper.readTree(body).get("policyVersion").asText()).isEqualTo("v7");
+        String snapshot = objectMapper.readTree(body).get("policySnapshot").asText();
+        assertThat(snapshot).contains("\"policyName\":\"snapshot-check\"");
+        assertThat(snapshot).contains("\"policyVersion\":\"v7\"");
+        assertThat(snapshot).contains("\"EMAIL\":\"SYNTHETIC_EMAIL\"");
+        assertThat(snapshot).contains("\"PHONE\":\"SYNTHETIC_PHONE\"");
+        assertThat(snapshot).contains("\"PERSON_NAME\":\"REDACT\"");
+        assertThat(body).doesNotContain("ownerSubject", "bob@example.com");
+    }
+
+    @Test
+    void foreignAndMissingPoliciesReturnSame404AndCreateNoRun() throws Exception {
+        String tokenA = register(email());
+        String tokenB = register(email());
+        String foreignPolicyId = registerPolicy(tokenA, "not-yours", "v1");
+        String datasetId = createDatasetViaApi(tokenB, "mine.csv");
+        uploadInput(tokenB, datasetId, "a,b\n1,2\n");
+
+        String foreignBody = mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + tokenB)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(datasetId, foreignPolicyId)))
+                .andExpect(status().isNotFound())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String missingBody = mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + tokenB)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(datasetId, UUID.randomUUID().toString())))
+                .andExpect(status().isNotFound())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(foreignBody).isEqualTo(missingBody);
+        assertThat(objectMapper.readTree(foreignBody).get("message").asText())
+                .isEqualTo("Dataset not found.");
+        MvcResult listing = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + tokenB))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(listing.getResponse().getContentAsString()).isEqualTo("[]");
+    }
+
+    @Test
     void successfulRunStoresArtifactFromUploadedInput() throws Exception {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "customers.csv");
         uploadInput(token, datasetId, "name,email\nbob,bob@example.com\n");
+        String policyId = registerPolicy(token, "default", "v1");
 
-        MvcResult result = postRun(token, runRequest(datasetId));
+        MvcResult result = postRun(token, runRequest(datasetId, policyId));
 
         String body = result.getResponse().getContentAsString();
         String runId = objectMapper.readTree(body).get("id").asText();
@@ -332,11 +404,12 @@ class SanitizationRunApiTest {
         String tokenB = register(email());
         String foreignId = createDatasetViaApi(tokenA, "not-yours.csv");
         uploadInput(tokenA, foreignId, "a,b\n1,2\n");
+        String policyId = registerPolicy(tokenB, "default", "v1");
 
         String foreignBody = mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + tokenB)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(runRequest(foreignId)))
+                        .content(runRequest(foreignId, policyId)))
                 .andExpect(status().isNotFound())
                 .andReturn()
                 .getResponse()
@@ -344,7 +417,7 @@ class SanitizationRunApiTest {
         String missingBody = mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + tokenB)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(runRequest(UUID.randomUUID().toString())))
+                        .content(runRequest(UUID.randomUUID().toString(), policyId)))
                 .andExpect(status().isNotFound())
                 .andReturn()
                 .getResponse()
@@ -359,11 +432,12 @@ class SanitizationRunApiTest {
     void datasetWithoutInputReturns404AndCreatesNoRun() throws Exception {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "no-input.csv");
+        String policyId = registerPolicy(token, "default", "v1");
 
         String body = mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(runRequest(datasetId)))
+                        .content(runRequest(datasetId, policyId)))
                 .andExpect(status().isNotFound())
                 .andReturn()
                 .getResponse()
@@ -381,66 +455,40 @@ class SanitizationRunApiTest {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "customers.csv");
         uploadInput(token, datasetId, "a,b\n1,2\n");
+        String policyId = registerPolicy(token, "default", "v1");
 
+        // Missing policyId.
         mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"datasetId\":\"" + datasetId + "\",\"policyVersion\":\"v1\",\"rules\":[]}"))
+                        .content("{\"datasetId\":\"" + datasetId + "\"}"))
                 .andExpect(status().isBadRequest());
+        // Missing datasetId.
         mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(runRequest("not-a-uuid")))
+                        .content("{\"policyId\":\"" + policyId + "\"}"))
                 .andExpect(status().isBadRequest());
+        // Malformed dataset UUID.
+        mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest("not-a-uuid", policyId)))
+                .andExpect(status().isBadRequest());
+        // Malformed policy UUID.
+        mvc.perform(post("/api/runs")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runRequest(datasetId, "not-a-uuid")))
+                .andExpect(status().isBadRequest());
+        // Old inline-rules shape is no longer a valid contract.
         mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"datasetId\":\"" + datasetId
                                 + "\",\"policyName\":\"default\",\"policyVersion\":\"v1\","
-                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"NOPE\"}]}"))
-                .andExpect(status().isBadRequest());
-    }
-
-    @Test
-    void duplicateRulesAreRejected400() throws Exception {
-        String token = register(email());
-        String datasetId = createDatasetViaApi(token, "customers.csv");
-        uploadInput(token, datasetId, "a,b\n1,2\n");
-
-        String body = mvc.perform(post("/api/runs")
-                        .header("Authorization", "Bearer " + token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"datasetId\":\"" + datasetId
-                                + "\",\"policyName\":\"default\",\"policyVersion\":\"v1\","
-                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"},"
-                                + "{\"piiType\":\"EMAIL\",\"strategy\":\"MASK\"}]}"))
-                .andExpect(status().isBadRequest())
-                .andReturn()
-                .getResponse()
-                .getContentAsString();
-
-        assertThat(objectMapper.readTree(body).get("message").asText()).isEqualTo("Invalid run request.");
-    }
-
-    @Test
-    void overlongPolicyLabelIsRejected400WithoutCreatingRun() throws Exception {
-        String token = register(email());
-        String datasetId = createDatasetViaApi(token, "customers.csv");
-        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\n");
-
-        mvc.perform(post("/api/runs")
-                        .header("Authorization", "Bearer " + token)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"datasetId\":\"" + datasetId
-                                + "\",\"policyName\":\"" + "p".repeat(300)
-                                + "\",\"policyVersion\":\"v1\","
                                 + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}"))
                 .andExpect(status().isBadRequest());
-
-        MvcResult listing = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + token))
-                .andExpect(status().isOk())
-                .andReturn();
-        assertThat(listing.getResponse().getContentAsString()).isEqualTo("[]");
     }
 
     @Test
@@ -448,15 +496,16 @@ class SanitizationRunApiTest {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "guarded.csv");
         uploadInput(token, datasetId, "a,b\n1,2\n");
+        String policyId = registerPolicy(token, "default", "v1");
 
         mvc.perform(post("/api/runs")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(runRequest(datasetId)))
+                        .content(runRequest(datasetId, policyId)))
                 .andExpect(status().isUnauthorized());
         mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer not-a-token")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(runRequest(datasetId)))
+                        .content(runRequest(datasetId, policyId)))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -465,8 +514,9 @@ class SanitizationRunApiTest {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "ragged.csv");
         uploadInput(token, datasetId, "a,b\n1,2,3\n");
+        String policyId = registerPolicy(token, "default", "v1");
 
-        MvcResult result = postRun(token, runRequest(datasetId));
+        MvcResult result = postRun(token, runRequest(datasetId, policyId));
 
         assertThat(result.getResponse().getStatus()).isEqualTo(201);
         String body = result.getResponse().getContentAsString();
@@ -480,13 +530,22 @@ class SanitizationRunApiTest {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "phones.csv");
         uploadInput(token, datasetId, "phone\n9876543210\n");
+        String policyBody = mvc.perform(post("/api/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"email-only\",\"version\":\"v1\","
+                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}"))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String minimalPolicyId =
+                objectMapper.readTree(policyBody).get("id").asText();
 
         MvcResult result = mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"datasetId\":\"" + datasetId
-                                + "\",\"policyName\":\"custom\",\"policyVersion\":\"v1\","
-                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}"))
+                        .content(runRequest(datasetId, minimalPolicyId)))
                 .andReturn();
 
         assertThat(result.getResponse().getStatus()).isEqualTo(201);
@@ -509,8 +568,9 @@ class SanitizationRunApiTest {
                         .contentType("text/csv")
                         .content(csv.toString().getBytes(StandardCharsets.UTF_8)))
                 .andExpect(status().isOk());
+        String policyId = registerPolicy(token, "default", "v1");
 
-        MvcResult result = postRun(token, runRequest(datasetId));
+        MvcResult result = postRun(token, runRequest(datasetId, policyId));
 
         assertThat(result.getResponse().getStatus()).isEqualTo(201);
         String body = result.getResponse().getContentAsString();

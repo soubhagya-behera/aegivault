@@ -1,6 +1,10 @@
 package com.aegivault.aegivault.sanitization.run;
 
+import com.aegivault.aegivault.sanitization.TransformationPlan;
 import com.aegivault.aegivault.sanitization.artifact.SanitizationArtifactStore;
+import com.aegivault.aegivault.sanitization.policy.PolicyNotFoundException;
+import com.aegivault.aegivault.sanitization.policy.PolicyResponse;
+import com.aegivault.aegivault.sanitization.policy.SanitizationPolicyService;
 import jakarta.validation.Valid;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -33,8 +37,10 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * owner always comes from the verified JWT subject; the client can never
  * supply or override it. This controller performs no ownership checks and
  * holds no business logic: reads delegate to {@link SanitizationRunService},
- * execution delegates to {@link SanitizationRunExecutor}, and artifact
- * bytes come from {@link SanitizationArtifactStore}.
+ * execution delegates to {@link SanitizationRunExecutor}, artifact
+ * bytes come from {@link SanitizationArtifactStore}, and the run-creation
+ * policy is resolved owner-scoped through the policy service before
+ * execution starts.
  */
 @RestController
 @RequestMapping("/api/runs")
@@ -53,27 +59,50 @@ public class SanitizationRunController {
 
     private final SanitizationArtifactStore artifactStore;
 
+    private final SanitizationPolicyService policyService;
+
     /**
-     * Creates and synchronously executes a sanitization run against the
-     * dataset's already-uploaded input. The sanitized bytes are captured
-     * into artifact storage by the executor; this endpoint streams nothing
-     * back, so the engine writes to a discarding sink and the response is
-     * the persisted run view (201 whether the run completed or failed —
-     * creation succeeded in both cases; the outcome is in the body).
+     * Creates and synchronously executes a sanitization run of one owned
+     * persisted policy against one owned dataset's already-uploaded input.
+     * Both ids are owner-scoped to the JWT subject: a foreign or missing
+     * dataset and a foreign or missing policy produce the same generic 404,
+     * so no response reveals which reference failed. The policy's labels and
+     * rules are resolved server-side and frozen into the run's immutable
+     * snapshot; the engine sees the resolved {@code TransformationPlan} only,
+     * exactly as before. The sanitized bytes are captured into artifact
+     * storage by the executor; this endpoint streams nothing back, so the
+     * engine writes to a discarding sink and the response is the persisted
+     * run view (201 whether the run completed or failed — creation succeeded
+     * in both cases; the outcome is in the body).
      * Controller holds no transaction: lifecycle persistence around
      * streaming stays exactly where the executor puts it.
      */
     @PostMapping
     public ResponseEntity<SanitizationRunView> create(
             @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CreateRunRequest request) {
+        PolicyResponse policy = loadOwnedPolicy(jwt.getSubject(), request.policyId());
         SanitizationRunView view = runExecutor.executeStoredCsv(
                 jwt.getSubject(),
                 request.datasetId(),
-                request.toTransformationPlan(),
-                request.policyName(),
-                request.policyVersion(),
+                TransformationPlan.of(policy.rules()),
+                policy.name(),
+                policy.version(),
                 OutputStream.nullOutputStream());
         return ResponseEntity.created(URI.create("/api/runs/" + view.id())).body(view);
+    }
+
+    /**
+     * Loads one persisted policy for the calling owner. A foreign or missing
+     * policy is reported as a missing dataset on purpose: the request names
+     * two resources the caller must own, and the response must not reveal
+     * which one failed.
+     */
+    private PolicyResponse loadOwnedPolicy(String ownerSubject, UUID policyId) {
+        try {
+            return policyService.get(ownerSubject, policyId);
+        } catch (PolicyNotFoundException ex) {
+            throw new ReferencedDatasetNotFoundException();
+        }
     }
 
     @GetMapping("/{runId}")

@@ -101,21 +101,32 @@ class SanitizationArtifactDownloadApiTest {
                 .andExpect(status().isOk());
     }
 
-    private String runRequest(String datasetId, String policyName, String policyVersion) {
-        return "{\"datasetId\":\"" + datasetId + "\",\"policyName\":\"" + policyName
-                + "\",\"policyVersion\":\"" + policyVersion + "\","
+    private String registerPolicy(String token, String name, String version) throws Exception {
+        String body = "{\"name\":\"" + name + "\",\"version\":\"" + version + "\","
                 + "\"rules\":[{\"piiType\":\"PERSON_NAME\",\"strategy\":\"REDACT\"},"
                 + "{\"piiType\":\"EMAIL\",\"strategy\":\"SYNTHETIC_EMAIL\"}]}";
+        MvcResult result = mvc.perform(post("/api/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString()).get("id").asText();
+    }
+
+    private String runRequest(String datasetId, String policyId) {
+        return "{\"datasetId\":\"" + datasetId + "\",\"policyId\":\"" + policyId + "\"}";
     }
 
     /** Uploads input, runs it through {@code POST /api/runs}, returns the completed run id. */
     private String completedRunId(String token, String csv, String datasetName) throws Exception {
         String datasetId = createDataset(token, datasetName, null);
         uploadInput(token, datasetId, csv);
+        String policyId = registerPolicy(token, "default", "v1");
         MvcResult result = mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(runRequest(datasetId, "default", "v1")))
+                        .content(runRequest(datasetId, policyId)))
                 .andExpect(status().isCreated())
                 .andReturn();
         String body = result.getResponse().getContentAsString();
@@ -294,10 +305,11 @@ class SanitizationArtifactDownloadApiTest {
         String owner = register(email());
         String datasetId = createDataset(owner, "leaky-dataset-name.csv", "leaky-original-name.csv");
         uploadInput(owner, datasetId, CSV);
+        String policyId = registerPolicy(owner, "leaky-policy-name", "leaky-policy-version");
         MvcResult created = mvc.perform(post("/api/runs")
                         .header("Authorization", "Bearer " + owner)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(runRequest(datasetId, "leaky-policy-name", "leaky-policy-version")))
+                        .content(runRequest(datasetId, policyId)))
                 .andExpect(status().isCreated())
                 .andReturn();
         String runId = objectMapper.readTree(created.getResponse().getContentAsString())
