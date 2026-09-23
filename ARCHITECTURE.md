@@ -326,8 +326,29 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   dataset delete so history is never silently orphaned, error columns only on
   `FAILED`, `completed_at` required on terminal states, non-negative counts;
   indexes on `dataset_id` and `owner_subject` only — no status index until a
-  real status query exists). No other REST endpoints, no artifact storage, no jobs,
-  Spring Batch, Redis, background workers, or audit ledger was added.
+  real status query exists). Reusable, owner-scoped policies persist
+  separately (`sanitization.policy`, V6): `SanitizationPolicy` (aggregate
+  root: owner, name, version, optional description) plus one row per
+  configured PII type in `sanitization_policy_rules`. The rules table
+  reuses the existing `TransformationRule` / `TransformationPlan`
+  vocabulary — no parallel rule model, no JSON blob — and its natural primary key
+  `(policy_id, pii_type)` plus enum CHECKs make "one strategy per PII type
+  per policy" a database guarantee as well as an aggregate one, while labels
+  are bounded (255/255/1024) at the request, the aggregate, and the schema.
+  The three endpoints (`POST /api/policies` returning 201 + `Location:
+  /api/policies/{id}`, `GET /api/policies` listing only the caller's rows
+  newest-first, `GET /api/policies/{policyId}` with identical 404 for
+  foreign and missing ids) behave like the dataset and run APIs: owner from
+  the JWT subject only, same error-body shape. The response carries `id`,
+  labels, ordered rules (`{"piiType": "...", "strategy": "..."}`), and
+  timestamps only — never `ownerSubject`, never persistence details, and
+  never raw PII or CSV data, because no such column exists. Run creation
+  still takes its policy inline: using a persisted policy from
+  `POST /api/runs` remains the next integration step and is deliberately
+  not wired yet; there is no policy update or delete endpoint. Beyond the
+  endpoints described above (datasets, runs, artifact download, and
+  reusable policies), no jobs, Spring Batch, Redis, background workers, or
+  audit ledger was added.
 
 Everything below under "planned" is design intent, not implementation.
 

@@ -83,9 +83,21 @@
   determinism, error safety, and CSV→profile integration.
 * Pure unit test totals: 488 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 14 run request), 0 failures, 0 errors, 0 skipped.
-* Repository total: 627 tests, 0 failures, 0 errors, 0 skipped — 488 pure unit
-  tests plus 139 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 662 tests, 0 failures, 0 errors, 0 skipped — 488 pure unit
+  tests plus 174 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
+* Persistent sanitization policies (`sanitization.policy`, V6): owner-scoped
+  reusable `SanitizationPolicy` aggregates with normalized
+  `sanitization_policy_rules` rows, exposed through `POST /api/policies`
+  (201 + `Location: /api/policies/{id}`),
+  `GET /api/policies` (caller's rows only, newest first),
+  and `GET /api/policies/{policyId}` (identical 404 for foreign and missing
+  ids). The rule vocabulary is exactly the existing PII types and
+  transformation strategies, `rules` are exposed as
+  `{"piiType": "...", "strategy": "..."}` with no owner or persistence
+  details, and nothing raw (PII, CSV) is stored. Run creation still takes
+  its policy inline: consuming a persisted policy from `POST /api/runs`
+  remains the deliberately unwired next integration step.
 * Sanitized-artifact download API (`GET /api/runs/{runId}/artifact`): owner
   from the verified JWT subject only (never from parameters or body), bytes
   from the existing owner-scoped `SanitizationArtifactStore`, streamed
@@ -217,7 +229,12 @@ PostgreSQL BYTEA behind `DatasetInputSource`, the upload path
 (`POST /api/datasets/{id}/input`) and the run REST endpoints (`POST /api/runs`,
 `GET /api/runs`, `GET /api/runs/{runId}`) and the artifact download
 (`GET /api/runs/{runId}/artifact`) are implemented, and sanitized output is
-stored per run behind `SanitizationArtifactStore`. Still not implemented:
+stored per run behind `SanitizationArtifactStore`. Owner-scoped reusable
+sanitization policies persist as `SanitizationPolicy` aggregates with
+normalized `sanitization_policy_rules` rows, created and read through
+`POST /api/policies`, `GET /api/policies`, and
+`GET /api/policies/{policyId}`; run creation using persisted policies
+remains the deliberately unwired next integration step. Still not implemented:
 profile metadata persistence and background processing. The audit ledger
 remains a later milestone. The domain CSV sanitization pipeline and the run
 persistence/lifecycle foundation are implemented and tested.
