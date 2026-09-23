@@ -84,8 +84,8 @@
 * Pure unit test totals: 485 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash),
   0 failures, 0 errors, 0 skipped.
-* Repository total: 684 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
-  tests plus 199 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 686 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
+  tests plus 201 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Persistent sanitization policies (`sanitization.policy`, V6): owner-scoped
   reusable `SanitizationPolicy` aggregates with normalized
@@ -127,8 +127,14 @@
   hash (`GENESIS` for the first entry). `AuditLedgerService` appends one
   entry per transaction; `AuditLedgerVerificationService` replays the chain
   recomputing every hash and reports the first break as a value, with an
-  empty ledger verifying valid. No REST endpoints and no integration yet —
-  nothing appends from other modules. Single-instance sequencing only:
+  empty ledger verifying valid. Run lifecycle events are now recorded by
+  the run executor: `SANITIZATION_RUN_CREATED` after start plus
+  `SANITIZATION_RUN_COMPLETED` / `SANITIZATION_RUN_FAILED` after the
+  terminal transition commits (owner as actor, run id as resource,
+  structural metadata only — exactly two entries per finished run). An
+  audit append failure surfaces as a generic 500 without storage details
+  and is never reported as success; there is no retry queue. No REST endpoints and no other
+  integration yet — nothing else appends from other modules. Single-instance sequencing only:
   concurrent appends fail loudly on the UNIQUE constraint; no distributed
   locking by design (documented limitation).
 * Security/integrity audit of the implemented input-upload → run → artifact flow

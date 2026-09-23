@@ -10,6 +10,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.aegivault.aegivault.auth.RegisterRequest;
+import com.aegivault.aegivault.audit.AuditLedgerEntry;
+import com.aegivault.aegivault.audit.AuditLedgerEntryRepository;
 import com.aegivault.aegivault.dataset.Dataset;
 import com.aegivault.aegivault.dataset.DatasetRepository;
 import com.aegivault.aegivault.sanitization.DefaultTransformationPolicy;
@@ -18,6 +20,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,6 +58,9 @@ class SanitizationRunApiTest {
 
     @Autowired
     private DatabaseArtifactStore artifacts;
+
+    @Autowired
+    private AuditLedgerEntryRepository ledger;
 
     private static String email() {
         return "run-" + UUID.randomUUID() + "@example.com";
@@ -440,6 +446,88 @@ class SanitizationRunApiTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(runRequest(datasetId, policyId)))
                 .andExpect(status().isNotFound());
+    }
+
+    private List<AuditLedgerEntry> ledgerEntriesForRun(UUID runId) {
+        return ledger.findAllByOrderBySequenceNumberAsc().stream()
+                .filter(entry -> runId.equals(entry.getResourceId()))
+                .toList();
+    }
+
+    @Test
+    void successfulRunRecordsCreatedAndCompletedAuditEvents() throws Exception {
+        String token = register(email());
+        String subject = jwtDecoder.decode(token).getSubject();
+        String datasetId = createDatasetViaApi(token, "customers.csv");
+        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\n");
+        String policyId = registerPolicy(token, "default", "v1");
+
+        MvcResult result = postRun(token, runRequest(datasetId, policyId));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(201);
+        String runId = objectMapper.readTree(result.getResponse().getContentAsString())
+                .get("id")
+                .asText();
+        assertThat(objectMapper.readTree(result.getResponse().getContentAsString())
+                        .get("status")
+                        .asText())
+                .isEqualTo("COMPLETED");
+
+        List<AuditLedgerEntry> entries = ledgerEntriesForRun(UUID.fromString(runId));
+        assertThat(entries).hasSize(2);
+        assertThat(entries.stream().map(AuditLedgerEntry::getEventType))
+                .containsExactly("SANITIZATION_RUN_CREATED", "SANITIZATION_RUN_COMPLETED");
+        for (AuditLedgerEntry entry : entries) {
+            assertThat(entry.getActorSubject()).isEqualTo(subject);
+            assertThat(entry.getResourceType()).isEqualTo("SANITIZATION_RUN");
+            assertThat(entry.getResourceId()).isEqualTo(UUID.fromString(runId));
+        }
+        assertThat(entries.get(1).getSequenceNumber())
+                .isEqualTo(entries.get(0).getSequenceNumber() + 1L);
+        assertThat(entries.get(1).getPreviousHash()).isEqualTo(entries.get(0).getEntryHash());
+
+        String created = entries.get(0).getEventData();
+        assertThat(created).contains("\"datasetId\":\"" + datasetId + "\"");
+        assertThat(created).contains("\"policyName\":\"default\"");
+        assertThat(created).contains("\"policyVersion\":\"v1\"");
+        String completed = entries.get(1).getEventData();
+        assertThat(completed).contains("\"inputRows\":1");
+        assertThat(completed).contains("\"outputRows\":1");
+        for (AuditLedgerEntry entry : entries) {
+            assertThat(entry.getEventData())
+                    .doesNotContain("bob@example.com", "password", "sk-", "Bearer", "Exception");
+        }
+    }
+
+    @Test
+    void failedRunRecordsCreatedAndFailedAuditEvents() throws Exception {
+        String token = register(email());
+        String subject = jwtDecoder.decode(token).getSubject();
+        String datasetId = createDatasetViaApi(token, "ragged.csv");
+        uploadInput(token, datasetId, "a,b\n1,2,3\n");
+        String policyId = registerPolicy(token, "default", "v1");
+
+        MvcResult result = postRun(token, runRequest(datasetId, policyId));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(201);
+        String body = result.getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(body).get("status").asText()).isEqualTo("FAILED");
+        String runId = objectMapper.readTree(body).get("id").asText();
+
+        List<AuditLedgerEntry> entries = ledgerEntriesForRun(UUID.fromString(runId));
+        assertThat(entries).hasSize(2);
+        assertThat(entries.stream().map(AuditLedgerEntry::getEventType))
+                .containsExactly("SANITIZATION_RUN_CREATED", "SANITIZATION_RUN_FAILED");
+        for (AuditLedgerEntry entry : entries) {
+            assertThat(entry.getActorSubject()).isEqualTo(subject);
+            assertThat(entry.getResourceType()).isEqualTo("SANITIZATION_RUN");
+            assertThat(entry.getResourceId()).isEqualTo(UUID.fromString(runId));
+        }
+        String failed = entries.get(1).getEventData();
+        assertThat(failed).contains("\"errorCode\":\"CSV_PARSE_ERROR\"");
+        assertThat(failed).contains("\"errorStage\":\"TOKENIZE\"");
+        assertThat(failed).doesNotContain("1,2,3", "at com.aegivault", "Exception");
+        assertThat(entries.get(1).getPreviousHash()).isEqualTo(entries.get(0).getEntryHash());
     }
 
     @Test

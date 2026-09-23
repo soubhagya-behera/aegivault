@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.sanitization.run;
 
+import com.aegivault.aegivault.audit.AuditLedgerException;
 import com.aegivault.aegivault.sanitization.TransformationPlan;
 import com.aegivault.aegivault.sanitization.artifact.SanitizationArtifactStore;
 import com.aegivault.aegivault.sanitization.policy.PolicyNotFoundException;
@@ -172,6 +173,17 @@ public class SanitizationRunController {
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     RunError badRequest(IllegalArgumentException ex) {
         return new RunError("Invalid run request.");
+    }
+
+    /**
+     * Audit infrastructure failure: the run transition it records had
+     * already committed, so success is not claimed — generic 500 with no
+     * storage details, cause retained in server logs only.
+     */
+    @ExceptionHandler(AuditLedgerException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    RunError auditFailed(AuditLedgerException ex) {
+        return new RunError("Unable to record audit event.");
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)

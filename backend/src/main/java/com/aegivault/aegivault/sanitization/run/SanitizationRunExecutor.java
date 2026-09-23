@@ -1,5 +1,8 @@
 package com.aegivault.aegivault.sanitization.run;
 
+import com.aegivault.aegivault.audit.AuditEventData;
+import com.aegivault.aegivault.audit.AuditLedgerException;
+import com.aegivault.aegivault.audit.AuditLedgerService;
 import com.aegivault.aegivault.dataset.DatasetInputSource;
 import com.aegivault.aegivault.dataset.DatasetNotFoundException;
 import com.aegivault.aegivault.dataset.csv.CsvParseException;
@@ -49,6 +52,15 @@ import org.springframework.stereotype.Service;
  * is logged or persisted besides the safe counts in {@link RunResult} or
  * the safe metadata in {@link RunFailure}.
  *
+ * <p>Every executed run also appends its lifecycle to the audit ledger —
+ * one {@code SANITIZATION_RUN_CREATED} entry after the run is started and
+ * one {@code SANITIZATION_RUN_COMPLETED} or {@code SANITIZATION_RUN_FAILED}
+ * entry after the terminal transition commits — carrying safe metadata
+ * only. Audit appends never change run semantics: documented-safe engine
+ * failures still map to {@code FAILED} exactly as below, and an audit
+ * infrastructure failure surfaces loudly as {@link AuditLedgerException}
+ * instead of being silently skipped or reported as success.
+ *
  * <p>Failure mapping is conservative and explicit: only the engine's
  * documented-safe domain exceptions are translated — {@link CsvParseException}
  * (structural facts only) and {@link SanitizationException} (policy metadata
@@ -70,6 +82,8 @@ public class SanitizationRunExecutor {
     private final DatasetInputSource inputs;
 
     private final SanitizationArtifactStore artifacts;
+
+    private final AuditLedgerService audit;
 
     /**
      * Executes one CSV sanitization against an owned dataset.
@@ -103,6 +117,11 @@ public class SanitizationRunExecutor {
         String owner = requireOwner(ownerSubject);
         SanitizationRunView created = runs.createRun(owner, datasetId, plan, policyName, policyVersion);
         SanitizationRunView started = runs.startRun(owner, created.id());
+        appendAudit(
+                AuditEventData.RUN_CREATED,
+                owner,
+                created.id(),
+                AuditEventData.runCreated(datasetId, policyName, policyVersion));
         return sanitizeCompleteOrFail(owner, started, plan, input, output, null);
     }
 
@@ -144,6 +163,11 @@ public class SanitizationRunExecutor {
         try (InputStream input = inputs.openInput(owner, datasetId)) {
             SanitizationRunView created = runs.createRun(owner, datasetId, plan, policyName, policyVersion);
             SanitizationRunView started = runs.startRun(owner, created.id());
+            appendAudit(
+                    AuditEventData.RUN_CREATED,
+                    owner,
+                    created.id(),
+                    AuditEventData.runCreated(datasetId, policyName, policyVersion));
             BoundedCapture capture = new BoundedCapture(output);
             return sanitizeCompleteOrFail(owner, started, plan, input, capture, capture);
         } catch (DatasetNotFoundException ex) {
@@ -157,6 +181,13 @@ public class SanitizationRunExecutor {
      * Shared sanitize-then-finish core: runs the engine, maps documented
      * domain failures to {@code FAILED}, and completes with the structural
      * counts on success.
+     *
+     * <p>Each terminal transition is followed by its ledger event, so every
+     * finished run contributes exactly two entries — CREATED from the caller
+     * above plus COMPLETED or FAILED here — and an unfinished run (an
+     * unexpected failure propagating past this method) contributes only
+     * CREATED, truthfully. The event is appended after the transition
+     * commits, and only for transitions that actually happened.
      *
      * @param capture when non-null, output is captured through it and the
      *        captured bytes are stored as the run's artifact after a
@@ -176,22 +207,22 @@ public class SanitizationRunExecutor {
         try {
             result = csv.sanitize(input, csvOutput, plan);
         } catch (CsvParseException ex) {
-            return runs.failRun(
+            return failAndAudit(
                     owner, started.id(), new RunFailure("CSV_PARSE_ERROR", "TOKENIZE", ex.getMessage()));
         } catch (MissingTransformationException ex) {
-            return runs.failRun(
+            return failAndAudit(
                     owner, started.id(), new RunFailure("POLICY_GAP", "TRANSFORM", ex.getMessage()));
         } catch (SanitizationException ex) {
-            return runs.failRun(
+            return failAndAudit(
                     owner, started.id(), new RunFailure("TRANSFORM_ERROR", "TRANSFORM", ex.getMessage()));
         } catch (ArtifactTooLargeException ex) {
-            return runs.failRun(
+            return failAndAudit(
                     owner, started.id(), new RunFailure("OUTPUT_TOO_LARGE", "WRITE", ex.getMessage()));
         }
         if (capture != null) {
             artifacts.storeArtifact(owner, started.id(), new ByteArrayInputStream(capture.captured()));
         }
-        return runs.completeRun(
+        SanitizationRunView completed = runs.completeRun(
                 owner,
                 started.id(),
                 new RunResult(
@@ -199,6 +230,45 @@ public class SanitizationRunExecutor {
                         result.dataRowsWritten(),
                         result.blankRowsSkipped(),
                         result.columnCount()));
+        appendAudit(
+                AuditEventData.RUN_COMPLETED,
+                owner,
+                started.id(),
+                AuditEventData.runCompleted(
+                        result.dataRowsRead(),
+                        result.dataRowsWritten(),
+                        result.blankRowsSkipped(),
+                        result.columnCount()));
+        return completed;
+    }
+
+    /**
+     * Persists one {@code FAILED} transition and then its ledger event.
+     * Engine failure semantics are unchanged: the same view is returned
+     * that {@code failRun} alone would have produced.
+     */
+    private SanitizationRunView failAndAudit(String owner, UUID runId, RunFailure failure) {
+        SanitizationRunView failed = runs.failRun(owner, runId, failure);
+        appendAudit(
+                AuditEventData.RUN_FAILED,
+                owner,
+                runId,
+                AuditEventData.runFailed(failure.errorCode(), failure.errorStage()));
+        return failed;
+    }
+
+    /**
+     * Appends one run lifecycle event. An audit infrastructure failure is
+     * never swallowed and never reported as success: it surfaces as a
+     * generic {@link AuditLedgerException} (cause retained for server logs,
+     * no storage details in the message) and the caller propagates it.
+     */
+    private void appendAudit(String eventType, String owner, UUID runId, String eventData) {
+        try {
+            audit.append(eventType, owner, AuditEventData.SANITIZATION_RUN_RESOURCE, runId, eventData);
+        } catch (RuntimeException ex) {
+            throw new AuditLedgerException("Unable to record audit event.", ex);
+        }
     }
 
     /**

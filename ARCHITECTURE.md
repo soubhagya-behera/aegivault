@@ -373,9 +373,16 @@ failRun     -> FAILED (error code/stage/message + completed_at)
    empty ledger verifying valid. The canonical hashed form is an explicit
    length-prefixed format, so no delimiter can alias another field tuple;
    `event_data` holds safe metadata only (no CSV, PII, secrets, or request
-   bodies — a caller contract the schema cannot see). There are no REST
-   endpoints and no integration yet: nothing appends from datasets,
-   policies, runs, uploads, authentication, or artifacts. Single-instance
+   bodies — a caller contract the schema cannot see). Run lifecycle events
+   are recorded: the run executor appends `SANITIZATION_RUN_CREATED` after
+   a run is started and `SANITIZATION_RUN_COMPLETED` or
+   `SANITIZATION_RUN_FAILED` after the terminal transition commits, each
+   with the owner as actor, the run id as resource, and structural metadata
+   only — so every finished run contributes exactly two entries. An audit
+   infrastructure failure is never swallowed and never reported as success:
+   it surfaces as a generic 500 with no storage details. There are no REST
+   endpoints and no other integration yet: nothing else appends, and there
+   is no retry queue or background worker. Single-instance
    sequencing only — concurrent appends fail loudly on the UNIQUE
    constraint instead of forking, with no distributed locking. Beyond the
    endpoints described above (datasets, runs, artifact download, and
