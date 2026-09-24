@@ -550,7 +550,13 @@ verdict, reason codes, detected type names — so request content,
 matched PII values, and secrets never enter the ledger; requests that
 never reach inspection (unauthenticated, invalid, oversized) append
 nothing. Enforcement beyond inspection recording and provider
-integration remain planned, not implemented.
+integration remain planned, not implemented. A minimal LLM provider
+abstraction exists alongside inspection (`gateway.provider`: `LlmProvider`
+with immutable `LlmRequest`/`LlmResponse` carrying model and content only,
+plus a deterministic zero-configuration `MockLlmProvider` whose labelled
+mock completions never touch the network) for local and test use only;
+no external provider integration exists and the inspect endpoint does not
+forward to any provider.
 
 ## High-level request/data flows (planned)
 

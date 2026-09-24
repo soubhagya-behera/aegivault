@@ -285,9 +285,14 @@
   successfully inspected request appends exactly one metadata-only entry to the
   existing tamper-evident audit ledger (`AI_GATEWAY_INSPECTION_ALLOWED` /
   `AI_GATEWAY_INSPECTION_BLOCKED`; model, verdict, reason codes, detected type
-  names — never request content, PII values, or secrets). No proxy,
-  no LLM or network calls, no persistence of request bodies, no logging
-  of request content; provider forwarding is still not implemented.
+   names — never request content, PII values, or secrets). No proxy,
+   no LLM or network calls, no persistence of request bodies, no logging
+   of request content; provider forwarding is still not implemented. A
+   minimal LLM provider abstraction now exists (`gateway.provider`:
+   `LlmProvider` plus immutable model/content-only `LlmRequest`/`LlmResponse`)
+   with a deterministic zero-configuration `MockLlmProvider` for local/test
+   use only — labelled mock completions, no network, no credentials — and
+   no external provider integration or endpoint forwarding yet.
 * No Redis implementation exists.
 * No frontend exists yet.
 
