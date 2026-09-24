@@ -114,7 +114,13 @@ profiling, and CSV discovery modules:
   /api/datasets/{datasetId}/profile/transformation-preview` maps the
   persisted profile through the existing default transformation policy
   (per-type counts/rates plus the suggested strategy; no profiling, no
-  sanitization, no policy/run/audit writes, no raw values).
+  sanitization, no policy/run/audit writes, no raw values). A companion
+  `POST /api/datasets/{datasetId}/profile/transformation-preview/policy`
+  persists those suggested rules as a normal owner-scoped policy through
+  the existing policy service (detected types only, default strategies,
+  same `PolicyResponse` and `Location` as `POST /api/policies`; empty
+  detection sets fail 400 before anything persists; no run, no execution,
+  no dataset/profile/CSV change, no audit writes).
 * 612 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,

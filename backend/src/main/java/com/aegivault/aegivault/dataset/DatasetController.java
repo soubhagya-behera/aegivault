@@ -4,9 +4,13 @@ import com.aegivault.aegivault.dataset.csv.CsvParseException;
 import com.aegivault.aegivault.dataset.profile.DatasetProfileResponse;
 import com.aegivault.aegivault.dataset.profile.DatasetProfileService;
 import com.aegivault.aegivault.dataset.profile.DatasetProfilingService;
+import com.aegivault.aegivault.dataset.profile.CreatePolicyFromPreviewRequest;
+import com.aegivault.aegivault.dataset.profile.EmptyTransformationPreviewException;
+import com.aegivault.aegivault.dataset.profile.PreviewPolicyService;
 import com.aegivault.aegivault.dataset.profile.TransformationPreviewResponse;
 import com.aegivault.aegivault.dataset.profile.TransformationPreviewService;
 import com.aegivault.aegivault.sanitization.MissingTransformationException;
+import com.aegivault.aegivault.sanitization.policy.PolicyResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.io.IOException;
@@ -45,6 +49,8 @@ public class DatasetController {
     private final DatasetProfilingService profilingService;
 
     private final TransformationPreviewService previewService;
+
+    private final PreviewPolicyService previewPolicyService;
 
     @PostMapping
     public ResponseEntity<DatasetResponse> create(
@@ -109,6 +115,30 @@ public class DatasetController {
     }
 
     /**
+     * Creates a persistent sanitization policy from an owned dataset's
+     * persisted profile and the default transformation plan. Only PII types
+     * actually detected in the profile become rules, each with its default
+     * strategy; labels come from the validated request body and ownership
+     * from the verified JWT subject. The persisted profile is read as-is
+     * (no re-profiling, no CSV access), creation is one atomic persist
+     * through the existing policy service, and the response — including the
+     * {@code Location} header — matches {@code POST /api/policies}. A
+     * missing dataset, a foreign dataset, and a dataset with no persisted
+     * profile yet all produce the same generic 404. No run is created,
+     * nothing executes, and the dataset, profile, and uploaded CSV are
+     * untouched.
+     */
+    @PostMapping("/{datasetId}/profile/transformation-preview/policy")
+    public ResponseEntity<PolicyResponse> createPolicyFromPreview(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable UUID datasetId,
+            @Valid @RequestBody CreatePolicyFromPreviewRequest request) {
+        PolicyResponse response = previewPolicyService.createPolicyFromPreview(
+                jwt.getSubject(), datasetId, request.name(), request.version(), request.description());
+        return ResponseEntity.created(URI.create("/api/policies/" + response.id())).body(response);
+    }
+
+    /**
      * Stores (or replaces) the raw CSV input of an owned dataset. The body
      * is streamed straight from the servlet request into storage — never
      * pre-buffered by a message converter — so the shared 10 MiB bound is
@@ -159,6 +189,18 @@ public class DatasetController {
     @ExceptionHandler(MissingTransformationException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     DatasetError missingDefaultStrategy(MissingTransformationException ex) {
+        return new DatasetError(ex.getMessage());
+    }
+
+    /**
+     * A persisted profile with no detected PII types to build a policy
+     * from. An empty policy is rejected the same way the policy aggregate
+     * rejects an empty rule list; the message carries no values of any
+     * kind, so it is rendered verbatim in the existing error shape.
+     */
+    @ExceptionHandler(EmptyTransformationPreviewException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    DatasetError emptyPreview(EmptyTransformationPreviewException ex) {
         return new DatasetError(ex.getMessage());
     }
 

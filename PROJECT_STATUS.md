@@ -84,8 +84,8 @@
 * Pure unit test totals: 485 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash),
   0 failures, 0 errors, 0 skipped.
-* Repository total: 726 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
-  tests plus 241 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 738 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
+  tests plus 253 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Stored dataset profiles (`dataset.profile`, V8): normalized
   `dataset_profiles` / `dataset_profile_columns` /
@@ -107,7 +107,13 @@
   /api/datasets/{datasetId}/profile/transformation-preview`, mapping the
   persisted profile through the existing default transformation policy
   (11 new API tests against real PostgreSQL; no policy, run, CSV, or audit
-  changes).
+  changes). The preview suggestions can be persisted as a normal policy
+  through `POST
+  /api/datasets/{datasetId}/profile/transformation-preview/policy`
+  (labels from the validated request, rules for detected types only with
+  default strategies via the existing policy service — 12 new API tests
+  against real PostgreSQL; no run, no execution, no dataset/profile/CSV
+  change, no audit writes).
 * Persistent sanitization policies (`sanitization.policy`, V6): owner-scoped
   reusable `SanitizationPolicy` aggregates with normalized
   `sanitization_policy_rules` rows, exposed through `POST /api/policies`
