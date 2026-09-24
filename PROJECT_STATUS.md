@@ -84,8 +84,8 @@
 * Pure unit test totals: 485 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash),
   0 failures, 0 errors, 0 skipped.
-* Repository total: 738 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
-  tests plus 253 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 739 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
+  tests plus 254 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Stored dataset profiles (`dataset.profile`, V8): normalized
   `dataset_profiles` / `dataset_profile_columns` /

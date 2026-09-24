@@ -406,7 +406,10 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   immutable snapshot; there is no inline-rules path. A policy update or
   delete never touches existing runs: runs hold
   copied snapshot columns, not a foreign key to the mutable policy, so a
-   deleted policy leaves every run readable and every artifact downloadable. Tamper-evident audit ledger
+   deleted policy leaves every run readable and every artifact downloadable.
+  Execution flow: `Dataset` -> persisted `SanitizationPolicy` ->
+  `TransformationPlan` -> `SanitizationRun` (immutable policy snapshot) ->
+  sanitized artifact. Tamper-evident audit ledger
    foundation (`audit`, V7): `audit_ledger_entries` rows (1-based gapless
    `sequence_number` with a UNIQUE constraint, event type/actor/resource
    labels, an optional resource id, a safe-metadata `event_data` document,

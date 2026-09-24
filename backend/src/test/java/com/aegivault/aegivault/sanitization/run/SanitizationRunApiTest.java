@@ -764,4 +764,42 @@ class SanitizationRunApiTest {
         assertThatThrownBy(() -> artifacts.openArtifact(subject, UUID.fromString(runId)))
                 .isInstanceOf(SanitizationRunNotFoundException.class);
     }
+
+    @Test
+    void executedOutputFollowsPersistedPolicyNotDefaultPolicy() throws Exception {
+        String token = register(email());
+        String datasetId = createDatasetViaApi(token, "emails.csv");
+        uploadInput(token, datasetId, "email\nalice@example.com\n");
+        String policyBody = mvc.perform(post("/api/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"redact-emails\",\"version\":\"v9\","
+                                + "\"rules\":[{\"piiType\":\"EMAIL\",\"strategy\":\"REDACT\"}]}"))
+                .andExpect(status().isCreated())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        String minimalPolicyId = objectMapper.readTree(policyBody).get("id").asText();
+
+        MvcResult result = postRun(token, runRequest(datasetId, minimalPolicyId));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(201);
+        String body = result.getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(body).get("status").asText()).isEqualTo("COMPLETED");
+        assertThat(objectMapper.readTree(body).get("policyName").asText()).isEqualTo("redact-emails");
+        assertThat(objectMapper.readTree(body).get("policyVersion").asText()).isEqualTo("v9");
+        assertThat(objectMapper.readTree(body).get("policySnapshot").asText()).contains("\"EMAIL\":\"REDACT\"");
+
+        // The default policy would have produced a synthetic address; the
+        // persisted REDACT rule must win instead.
+        String runId = objectMapper.readTree(body).get("id").asText();
+        String artifact = mvc.perform(get("/api/runs/" + runId + "/artifact")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertThat(artifact).contains("[REDACTED]");
+        assertThat(artifact).doesNotContain("alice@example.com", "example.invalid");
+    }
 }
