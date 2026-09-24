@@ -81,11 +81,11 @@
   86 tests covering parser behavior, header policy, duplicate-header rejection,
   row-width policy, malformed quoting, safety limits, bounded sampling,
   determinism, error safety, and CSV→profile integration.
-* Pure unit test totals: 485 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
-  + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash),
+* Pure unit test totals: 497 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
+  + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash + 12 gateway inspection),
   0 failures, 0 errors, 0 skipped.
-* Repository total: 739 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
-  tests plus 254 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 752 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
+  tests plus 255 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Stored dataset profiles (`dataset.profile`, V8): normalized
   `dataset_profiles` / `dataset_profile_columns` /
@@ -276,7 +276,12 @@
 * Audit ledger foundation exists (`audit`, V7) as persistence plus hash-chain
   integrity only: appends, replay verification, no REST endpoints, and no
   integration with other modules yet.
-* No AI gateway exists.
+* AI gateway inspection foundation exists (`gateway`, internal only): deterministic
+  request inspection reusing the existing `PiiDetectorRegistry` plus obvious-secret
+  recognition through the existing API-key/JWT detectors, folded through a small
+  block-on-PII/block-on-secrets policy into one ALLOW/BLOCK verdict with safe reason
+  codes. No proxy, no controller, no LLM or network calls, no persistence, no logging
+  of request content; 12 pure unit tests.
 * No Redis implementation exists.
 * No frontend exists yet.
 

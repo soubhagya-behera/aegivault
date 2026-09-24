@@ -523,12 +523,22 @@ tamper-evidence (detection of modification), not absolute tamper-proofing.
 Event integration (which operations append) and any read API are still
 planned, not implemented.
 
-### AI security gateway concept (planned)
+### AI security gateway concept (inspection foundation implemented; enforcement planned)
 
 Before data leaves Aegivault for an AI model, the gateway inspects the
 outbound payload, runs PII detection and policy evaluation on it, and either
 releases a sanitized payload, blocks the request, or flags it for review.
 The decision and the payload hash are written to the audit ledger.
+
+Implemented so far is the internal inspection/decision foundation only
+(`gateway` package): an immutable inspection request, the existing
+`PiiDetectorRegistry` applied per token, obvious-secret recognition through
+the existing API-key/JWT detectors, a small block-on-PII/block-on-secrets
+policy, and one deterministic ALLOW/BLOCK decision carrying safe reason
+codes and detected type names — never matched values or request content.
+There is deliberately no proxy, no controller, no LLM or network call, no
+persistence, and no logging of request content; enforcement, audit writes,
+and provider integration remain planned, not implemented.
 
 ## High-level request/data flows (planned)
 
