@@ -169,4 +169,69 @@ class GatewayCompletionServiceTest {
         verify(responseSpy, never()).inspect(any(), any());
         verify(audit, times(1)).record(any(), any());
     }
+
+    @Test
+    void providerResponseExactlyAtLimitIsAcceptedAndInspected() {
+        String atLimit = "a".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH);
+        when(providers.complete(any())).thenReturn(new LlmResponse("test-model", atLimit));
+
+        GatewayCompleteResponse response = service.complete(inspection("Summarize quarterly revenue trends."));
+
+        assertThat(response.verdict()).isEqualTo(SecurityVerdict.ALLOW);
+        assertThat(response.provider()).isEqualTo(new LlmResponse("test-model", atLimit));
+        assertThat(response.reasons()).isEmpty();
+        verify(providers, times(1)).complete(any());
+        verify(audit, times(1)).record(any(), any());
+    }
+
+    @Test
+    void providerResponseOneOverLimitIsRejectedSafely() {
+        String oversized = "a".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH + 1);
+        when(providers.complete(any())).thenReturn(new LlmResponse("test-model", oversized));
+        GatewayInspectionRequest request = inspection("Summarize quarterly revenue trends.");
+
+        assertThatThrownBy(() -> service.complete(request))
+                .isInstanceOf(GatewayProviderException.class)
+                .hasMessage("Unable to complete gateway request.")
+                .hasMessageNotContaining("a".repeat(100));
+        verify(audit, times(1)).record(any(), any());
+    }
+
+    @Test
+    void oversizedProviderResponseNeverReachesResponseInspection() {
+        ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
+        GatewayCompletionService oversizedService =
+                new GatewayCompletionService(inspections, responseSpy, providers, audit);
+        String oversized = "a".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH + 1);
+        when(providers.complete(any())).thenReturn(new LlmResponse("test-model", oversized));
+
+        assertThatThrownBy(() -> oversizedService.complete(inspection("Summarize quarterly revenue trends.")))
+                .isInstanceOf(GatewayProviderException.class)
+                .hasMessage("Unable to complete gateway request.");
+        verify(responseSpy, never()).inspect(any(), any());
+        verify(providers, times(1)).complete(any());
+        verify(audit, times(1)).record(any(), any());
+    }
+
+    @Test
+    void oversizedProviderResponseWithPiiStillFailsInsteadOfBlocking() {
+        ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
+        GatewayCompletionService oversizedService =
+                new GatewayCompletionService(inspections, responseSpy, providers, audit);
+        String oversizedPii = EMAIL + " " + "a".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH);
+        when(providers.complete(any())).thenReturn(new LlmResponse("test-model", oversizedPii));
+
+        assertThatThrownBy(() -> oversizedService.complete(inspection("Summarize quarterly revenue trends.")))
+                .isInstanceOf(GatewayProviderException.class)
+                .hasMessage("Unable to complete gateway request.");
+        verify(responseSpy, never()).inspect(any(), any());
+        verify(audit, times(1)).record(any(), any());
+    }
+
+    @Test
+    void providerLimitReusesGatewayInputBound() {
+        assertThat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH)
+                .isEqualTo(GatewayInspectRequest.MAX_CONTENT_LENGTH)
+                .isEqualTo(65_536);
+    }
 }

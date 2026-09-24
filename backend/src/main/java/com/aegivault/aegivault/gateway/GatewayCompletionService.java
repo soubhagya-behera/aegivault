@@ -28,14 +28,28 @@ import org.springframework.stereotype.Service;
  * <p>A provider failure surfaces as {@link GatewayProviderException}
  * with a generic message (cause retained for server logs): it is never
  * converted into an ALLOW/BLOCK verdict and never leaks exception text
- * or request content. Response inspection runs only after a successful
- * provider response exists — never on the failure path. The single
+ * or request content. An oversized provider response fails the same way
+ * — never truncated, never partially inspected, never returned — before
+ * response inspection runs. Response inspection runs only after a
+ * successful provider response within the size bound exists — never on
+ * the failure path and never on oversized output. The single
  * request-inspection audit entry already recorded is left as-is — never
  * duplicated. Provider responses are never logged or persisted.
  */
 @Service
 @RequiredArgsConstructor
 public class GatewayCompletionService {
+
+    /**
+     * Maximum provider-response content in characters (64 KiB). The single
+     * provider-output size bound: reuses the gateway input-size bound
+     * ({@link GatewayInspectRequest#MAX_CONTENT_LENGTH}) rather than
+     * redefining the number, so request and response share one boundary
+     * concept. Enforced after the provider call and before response
+     * inspection — oversized output fails safely instead of being
+     * inspected, truncated, or returned.
+     */
+    public static final int MAX_PROVIDER_RESPONSE_LENGTH = GatewayInspectRequest.MAX_CONTENT_LENGTH;
 
     private final SecurityInspectionService inspections;
 
@@ -66,6 +80,11 @@ public class GatewayCompletionService {
             completion = providers.complete(new LlmRequest(inspection.model(), inspection.content()));
         } catch (RuntimeException ex) {
             throw new GatewayProviderException("Unable to complete gateway request.", ex);
+        }
+        if (completion.content().length() > MAX_PROVIDER_RESPONSE_LENGTH) {
+            throw new GatewayProviderException(
+                    "Unable to complete gateway request.",
+                    new IllegalStateException("Provider response exceeded maximum length."));
         }
         ProviderResponseInspectionResult responseDecision =
                 responseInspections.inspect(completion, GatewaySecurityPolicy.strict());

@@ -566,12 +566,17 @@ through `ProviderResponseInspectionService`, which reuses the same
 policy (PII blocks, secrets block) into a distinct
 `ProviderResponseInspectionResult` — a second decision that never reuses
 the request result. A clean provider response returns as ALLOW with the
-provider completion; a sensitive provider response returns as BLOCK
-(200 data with verdict/reasons/detected type names and no provider
-payload) instead of being returned. Provider response content is never
-persisted, never logged, and never enters the audit ledger. No external provider
-integration exists yet. No response redaction or rewriting exists: blocking
-is the only response action.
+ provider completion; a sensitive provider response returns as BLOCK
+ (200 data with verdict/reasons/detected type names and no provider
+ payload) instead of being returned. Provider output shares the 64 KiB
+ (65,536-character) boundary concept with the request input bound: the
+ completion service rejects oversized provider content with the generic
+ provider-failure 500 before response inspection runs — never truncated,
+ never partially inspected, never returned, never a BLOCK verdict.
+ Provider response content is never persisted, never logged, and never
+ enters the audit ledger. No external provider
+ integration exists yet. No response redaction or rewriting exists: blocking
+ is the only response action.
 
 ## High-level request/data flows (planned)
 

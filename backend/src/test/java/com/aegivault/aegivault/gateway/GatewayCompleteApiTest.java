@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.aegivault.aegivault.audit.AuditLedgerEntry;
 import com.aegivault.aegivault.audit.AuditLedgerEntryRepository;
 import com.aegivault.aegivault.auth.RegisterRequest;
 import com.aegivault.aegivault.gateway.provider.LlmProvider;
@@ -15,7 +16,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -384,5 +387,64 @@ class GatewayCompleteApiTest {
         assertThat(providers.calls()).containsExactly(new LlmRequest("local-test-model", CLEAN));
         // The inspection audit already recorded stays single — never duplicated.
         assertThat(ledger.count()).isEqualTo(ledgerBefore + 1);
+    }
+
+    @Test
+    void providerResponseExactlyAtLimitIsAccepted() throws Exception {
+        String token = register(email());
+        String atLimit = "q".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH);
+        providers.respondNext(atLimit);
+        long ledgerBefore = ledger.count();
+
+        mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("ALLOW"))
+                .andExpect(jsonPath("$.provider.model").value("local-test-model"))
+                .andExpect(jsonPath("$.provider.content").value(atLimit))
+                .andExpect(jsonPath("$.reasons").isEmpty());
+
+        assertThat(providers.calls()).containsExactly(new LlmRequest("local-test-model", CLEAN));
+        assertThat(ledger.count()).isEqualTo(ledgerBefore + 1);
+    }
+
+    @Test
+    void providerResponseOneOverLimitIsRejectedSafely() throws Exception {
+        String token = register(email());
+        String oversized = "q".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH + 1);
+        providers.respondNext(oversized);
+        long ledgerBefore = ledger.count();
+        Set<UUID> idsBefore = ledger.findAll().stream()
+                .map(AuditLedgerEntry::getId)
+                .collect(Collectors.toSet());
+
+        MvcResult result = mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isInternalServerError())
+                .andReturn();
+
+        String response = result.getResponse().getContentAsString();
+        assertThat(objectMapper.readTree(response).get("message").asText())
+                .isEqualTo("Unable to complete gateway request.");
+        // No provider output, request content, or audit internals leak.
+        assertThat(response).doesNotContain(
+                CLEAN, "actorSubject", "requestId", "Exception", "q".repeat(100));
+        assertThat(response).doesNotContain("BLOCK", "PII_DETECTED", "SECRET_DETECTED");
+        assertThat(providers.calls()).containsExactly(new LlmRequest("local-test-model", CLEAN));
+        // Single request-inspection audit entry — never duplicated.
+        assertThat(ledger.count()).isEqualTo(ledgerBefore + 1);
+        // Oversized output never persisted: no new ledger entry carries it.
+        List<AuditLedgerEntry> created = ledger.findAll().stream()
+                .filter(entry -> !idsBefore.contains(entry.getId()))
+                .toList();
+        assertThat(created).hasSize(1);
+        for (AuditLedgerEntry entry : created) {
+            assertThat(entry.getEventData()).doesNotContain("q".repeat(100));
+            assertThat(entry.getEventData()).doesNotContain(CLEAN);
+        }
     }
 }
