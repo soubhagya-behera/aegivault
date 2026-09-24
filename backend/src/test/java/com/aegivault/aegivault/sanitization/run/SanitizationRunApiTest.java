@@ -766,6 +766,55 @@ class SanitizationRunApiTest {
     }
 
     @Test
+    void crossOwnerCombinationsCreateNoRunAndNoAuditEvent() throws Exception {
+        String tokenA = register(email());
+        String tokenB = register(email());
+        String datasetA = createDatasetViaApi(tokenA, "a.csv");
+        uploadInput(tokenA, datasetA, "a,b\n1,2\n");
+        String policyA = registerPolicy(tokenA, "policy-a", "v1");
+        String datasetB = createDatasetViaApi(tokenB, "b.csv");
+        uploadInput(tokenB, datasetB, "a,b\n1,2\n");
+        String policyB = registerPolicy(tokenB, "policy-b", "v1");
+        long auditBefore = ledger.count();
+
+        // Own dataset + foreign policy, both directions.
+        MvcResult ownDatasetForeignPolicyA = postRun(tokenA, runRequest(datasetA, policyB));
+        MvcResult ownDatasetForeignPolicyB = postRun(tokenB, runRequest(datasetB, policyA));
+        // Foreign dataset + own policy, both directions.
+        MvcResult foreignDatasetOwnPolicyA = postRun(tokenA, runRequest(datasetB, policyA));
+        MvcResult foreignDatasetOwnPolicyB = postRun(tokenB, runRequest(datasetA, policyB));
+
+        String[] bodies = new String[] {
+            ownDatasetForeignPolicyA.getResponse().getContentAsString(),
+            ownDatasetForeignPolicyB.getResponse().getContentAsString(),
+            foreignDatasetOwnPolicyA.getResponse().getContentAsString(),
+            foreignDatasetOwnPolicyB.getResponse().getContentAsString()
+        };
+        for (MvcResult rejected : new MvcResult[] {
+            ownDatasetForeignPolicyA,
+            ownDatasetForeignPolicyB,
+            foreignDatasetOwnPolicyA,
+            foreignDatasetOwnPolicyB
+        }) {
+            assertThat(rejected.getResponse().getStatus()).isEqualTo(404);
+        }
+        for (String body : bodies) {
+            assertThat(objectMapper.readTree(body).get("message").asText()).isEqualTo("Dataset not found.");
+        }
+        assertThat(bodies[0]).isEqualTo(bodies[1]).isEqualTo(bodies[2]).isEqualTo(bodies[3]);
+
+        // Authorization fails before any run row exists, so neither owner
+        // gains a run and the shared ledger gains no entry.
+        for (String token : new String[] {tokenA, tokenB}) {
+            MvcResult listing = mvc.perform(get("/api/runs").header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk())
+                    .andReturn();
+            assertThat(listing.getResponse().getContentAsString()).isEqualTo("[]");
+        }
+        assertThat(ledger.count()).isEqualTo(auditBefore);
+    }
+
+    @Test
     void executedOutputFollowsPersistedPolicyNotDefaultPolicy() throws Exception {
         String token = register(email());
         String datasetId = createDatasetViaApi(token, "emails.csv");
