@@ -264,4 +264,82 @@ class GatewayInspectApiTest {
         assertThat(profiles.count()).isEqualTo(profilesBefore);
         assertThat(ledger.count()).isEqualTo(ledgerBefore);
     }
+
+    @Test
+    void contentExactlyAtMaximumIsAccepted() throws Exception {
+        String token = register(email());
+        String content = "a".repeat(GatewayInspectRequest.MAX_CONTENT_LENGTH);
+
+        mvc.perform(post("/api/gateway/inspect")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(inspectBody("local-test-model", content)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("ALLOW"));
+    }
+
+    @Test
+    void contentOneAboveMaximumIsRejected() throws Exception {
+        String token = register(email());
+        String content = "a".repeat(GatewayInspectRequest.MAX_CONTENT_LENGTH + 1);
+
+        mvc.perform(post("/api/gateway/inspect")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(inspectBody("local-test-model", content)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void oversizedPiiContentIsRejectedBeforeInspection() throws Exception {
+        String token = register(email());
+        // Would be BLOCK if inspected; 400 proves Bean Validation
+        // rejected it before SecurityInspectionService ran.
+        String content = "contact " + EMAIL + " " + "x".repeat(GatewayInspectRequest.MAX_CONTENT_LENGTH);
+
+        mvc.perform(post("/api/gateway/inspect")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(inspectBody("local-test-model", content)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void oversizedContentDoesNotLeakSubmittedContent() throws Exception {
+        String token = register(email());
+        String content = "contact " + EMAIL + " " + "x".repeat(GatewayInspectRequest.MAX_CONTENT_LENGTH);
+
+        MvcResult result = mvc.perform(post("/api/gateway/inspect")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(inspectBody("local-test-model", content)))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        String response = result.getResponse().getContentAsString();
+        assertThat(response).doesNotContain(EMAIL, content.substring(0, 1000));
+    }
+
+    @Test
+    void oversizedContentCreatesNoRowsAnywhere() throws Exception {
+        String token = register(email());
+        long policiesBefore = policies.count();
+        long runsBefore = runs.count();
+        long datasetsBefore = datasets.count();
+        long profilesBefore = profiles.count();
+        long ledgerBefore = ledger.count();
+
+        String content = "b".repeat(GatewayInspectRequest.MAX_CONTENT_LENGTH + 1);
+        mvc.perform(post("/api/gateway/inspect")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(inspectBody("local-test-model", content)))
+                .andExpect(status().isBadRequest());
+
+        assertThat(policies.count()).isEqualTo(policiesBefore);
+        assertThat(runs.count()).isEqualTo(runsBefore);
+        assertThat(datasets.count()).isEqualTo(datasetsBefore);
+        assertThat(profiles.count()).isEqualTo(profilesBefore);
+        assertThat(ledger.count()).isEqualTo(ledgerBefore);
+    }
 }
