@@ -3,6 +3,7 @@ package com.aegivault.aegivault.dataset;
 import com.aegivault.aegivault.dataset.csv.CsvParseException;
 import com.aegivault.aegivault.dataset.profile.DatasetProfileResponse;
 import com.aegivault.aegivault.dataset.profile.DatasetProfileService;
+import com.aegivault.aegivault.dataset.profile.DatasetProfilingService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.io.IOException;
@@ -38,6 +39,8 @@ public class DatasetController {
 
     private final DatasetProfileService profileService;
 
+    private final DatasetProfilingService profilingService;
+
     @PostMapping
     public ResponseEntity<DatasetResponse> create(
             @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CreateDatasetRequest request) {
@@ -70,6 +73,21 @@ public class DatasetController {
     }
 
     /**
+     * Explicitly profiles the stored CSV input of an owned dataset and
+     * persists the result, replacing any previous profile. The owner comes
+     * from the verified JWT subject; the request carries no body — the
+     * already-uploaded input is read server-side through
+     * {@code DatasetInputSource} — and the stored CSV is never modified.
+     * A missing dataset, a foreign dataset, and a dataset with no uploaded
+     * input yet all produce the same generic 404.
+     */
+    @PostMapping("/{datasetId}/profile")
+    public DatasetProfileResponse profile(
+            @AuthenticationPrincipal Jwt jwt, @PathVariable UUID datasetId) {
+        return profilingService.profileStoredInput(jwt.getSubject(), datasetId);
+    }
+
+    /**
      * Stores (or replaces) the raw CSV input of an owned dataset. The body
      * is streamed straight from the servlet request into storage — never
      * pre-buffered by a message converter — so the shared 10 MiB bound is
@@ -96,6 +114,18 @@ public class DatasetController {
     @ExceptionHandler(DatasetInputTooLargeException.class)
     @ResponseStatus(HttpStatus.CONTENT_TOO_LARGE)
     DatasetError tooLarge(DatasetInputTooLargeException ex) {
+        return new DatasetError(ex.getMessage());
+    }
+
+    /**
+     * Stored CSV that cannot be discovered safely (ragged rows, blank or
+     * duplicate headers, violated CSV limits). The domain message carries
+     * structural facts only — never values — so it is rendered verbatim in
+     * the existing error shape.
+     */
+    @ExceptionHandler(CsvParseException.class)
+    @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
+    DatasetError unprocessableCsv(CsvParseException ex) {
         return new DatasetError(ex.getMessage());
     }
 

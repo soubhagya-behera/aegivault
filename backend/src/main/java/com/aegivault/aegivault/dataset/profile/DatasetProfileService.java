@@ -19,9 +19,10 @@ import org.springframework.transaction.annotation.Transactional;
  * aggregate only. It never runs profiling itself — callers hand it an
  * already-computed {@link DatasetProfile} — and it never touches CSV
  * reading, detection, transformation, runs, artifacts, policies, or audit
- * code: those boundaries stay where they are. Nothing in this milestone
- * calls this service automatically; it exists so the next milestone can
- * wire profiling into the dataset workflow explicitly.
+ * code: those boundaries stay where they are. The explicit trigger is
+ * {@link DatasetProfilingService}, which reads the stored input, runs the
+ * existing CSV profiler, and saves through here; nothing else calls this
+ * service automatically.
  */
 @Service
 @RequiredArgsConstructor

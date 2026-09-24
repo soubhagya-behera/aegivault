@@ -84,8 +84,8 @@
 * Pure unit test totals: 485 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash),
   0 failures, 0 errors, 0 skipped.
-* Repository total: 703 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
-  tests plus 218 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 715 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
+  tests plus 230 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Stored dataset profiles (`dataset.profile`, V8): normalized
   `dataset_profiles` / `dataset_profile_columns` /
@@ -96,9 +96,13 @@
   `GET /api/datasets/{datasetId}/profile` returning the stored result
   verbatim (identical 404 for foreign, missing, and not-yet-profiled
   datasets; 401 unauthenticated; 400 malformed UUID). 11 new tests (6
-  persistence round-trip + 5 API) against real PostgreSQL. Nothing triggers
-  profiling automatically yet: CSV upload and run creation are unchanged,
-  and no POST profile endpoint exists.
+  persistence round-trip + 5 API) against real PostgreSQL. Profiling is now
+  triggered explicitly through `POST /api/datasets/{datasetId}/profile`
+  (owner from the JWT subject; stored input opened through
+  `DatasetInputSource`, profiled with the existing `CsvDatasetProfiler`,
+  saved through `DatasetProfileService`, re-read for the response, with 12
+  new API tests against real PostgreSQL). CSV upload and run creation are
+  unchanged: upload stores bytes only and never profiles automatically.
 * Persistent sanitization policies (`sanitization.policy`, V6): owner-scoped
   reusable `SanitizationPolicy` aggregates with normalized
   `sanitization_policy_rules` rows, exposed through `POST /api/policies`
@@ -280,8 +284,8 @@ normalized `sanitization_policy_rules` rows, created and read through
   policy owner-scoped and freezes its name/version/rules into the run's
   immutable snapshot. Dataset profiles persist through
   `DatasetProfileService` and read back through
-  `GET /api/datasets/{datasetId}/profile`, but nothing computes them
-  automatically yet. Still not implemented:
+  `GET /api/datasets/{datasetId}/profile`, and computed explicitly through
+  `POST /api/datasets/{datasetId}/profile`. Still not implemented:
   automatic profiling during upload or run creation, and background
   processing. The audit ledger
 remains a later milestone. The domain CSV sanitization pipeline and the run

@@ -92,15 +92,25 @@ profiling, and CSV discovery modules:
   survive. `DatasetProfileService.saveProfile` stores an already-computed
   `DatasetProfile` for an owned dataset (foreign or missing datasets get
   the same generic 404) and `getProfile` reads it back verbatim — profiling
-  is never re-run on read. The only HTTP exposure is
+  is never re-run on read. HTTP exposure is read plus one explicit trigger:
   `GET /api/datasets/{datasetId}/profile` (thin controller over the
   owner-scoped `get`: 200 with dataset/column metadata and detection
   counts/rates/types, one identical 404 for foreign, missing, and
   not-yet-profiled datasets, 401 unauthenticated, 400 malformed UUID; no
-  `ownerSubject` in the response). Nothing triggers profiling
-  automatically: CSV upload and run creation are untouched, no POST profile
-  endpoint exists, and the service stands ready for the next milestone to
-  wire profiling into the dataset workflow explicitly.
+  `ownerSubject` in the response) and `POST
+  /api/datasets/{datasetId}/profile` (thin controller over
+  `DatasetProfilingService`: owner from the JWT subject, stored input opened
+  through `DatasetInputSource`, profiled with the existing
+  `CsvDatasetProfiler` inside the existing CSV limits and bounded sample,
+  saved through `DatasetProfileService.saveProfile`, then re-read, so the
+  200 response is literally the persisted state in the `GET` shape: same
+  metadata and detection counts/rates/types, one identical 404 for foreign,
+  missing, and not-yet-uploaded datasets, 401 unauthenticated, 400 malformed
+  UUID, 422 with the safe structural message when the stored CSV cannot be
+  discovered; no `ownerSubject`, no raw values. Re-triggering replaces the
+  previous profile cleanly with no stale rows). CSV upload and run creation
+  remain untouched: upload stores bytes only and never profiles
+  automatically.
 * 612 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
