@@ -7,9 +7,11 @@ import java.util.UUID;
 /**
  * Immutable metadata describing PII observed across a dataset's columns.
  *
- * <p>Domain/service foundation only: not persisted, with no database table in
- * this milestone. Columns are ordered deterministically by column name.
- * Carries only profiling metadata, never raw values or raw PII.
+ * <p>Domain/service foundation: columns are ordered deterministically by
+ * column name. Carries only profiling metadata, never raw values or raw
+ * PII. Persistence lives in {@code dataset.profile}, which stores and
+ * reads this record verbatim without re-running profiling; nothing is
+ * persisted here.
  */
 public record DatasetProfile(
         UUID datasetId,

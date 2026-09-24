@@ -84,9 +84,21 @@
 * Pure unit test totals: 485 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash),
   0 failures, 0 errors, 0 skipped.
-* Repository total: 692 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
-  tests plus 207 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 703 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
+  tests plus 218 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
+* Stored dataset profiles (`dataset.profile`, V8): normalized
+  `dataset_profiles` / `dataset_profile_columns` /
+  `dataset_profile_detections` tables (metadata only — no value, sample, or
+  content column exists), `DatasetProfileService.saveProfile` /
+  `getProfile` for owner-scoped write/read of an already-computed
+  `DatasetProfile` with replace semantics that leave no stale rows, and
+  `GET /api/datasets/{datasetId}/profile` returning the stored result
+  verbatim (identical 404 for foreign, missing, and not-yet-profiled
+  datasets; 401 unauthenticated; 400 malformed UUID). 11 new tests (6
+  persistence round-trip + 5 API) against real PostgreSQL. Nothing triggers
+  profiling automatically yet: CSV upload and run creation are unchanged,
+  and no POST profile endpoint exists.
 * Persistent sanitization policies (`sanitization.policy`, V6): owner-scoped
   reusable `SanitizationPolicy` aggregates with normalized
   `sanitization_policy_rules` rows, exposed through `POST /api/policies`
@@ -264,10 +276,14 @@ stored per run behind `SanitizationArtifactStore`. Owner-scoped reusable
 sanitization policies persist as `SanitizationPolicy` aggregates with
 normalized `sanitization_policy_rules` rows, created and read through
 `POST /api/policies`, `GET /api/policies`, and
-`GET /api/policies/{policyId}`; run creation resolves the referenced
-policy owner-scoped and freezes its name/version/rules into the run's
-immutable snapshot. Still not implemented:
-profile metadata persistence and background processing. The audit ledger
+  `GET /api/policies/{policyId}`; run creation resolves the referenced
+  policy owner-scoped and freezes its name/version/rules into the run's
+  immutable snapshot. Dataset profiles persist through
+  `DatasetProfileService` and read back through
+  `GET /api/datasets/{datasetId}/profile`, but nothing computes them
+  automatically yet. Still not implemented:
+  automatic profiling during upload or run creation, and background
+  processing. The audit ledger
 remains a later milestone. The domain CSV sanitization pipeline and the run
 persistence/lifecycle foundation are implemented and tested.
 

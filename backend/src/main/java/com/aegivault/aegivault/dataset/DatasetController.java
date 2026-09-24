@@ -1,6 +1,8 @@
 package com.aegivault.aegivault.dataset;
 
 import com.aegivault.aegivault.dataset.csv.CsvParseException;
+import com.aegivault.aegivault.dataset.profile.DatasetProfileResponse;
+import com.aegivault.aegivault.dataset.profile.DatasetProfileService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.io.IOException;
@@ -34,6 +36,8 @@ public class DatasetController {
 
     private final DatasetService datasetService;
 
+    private final DatasetProfileService profileService;
+
     @PostMapping
     public ResponseEntity<DatasetResponse> create(
             @AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CreateDatasetRequest request) {
@@ -50,6 +54,19 @@ public class DatasetController {
     @GetMapping("/{id}")
     public DatasetResponse get(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID id) {
         return datasetService.get(jwt.getSubject(), id);
+    }
+
+    /**
+     * Returns the stored schema/PII profile of an owned dataset. The owner
+     * comes from the verified JWT subject; the response is the profile as
+     * persisted — profiling is never re-run here. A missing dataset, a
+     * foreign dataset, and a dataset with no persisted profile yet all
+     * produce the same generic 404.
+     */
+    @GetMapping("/{datasetId}/profile")
+    public DatasetProfileResponse getProfile(
+            @AuthenticationPrincipal Jwt jwt, @PathVariable UUID datasetId) {
+        return profileService.getProfile(jwt.getSubject(), datasetId);
     }
 
     /**

@@ -75,6 +75,32 @@ profiling, and CSV discovery modules:
   same generic 404; malformed UUID returns 400). USER and ADMIN behave
   identically; no cross-user access exists. Responses never expose
   `ownerSubject`.
+* Stored dataset profiles (`dataset.profile`, V8, persisted, read-only
+  REST): `dataset_profiles` (one row per dataset — the dataset id is the
+  primary key, owner copied for join-free owner-scoped reads, profiler
+  metadata stored verbatim), `dataset_profile_columns` (one row per column:
+  ordinal in the profiler's deterministic column-name order, name, and
+  supplied/analyzed/analyzable counts), and `dataset_profile_detections`
+  (one row per detected PII type per column: enum name plus the
+  profiler-reported count and observed rate; columns with no detections
+  have no rows). There is deliberately no value, sample, or content column
+  anywhere, so raw CSV values, samples, PII values, and sanitized values
+  have nowhere to be stored. Deletes cascade from the dataset (a profile is
+  derived, recomputable dataset metadata, like inputs and artifacts — not
+  operation history like runs), and a re-save deletes the previous rows
+  before storing the new aggregate, so no stale columns or detections
+  survive. `DatasetProfileService.saveProfile` stores an already-computed
+  `DatasetProfile` for an owned dataset (foreign or missing datasets get
+  the same generic 404) and `getProfile` reads it back verbatim — profiling
+  is never re-run on read. The only HTTP exposure is
+  `GET /api/datasets/{datasetId}/profile` (thin controller over the
+  owner-scoped `get`: 200 with dataset/column metadata and detection
+  counts/rates/types, one identical 404 for foreign, missing, and
+  not-yet-profiled datasets, 401 unauthenticated, 400 malformed UUID; no
+  `ownerSubject` in the response). Nothing triggers profiling
+  automatically: CSV upload and run creation are untouched, no POST profile
+  endpoint exists, and the service stands ready for the next milestone to
+  wire profiling into the dataset workflow explicitly.
 * 612 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
