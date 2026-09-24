@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.audit;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -25,6 +26,15 @@ public final class AuditEventData {
 
     /** Event recorded after a run reaches FAILED. */
     public static final String RUN_FAILED = "SANITIZATION_RUN_FAILED";
+
+    /** Event recorded after a gateway inspection returns ALLOW. */
+    public static final String GATEWAY_INSPECTION_ALLOWED = "AI_GATEWAY_INSPECTION_ALLOWED";
+
+    /** Event recorded after a gateway inspection returns BLOCK. */
+    public static final String GATEWAY_INSPECTION_BLOCKED = "AI_GATEWAY_INSPECTION_BLOCKED";
+
+    /** Resource type recorded on every gateway inspection event. */
+    public static final String AI_GATEWAY_INSPECTION_RESOURCE = "AI_GATEWAY_INSPECTION";
 
     private AuditEventData() {
     }
@@ -58,6 +68,33 @@ public final class AuditEventData {
         Objects.requireNonNull(errorCode, "errorCode must not be null");
         Objects.requireNonNull(errorStage, "errorStage must not be null");
         return "{\"errorCode\":\"" + escape(errorCode) + "\",\"errorStage\":\"" + escape(errorStage) + "\"}";
+    }
+
+    /**
+     * @return {@code {"model":"...","verdict":"...","reasons":[...],"detectedPiiTypes":[...]}},
+     *         labels escaped, field order fixed, code lists already ordered
+     *         by the caller — safe metadata only, never request content,
+     *         matched values, or secrets
+     */
+    public static String gatewayInspection(
+            String model, String verdict, List<String> reasons, List<String> detectedPiiTypes) {
+        Objects.requireNonNull(model, "model must not be null");
+        Objects.requireNonNull(verdict, "verdict must not be null");
+        Objects.requireNonNull(reasons, "reasons must not be null");
+        Objects.requireNonNull(detectedPiiTypes, "detectedPiiTypes must not be null");
+        return "{\"model\":\"" + escape(model) + "\",\"verdict\":\"" + escape(verdict)
+                + "\",\"reasons\":" + codes(reasons) + ",\"detectedPiiTypes\":" + codes(detectedPiiTypes) + "}";
+    }
+
+    private static String codes(List<String> codes) {
+        StringBuilder json = new StringBuilder("[");
+        for (int i = 0; i < codes.size(); i++) {
+            if (i > 0) {
+                json.append(",");
+            }
+            json.append("\"").append(escape(Objects.requireNonNull(codes.get(i), "code must not be null"))).append("\"");
+        }
+        return json.append("]").toString();
     }
 
     private static String escape(String value) {

@@ -25,7 +25,9 @@ import tools.jackson.databind.ObjectMapper;
  * Gateway inspection HTTP endpoint against real PostgreSQL. The endpoint is
  * a thin authenticated shell over {@link SecurityInspectionService}: the
  * actor comes from the JWT only, the policy is always strict, a BLOCK is
- * data (200), and inspection persists, appends, and logs nothing.
+ * data (200), and inspection logs no request content. Each successfully
+ * inspected request appends exactly one metadata-only entry to the audit
+ * ledger (see {@code GatewayInspectAuditTest}); nothing else is persisted.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -246,7 +248,7 @@ class GatewayInspectApiTest {
     }
 
     @Test
-    void inspectionCreatesNoRowsAnywhere() throws Exception {
+    void inspectionPersistsNothingExceptAuditEvents() throws Exception {
         String token = register(email());
         long policiesBefore = policies.count();
         long runsBefore = runs.count();
@@ -262,7 +264,8 @@ class GatewayInspectApiTest {
         assertThat(runs.count()).isEqualTo(runsBefore);
         assertThat(datasets.count()).isEqualTo(datasetsBefore);
         assertThat(profiles.count()).isEqualTo(profilesBefore);
-        assertThat(ledger.count()).isEqualTo(ledgerBefore);
+        // Exactly one metadata-only audit entry per inspected request.
+        assertThat(ledger.count()).isEqualTo(ledgerBefore + 3);
     }
 
     @Test

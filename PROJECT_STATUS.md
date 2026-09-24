@@ -276,14 +276,18 @@
 * Audit ledger foundation exists (`audit`, V7) as persistence plus hash-chain
   integrity only: appends, replay verification, no REST endpoints, and no
   integration with other modules yet.
-* AI gateway inspection foundation exists (`gateway`, internal only): deterministic
+* AI gateway inspection foundation exists (`gateway`): deterministic
   request inspection reusing the existing `PiiDetectorRegistry` plus obvious-secret
   recognition through the existing API-key/JWT detectors, folded through a small
   block-on-PII/block-on-secrets policy into one ALLOW/BLOCK verdict with safe reason
   codes, exposed through authenticated `POST /api/gateway/inspect` (JWT subject as
-  actor, server-generated id, fixed strict policy; BLOCK is 200 data). No proxy,
-  no LLM or network calls, no persistence, no audit writes, no logging
-  of request content; 12 pure unit + 10 API tests.
+  actor, server-generated id, fixed strict policy; BLOCK is 200 data). Every
+  successfully inspected request appends exactly one metadata-only entry to the
+  existing tamper-evident audit ledger (`AI_GATEWAY_INSPECTION_ALLOWED` /
+  `AI_GATEWAY_INSPECTION_BLOCKED`; model, verdict, reason codes, detected type
+  names — never request content, PII values, or secrets). No proxy,
+  no LLM or network calls, no persistence of request bodies, no logging
+  of request content; provider forwarding is still not implemented.
 * No Redis implementation exists.
 * No frontend exists yet.
 

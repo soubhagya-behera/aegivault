@@ -536,13 +536,21 @@ Implemented so far is the internal inspection/decision foundation only
 the existing API-key/JWT detectors, a small block-on-PII/block-on-secrets
 policy, and one deterministic ALLOW/BLOCK decision carrying safe reason
 codes and detected type names — never matched values or request content.
-There is deliberately no proxy, no LLM or network call, no
-persistence, and no logging of request content. Inspection is exposed
+There is deliberately no proxy, no LLM or network call, and no
+persistence or logging of request content. Inspection is exposed
 through authenticated `POST /api/gateway/inspect` (JWT subject as actor,
 server-generated request id, fixed strict policy; a BLOCK verdict is
-returned as 200 data, never an error status; still no provider forwarding,
-no persistence, and no audit writes). Enforcement, audit writes, and
-provider integration remain planned, not implemented.
+returned as 200 data, never an error status; still no provider forwarding
+and no persistence of request bodies). Every successfully inspected
+request appends exactly one entry to the existing tamper-evident audit
+ledger (`AI_GATEWAY_INSPECTION_ALLOWED` or
+`AI_GATEWAY_INSPECTION_BLOCKED`, actor from the JWT, resource id from
+the server-generated request id) carrying safe metadata only — model,
+verdict, reason codes, detected type names — so request content,
+matched PII values, and secrets never enter the ledger; requests that
+never reach inspection (unauthenticated, invalid, oversized) append
+nothing. Enforcement beyond inspection recording and provider
+integration remain planned, not implemented.
 
 ## High-level request/data flows (planned)
 
