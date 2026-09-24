@@ -291,8 +291,12 @@
    minimal LLM provider abstraction now exists (`gateway.provider`:
    `LlmProvider` plus immutable model/content-only `LlmRequest`/`LlmResponse`)
    with a deterministic zero-configuration `MockLlmProvider` for local/test
-   use only — labelled mock completions, no network, no credentials — and
-   no external provider integration or endpoint forwarding yet.
+   use only — labelled mock completions, no network, no credentials.
+   `POST /api/gateway/complete` inspects under the fixed strict policy and
+   forwards only ALLOW requests to the configured provider (currently the
+   mock); BLOCK never reaches the provider and returns the safe decision as
+   200 data, with the same single metadata-only audit entry per inspected
+   request. No external provider integration exists yet.
 * No Redis implementation exists.
 * No frontend exists yet.
 

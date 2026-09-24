@@ -554,9 +554,13 @@ integration remain planned, not implemented. A minimal LLM provider
 abstraction exists alongside inspection (`gateway.provider`: `LlmProvider`
 with immutable `LlmRequest`/`LlmResponse` carrying model and content only,
 plus a deterministic zero-configuration `MockLlmProvider` whose labelled
-mock completions never touch the network) for local and test use only;
-no external provider integration exists and the inspect endpoint does not
-forward to any provider.
+mock completions never touch the network) for local and test use only.
+`POST /api/gateway/complete` inspects under the fixed strict policy and
+forwards only ALLOW requests to the configured `LlmProvider` (currently
+the mock) through a small application service; BLOCK returns the safe
+decision as 200 data and never reaches the provider, and each inspected
+request keeps the single metadata-only audit entry. No external provider
+integration exists yet.
 
 ## High-level request/data flows (planned)
 
