@@ -292,11 +292,17 @@
    `LlmProvider` plus immutable model/content-only `LlmRequest`/`LlmResponse`)
    with a deterministic zero-configuration `MockLlmProvider` for local/test
    use only — labelled mock completions, no network, no credentials.
-   `POST /api/gateway/complete` inspects under the fixed strict policy and
-   forwards only ALLOW requests to the configured provider (currently the
-   mock); BLOCK never reaches the provider and returns the safe decision as
-   200 data, with the same single metadata-only audit entry per inspected
-   request. No external provider integration exists yet.
+    `POST /api/gateway/complete` inspects under the fixed strict policy and
+    forwards only ALLOW requests to the configured provider (currently the
+    mock); BLOCK never reaches the provider and returns the safe decision as
+    200 data, with the same single metadata-only audit entry per inspected
+    request. Each successful provider response is inspected separately
+    before it reaches the client (same detectors, same strict policy,
+    distinct response-inspection result): clean responses return unchanged
+    as ALLOW, sensitive responses are blocked as 200 BLOCK data with no
+    provider payload, and provider content is never persisted or logged.
+    No external provider integration exists yet. No response redaction or
+    rewriting exists.
 * No Redis implementation exists.
 * No frontend exists yet.
 

@@ -45,8 +45,15 @@ public record GatewayCompleteResponse(
         return new GatewayCompleteResponse(SecurityVerdict.ALLOW, Set.of(), Set.of(), provider);
     }
 
-    /** BLOCK response mirroring one inspection result, with no provider payload. */
+    /** BLOCK response mirroring one request-inspection result, with no provider payload. */
     public static GatewayCompleteResponse blocked(SecurityInspectionResult result) {
+        Objects.requireNonNull(result, "result must not be null");
+        return new GatewayCompleteResponse(
+                SecurityVerdict.BLOCK, result.reasons(), result.detectedPiiTypes(), null);
+    }
+
+    /** BLOCK response mirroring one provider-response inspection result, with no provider payload. */
+    public static GatewayCompleteResponse blocked(ProviderResponseInspectionResult result) {
         Objects.requireNonNull(result, "result must not be null");
         return new GatewayCompleteResponse(
                 SecurityVerdict.BLOCK, result.reasons(), result.detectedPiiTypes(), null);

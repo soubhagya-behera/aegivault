@@ -55,17 +55,26 @@ class GatewayCompleteApiTest {
 
         private volatile RuntimeException failure;
 
+        private volatile String nextContent;
+
         @Override
         public LlmResponse complete(LlmRequest request) {
             calls.add(request);
             if (failure != null) {
                 throw failure;
             }
+            if (nextContent != null) {
+                return new LlmResponse(request.model(), nextContent);
+            }
             return new LlmResponse(request.model(), "fake-completion for " + request.model());
         }
 
         void fail(RuntimeException failure) {
             this.failure = failure;
+        }
+
+        void respondNext(String content) {
+            this.nextContent = content;
         }
 
         List<LlmRequest> calls() {
@@ -75,6 +84,7 @@ class GatewayCompleteApiTest {
         void reset() {
             calls.clear();
             failure = null;
+            nextContent = null;
         }
     }
 
@@ -266,6 +276,92 @@ class GatewayCompleteApiTest {
 
         assertThat(providers.calls()).isEmpty();
         assertThat(ledger.count()).isEqualTo(ledgerBefore);
+    }
+
+    @Test
+    void providerResponseWithPiiIsBlockedWithoutReturningContent() throws Exception {
+        String token = register(email());
+        providers.respondNext("contact " + EMAIL + " for access.");
+        long ledgerBefore = ledger.count();
+
+        MvcResult result = mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("BLOCK"))
+                .andExpect(jsonPath("$.reasons[0]").value("PII_DETECTED"))
+                .andExpect(jsonPath("$.detectedPiiTypes[0]").value("EMAIL"))
+                .andExpect(jsonPath("$.provider").doesNotExist())
+                .andReturn();
+
+        assertThat(providers.calls()).containsExactly(new LlmRequest("local-test-model", CLEAN));
+        assertThat(ledger.count()).isEqualTo(ledgerBefore + 1);
+        String response = result.getResponse().getContentAsString();
+        assertThat(response).doesNotContain(EMAIL);
+        assertThat(response).doesNotContain("fake-completion");
+    }
+
+    @Test
+    void providerResponseWithSecretIsBlockedWithoutReturningContent() throws Exception {
+        String token = register(email());
+        providers.respondNext("use key " + SYNTHETIC_KEY + " for deploy.");
+        long ledgerBefore = ledger.count();
+
+        MvcResult result = mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("BLOCK"))
+                .andExpect(jsonPath("$.provider").doesNotExist())
+                .andReturn();
+
+        assertThat(providers.calls()).containsExactly(new LlmRequest("local-test-model", CLEAN));
+        assertThat(ledger.count()).isEqualTo(ledgerBefore + 1);
+        String secretResponse = result.getResponse().getContentAsString();
+        assertThat(secretResponse).contains("SECRET_DETECTED");
+        assertThat(secretResponse).doesNotContain(SYNTHETIC_KEY, EMAIL);
+    }
+
+    @Test
+    void providerResponseWithBothBlocksWithDeterministicReasons() throws Exception {
+        String token = register(email());
+        providers.respondNext("contact " + EMAIL + " with key " + SYNTHETIC_KEY + ".");
+
+        MvcResult result = mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("BLOCK"))
+                .andExpect(jsonPath("$.reasons[0]").value("PII_DETECTED"))
+                .andExpect(jsonPath("$.reasons[1]").value("SECRET_DETECTED"))
+                .andExpect(jsonPath("$.detectedPiiTypes[0]").value("EMAIL"))
+                .andExpect(jsonPath("$.provider").doesNotExist())
+                .andReturn();
+
+        assertThat(providers.calls()).containsExactly(new LlmRequest("local-test-model", CLEAN));
+        assertThat(result.getResponse().getContentAsString()).doesNotContain(SYNTHETIC_KEY, EMAIL);
+    }
+
+    @Test
+    void cleanProviderResponseReturnsContentUnchanged() throws Exception {
+        String token = register(email());
+        providers.respondNext("quarterly revenue grew steadily with no sensitive data.");
+
+        mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("ALLOW"))
+                .andExpect(jsonPath("$.provider.model").value("local-test-model"))
+                .andExpect(jsonPath("$.provider.content").value("quarterly revenue grew steadily with no sensitive data."))
+                .andExpect(jsonPath("$.reasons").isEmpty())
+                .andExpect(jsonPath("$.detectedPiiTypes").isEmpty());
+
+        assertThat(providers.calls()).containsExactly(new LlmRequest("local-test-model", CLEAN));
     }
 
     @Test

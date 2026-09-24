@@ -559,8 +559,19 @@ mock completions never touch the network) for local and test use only.
 forwards only ALLOW requests to the configured `LlmProvider` (currently
 the mock) through a small application service; BLOCK returns the safe
 decision as 200 data and never reaches the provider, and each inspected
-request keeps the single metadata-only audit entry. No external provider
-integration exists yet.
+request keeps the single metadata-only audit entry. Every successful
+provider response is inspected separately before it reaches the client
+through `ProviderResponseInspectionService`, which reuses the same
+`PiiDetectorRegistry` plus secret recognition under the same strict
+policy (PII blocks, secrets block) into a distinct
+`ProviderResponseInspectionResult` — a second decision that never reuses
+the request result. A clean provider response returns as ALLOW with the
+provider completion; a sensitive provider response returns as BLOCK
+(200 data with verdict/reasons/detected type names and no provider
+payload) instead of being returned. Provider response content is never
+persisted, never logged, and never enters the audit ledger. No external provider
+integration exists yet. No response redaction or rewriting exists: blocking
+is the only response action.
 
 ## High-level request/data flows (planned)
 
