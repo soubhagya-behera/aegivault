@@ -536,9 +536,13 @@ Implemented so far is the internal inspection/decision foundation only
 the existing API-key/JWT detectors, a small block-on-PII/block-on-secrets
 policy, and one deterministic ALLOW/BLOCK decision carrying safe reason
 codes and detected type names — never matched values or request content.
-There is deliberately no proxy, no controller, no LLM or network call, no
-persistence, and no logging of request content; enforcement, audit writes,
-and provider integration remain planned, not implemented.
+There is deliberately no proxy, no LLM or network call, no
+persistence, and no logging of request content. Inspection is exposed
+through authenticated `POST /api/gateway/inspect` (JWT subject as actor,
+server-generated request id, fixed strict policy; a BLOCK verdict is
+returned as 200 data, never an error status; still no provider forwarding,
+no persistence, and no audit writes). Enforcement, audit writes, and
+provider integration remain planned, not implemented.
 
 ## High-level request/data flows (planned)
 

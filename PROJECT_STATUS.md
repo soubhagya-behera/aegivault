@@ -84,8 +84,8 @@
 * Pure unit test totals: 497 tests (249 PII/profile + 86 CSV discovery/profiling + 77 sanitization
   + 34 CSV sanitization pipeline + 28 run domain + 5 run request + 6 audit hash + 12 gateway inspection),
   0 failures, 0 errors, 0 skipped.
-* Repository total: 752 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
-  tests plus 255 context/persistence/API/lifecycle/execution tests run against the real local
+* Repository total: 762 tests, 0 failures, 0 errors, 0 skipped — 485 pure unit
+  tests plus 265 context/persistence/API/lifecycle/execution tests run against the real local
   PostgreSQL.
 * Stored dataset profiles (`dataset.profile`, V8): normalized
   `dataset_profiles` / `dataset_profile_columns` /
@@ -280,8 +280,10 @@
   request inspection reusing the existing `PiiDetectorRegistry` plus obvious-secret
   recognition through the existing API-key/JWT detectors, folded through a small
   block-on-PII/block-on-secrets policy into one ALLOW/BLOCK verdict with safe reason
-  codes. No proxy, no controller, no LLM or network calls, no persistence, no logging
-  of request content; 12 pure unit tests.
+  codes, exposed through authenticated `POST /api/gateway/inspect` (JWT subject as
+  actor, server-generated id, fixed strict policy; BLOCK is 200 data). No proxy,
+  no LLM or network calls, no persistence, no audit writes, no logging
+  of request content; 12 pure unit + 10 API tests.
 * No Redis implementation exists.
 * No frontend exists yet.
 
