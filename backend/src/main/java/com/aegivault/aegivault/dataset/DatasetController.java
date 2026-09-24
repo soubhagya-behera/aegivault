@@ -4,6 +4,9 @@ import com.aegivault.aegivault.dataset.csv.CsvParseException;
 import com.aegivault.aegivault.dataset.profile.DatasetProfileResponse;
 import com.aegivault.aegivault.dataset.profile.DatasetProfileService;
 import com.aegivault.aegivault.dataset.profile.DatasetProfilingService;
+import com.aegivault.aegivault.dataset.profile.TransformationPreviewResponse;
+import com.aegivault.aegivault.dataset.profile.TransformationPreviewService;
+import com.aegivault.aegivault.sanitization.MissingTransformationException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.io.IOException;
@@ -40,6 +43,8 @@ public class DatasetController {
     private final DatasetProfileService profileService;
 
     private final DatasetProfilingService profilingService;
+
+    private final TransformationPreviewService previewService;
 
     @PostMapping
     public ResponseEntity<DatasetResponse> create(
@@ -88,6 +93,22 @@ public class DatasetController {
     }
 
     /**
+     * Previews the default transformation strategy for each PII type
+     * detected in an owned dataset's persisted profile. Strictly read-only:
+     * the persisted profile is read as-is (profiling is never re-run, the
+     * raw CSV is never opened), and nothing is created or modified — no
+     * policy, no run, no audit entry, no dataset/profile/CSV change. The
+     * owner comes from the verified JWT subject; a missing dataset, a
+     * foreign dataset, and a dataset with no persisted profile yet all
+     * produce the same generic 404.
+     */
+    @GetMapping("/{datasetId}/profile/transformation-preview")
+    public TransformationPreviewResponse previewTransformation(
+            @AuthenticationPrincipal Jwt jwt, @PathVariable UUID datasetId) {
+        return previewService.preview(jwt.getSubject(), datasetId);
+    }
+
+    /**
      * Stores (or replaces) the raw CSV input of an owned dataset. The body
      * is streamed straight from the servlet request into storage — never
      * pre-buffered by a message converter — so the shared 10 MiB bound is
@@ -126,6 +147,18 @@ public class DatasetController {
     @ExceptionHandler(CsvParseException.class)
     @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
     DatasetError unprocessableCsv(CsvParseException ex) {
+        return new DatasetError(ex.getMessage());
+    }
+
+    /**
+     * A detected PII type with no default transformation strategy. Fail-closed
+     * by design: the preview never invents a strategy, and the domain message
+     * names the type only, so it is rendered verbatim in the existing error
+     * shape. Defensive today — the default policy covers all eleven types.
+     */
+    @ExceptionHandler(MissingTransformationException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    DatasetError missingDefaultStrategy(MissingTransformationException ex) {
         return new DatasetError(ex.getMessage());
     }
 

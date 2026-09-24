@@ -110,7 +110,11 @@ profiling, and CSV discovery modules:
   discovered; no `ownerSubject`, no raw values. Re-triggering replaces the
   previous profile cleanly with no stale rows). CSV upload and run creation
   remain untouched: upload stores bytes only and never profiles
-  automatically.
+  automatically. A read-only `GET
+  /api/datasets/{datasetId}/profile/transformation-preview` maps the
+  persisted profile through the existing default transformation policy
+  (per-type counts/rates plus the suggested strategy; no profiling, no
+  sanitization, no policy/run/audit writes, no raw values).
 * 612 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
