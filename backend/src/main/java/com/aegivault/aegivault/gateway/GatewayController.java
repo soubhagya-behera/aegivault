@@ -109,6 +109,18 @@ public class GatewayController {
     }
 
     /**
+     * Rate-limit infrastructure failure: the quota check itself could not
+     * run, so success is not claimed and the request is not let through —
+     * generic 500 with no Redis details, cause retained in server logs
+     * only. Distinct from quota rejection (HTTP 429) above.
+     */
+    @ExceptionHandler(GatewayRateLimitUnavailableException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    GatewayError rateLimitUnavailable(GatewayRateLimitUnavailableException ex) {
+        return new GatewayError(GatewayRateLimitUnavailableException.MESSAGE);
+    }
+
+    /**
      * Provider failure: inspection and its audit entry already happened,
      * so success is not claimed — generic 500 with no provider details,
      * exception text, or request content, cause retained in server logs

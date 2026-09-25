@@ -594,12 +594,21 @@ the request result. A clean provider response returns as ALLOW with the
   (keyed by the verified JWT subject only) first, and a rejected actor
   fails as HTTP 429 with the safe `Gateway rate limit exceeded.` message
   — never a BLOCK verdict, which stays HTTP 200 data, and with no
-  inspection audit entry. The only implementation is the process-local
-  in-memory fixed-window `InMemoryGatewayRateLimiter` (20 requests per
-  actor per 1-minute window, expired windows evicted lazily, no Redis, no
-  scheduler): it is not shared between application instances and is not
-  distributed rate limiting. Redis-backed enforcement remains planned,
-  not implemented.
+  inspection audit entry. `GatewayRateLimiter` is now an abstraction with
+  two implementations behind the same fixed-window policy (20 requests
+  per actor per 1-minute window, keyed by the verified JWT subject
+  only): the default process-local in-memory `InMemoryGatewayRateLimiter`
+  (expired windows evicted lazily, no Redis, no scheduler — not shared
+  between instances) and the optional `RedisGatewayRateLimiter` for
+  multi-instance enforcement, selected by `aegivault.gateway.rate-limiter`
+  (`IN_MEMORY` default, `REDIS` optional). The Redis limiter counts per
+  actor at `aegivault:gateway:rate-limit:<actorSubject>` through one
+  atomic Lua execution per attempt (increment, window TTL on first
+  creation, limit compare — no separate GET/INCR/EXPIRE trips, no
+  background scheduler) and fails closed: a Redis outage answers a
+  generic 500 without leaking Redis details instead of bypassing the
+  limit. No production-scale distributed guarantees are claimed beyond
+  this single atomic counter.
 
 ## High-level request/data flows (planned)
 

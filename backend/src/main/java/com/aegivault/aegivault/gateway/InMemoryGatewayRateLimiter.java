@@ -5,7 +5,6 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import org.springframework.stereotype.Service;
 
 /**
  * Process-local fixed-window gateway rate limiter keyed by the verified
@@ -19,20 +18,26 @@ import org.springframework.stereotype.Service;
  * never accumulate. There is no
  * Redis, no persistence, and no background scheduler: this limiter is
  * process-local, is not shared between application instances, and is
- * not distributed rate limiting. A later Redis-backed implementation
- * can implement {@link GatewayRateLimiter} without changing callers.
+ * not distributed rate limiting. The Redis-backed implementation
+ * ({@link RedisGatewayRateLimiter}) serves multi-instance enforcement
+ * behind the same {@link GatewayRateLimiter} abstraction.
+ *
+ * <p>Policy values live in {@link GatewayRateLimitPolicy} and are aliased
+ * here only so existing references keep compiling; the policy class is
+ * the single source of truth.
  *
  * <p>Depends on nothing but a {@link Clock}: no controller, no
- * completion service, no provider, no detectors, no repositories.
+ * completion service, no provider, no detectors, no repositories. Wired
+ * by {@link RateLimiterConfiguration}, never component-scanned, so
+ * exactly one {@link GatewayRateLimiter} bean exists per configuration.
  */
-@Service
 public class InMemoryGatewayRateLimiter implements GatewayRateLimiter {
 
-    /** Allowed completions per actor per window. */
-    public static final int MAX_REQUESTS = 20;
+    /** Allowed completions per actor per window (see {@link GatewayRateLimitPolicy}). */
+    public static final int MAX_REQUESTS = GatewayRateLimitPolicy.MAX_REQUESTS;
 
-    /** Fixed window length. */
-    public static final Duration WINDOW = Duration.ofMinutes(1);
+    /** Fixed window length (see {@link GatewayRateLimitPolicy}). */
+    public static final Duration WINDOW = GatewayRateLimitPolicy.WINDOW;
 
     private final Clock clock;
 

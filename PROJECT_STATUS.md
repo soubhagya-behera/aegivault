@@ -328,11 +328,17 @@
     audit, provider selection, or provider invocation: rejected requests
     return HTTP 429 with the safe message only and append no inspection
     audit entry, while security BLOCK behavior (HTTP 200 data) is
-    unchanged. The implementation is process-local in-memory only
-    (`InMemoryGatewayRateLimiter` behind `GatewayRateLimiter`) — not
-    shared between instances, not distributed; Redis enforcement is not
-    implemented.
-* No Redis implementation exists.
+    unchanged. `GatewayRateLimiter` is now an abstraction with two
+    implementations behind the same policy: the default process-local
+    in-memory limiter (`IN_MEMORY`, no Redis) and an optional Redis
+    limiter (`REDIS`, per-actor counters at
+    `aegivault:gateway:rate-limit:<actorSubject>` via one atomic Lua
+    execution per attempt, intended for multi-instance enforcement;
+    selected by `aegivault.gateway.rate-limiter`, default `IN_MEMORY`).
+    Redis outages fail closed as a generic 500. Rate limiting still runs
+    before inspection/audit/provider flow.
+* Redis is used only for the optional gateway rate limiter; no other
+  Redis implementation exists.
 * No frontend exists yet.
 
 ## Next planned step
