@@ -315,6 +315,14 @@
     provider payload, and provider content is never persisted or logged.
     No external cloud provider integration exists. No response redaction or
     rewriting exists.
+    A live Ollama gateway smoke test exists but is opt-in only
+    (`OllamaGatewaySmokeTest`, enabled by `AEGIVAULT_OLLAMA_TEST=true` or
+    `-Daegivault.ollama.test=true`; skipped by default with no Ollama
+    connection, so the normal suite never requires Ollama; when enabled a
+    local Ollama server with an installed model is required — documented
+    default `llama3.2`, override with `AEGIVAULT_OLLAMA_MODEL` /
+    `-Daegivault.ollama.model`, base URL with `AEGIVAULT_OLLAMA_BASE_URL` /
+    `-Daegivault.ollama.base-url`).
 * No Redis implementation exists.
 * No frontend exists yet.
 

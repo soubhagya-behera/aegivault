@@ -154,7 +154,7 @@ class GatewayCompletionServiceTest {
         GatewayCompleteResponse second = service.complete(inspection("Summarize quarterly revenue trends."));
 
         assertThat(first.verdict()).isEqualTo(SecurityVerdict.BLOCK);
-        assertThat(first.reasons()).containsExactly(BlockReason.PII_DETECTED, BlockReason.SECRET_DETECTED);
+        assertThat(first.reasons()).containsExactlyInAnyOrder(BlockReason.PII_DETECTED, BlockReason.SECRET_DETECTED);
         assertThat(first.detectedPiiTypes()).containsExactly(PiiType.EMAIL);
         assertThat(first.toString()).doesNotContain(EMAIL, SYNTHETIC_KEY, KEY_BODY);
         assertThat(second.reasons()).isEqualTo(first.reasons());

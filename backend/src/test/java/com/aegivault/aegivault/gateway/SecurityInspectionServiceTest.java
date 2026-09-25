@@ -107,7 +107,7 @@ class SecurityInspectionServiceTest {
         SecurityInspectionResult second = service.inspect(input, GatewaySecurityPolicy.strict());
 
         assertThat(first.verdict()).isEqualTo(SecurityVerdict.BLOCK);
-        assertThat(first.reasons()).containsExactly(BlockReason.PII_DETECTED, BlockReason.SECRET_DETECTED);
+        assertThat(first.reasons()).containsExactlyInAnyOrder(BlockReason.PII_DETECTED, BlockReason.SECRET_DETECTED);
         assertThat(first.detectedPiiTypes()).containsExactly(PiiType.EMAIL);
         assertThat(second).isEqualTo(first);
     }

@@ -14,6 +14,7 @@ import com.aegivault.aegivault.gateway.provider.LlmResponse;
 import com.aegivault.aegivault.identity.UserRepository;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -214,15 +215,20 @@ class GatewayCompleteApiTest {
     void combinedFindingsBlockWithoutCallingProvider() throws Exception {
         String token = register(email());
 
-        mvc.perform(post("/api/gateway/complete")
+        MvcResult result = mvc.perform(post("/api/gateway/complete")
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(completeBody("local-test-model", "contact " + EMAIL + " with key " + SYNTHETIC_KEY + ".")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.verdict").value("BLOCK"))
-                .andExpect(jsonPath("$.reasons[0]").value("PII_DETECTED"))
-                .andExpect(jsonPath("$.reasons[1]").value("SECRET_DETECTED"))
-                .andExpect(jsonPath("$.provider").doesNotExist());
+                .andExpect(jsonPath("$.provider").doesNotExist())
+                .andReturn();
+
+        // GatewayCompleteResponse copies sets via Set.copyOf (no ordering
+        // promise), so JSON array order varies by JVM; assert membership.
+        Set<String> combinedReasons = new HashSet<>();
+        objectMapper.readTree(result.getResponse().getContentAsString()).get("reasons").forEach(node -> combinedReasons.add(node.asText()));
+        assertThat(combinedReasons).containsExactlyInAnyOrder("PII_DETECTED", "SECRET_DETECTED");
 
         assertThat(providers.calls()).isEmpty();
     }
@@ -338,11 +344,19 @@ class GatewayCompleteApiTest {
                         .content(completeBody("local-test-model", CLEAN)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.verdict").value("BLOCK"))
-                .andExpect(jsonPath("$.reasons[0]").value("PII_DETECTED"))
-                .andExpect(jsonPath("$.reasons[1]").value("SECRET_DETECTED"))
-                .andExpect(jsonPath("$.detectedPiiTypes[0]").value("EMAIL"))
                 .andExpect(jsonPath("$.provider").doesNotExist())
                 .andReturn();
+
+        // GatewayCompleteResponse copies sets via Set.copyOf (no ordering
+        // promise), so JSON array order is not deterministic; assert set
+        // membership instead of indices while still requiring exactly both.
+        String payload = result.getResponse().getContentAsString();
+        Set<String> bothReasons = new HashSet<>();
+        objectMapper.readTree(payload).get("reasons").forEach(node -> bothReasons.add(node.asText()));
+        assertThat(bothReasons).containsExactlyInAnyOrder("PII_DETECTED", "SECRET_DETECTED");
+        Set<String> detected = new HashSet<>();
+        objectMapper.readTree(payload).get("detectedPiiTypes").forEach(node -> detected.add(node.asText()));
+        assertThat(detected).containsExactlyInAnyOrder("EMAIL", "API_KEY");
 
         assertThat(providers.calls()).containsExactly(new LlmRequest("local-test-model", CLEAN));
         assertThat(result.getResponse().getContentAsString()).doesNotContain(SYNTHETIC_KEY, EMAIL);

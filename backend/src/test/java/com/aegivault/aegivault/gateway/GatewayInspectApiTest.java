@@ -11,6 +11,8 @@ import com.aegivault.aegivault.dataset.DatasetRepository;
 import com.aegivault.aegivault.dataset.profile.StoredDatasetProfileRepository;
 import com.aegivault.aegivault.sanitization.policy.SanitizationPolicyRepository;
 import com.aegivault.aegivault.sanitization.run.SanitizationRunRepository;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -132,9 +134,13 @@ class GatewayInspectApiTest {
                         .content(inspectBody("local-test-model", "use key " + SYNTHETIC_KEY + " for deploy.")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.verdict").value("BLOCK"))
-                .andExpect(jsonPath("$.reasons[0]").value("PII_DETECTED"))
-                .andExpect(jsonPath("$.reasons[1]").value("SECRET_DETECTED"))
                 .andReturn();
+
+        // GatewayInspectResponse-equivalent sets have no ordering promise in
+        // JSON; assert membership rather than indices.
+        Set<String> secretReasons = new HashSet<>();
+        objectMapper.readTree(result.getResponse().getContentAsString()).get("reasons").forEach(node -> secretReasons.add(node.asText()));
+        assertThat(secretReasons).containsExactlyInAnyOrder("PII_DETECTED", "SECRET_DETECTED");
 
         assertThat(result.getResponse().getContentAsString()).doesNotContain(SYNTHETIC_KEY);
     }
@@ -148,10 +154,12 @@ class GatewayInspectApiTest {
         String second = inspect(token, body).getResponse().getContentAsString();
 
         assertThat(objectMapper.readTree(first)).isEqualTo(objectMapper.readTree(second));
-        assertThat(objectMapper.readTree(first).get("reasons").get(0).asText()).isEqualTo("PII_DETECTED");
-        assertThat(objectMapper.readTree(first).get("reasons").get(1).asText()).isEqualTo("SECRET_DETECTED");
-        assertThat(objectMapper.readTree(first).get("detectedPiiTypes").get(0).asText()).isEqualTo("API_KEY");
-        assertThat(objectMapper.readTree(first).get("detectedPiiTypes").get(1).asText()).isEqualTo("EMAIL");
+        Set<String> bothReasons = new HashSet<>();
+        objectMapper.readTree(first).get("reasons").forEach(node -> bothReasons.add(node.asText()));
+        assertThat(bothReasons).containsExactlyInAnyOrder("PII_DETECTED", "SECRET_DETECTED");
+        Set<String> bothTypes = new HashSet<>();
+        objectMapper.readTree(first).get("detectedPiiTypes").forEach(node -> bothTypes.add(node.asText()));
+        assertThat(bothTypes).containsExactlyInAnyOrder("API_KEY", "EMAIL");
     }
 
     @Test
