@@ -323,6 +323,15 @@
     default `llama3.2`, override with `AEGIVAULT_OLLAMA_MODEL` /
     `-Daegivault.ollama.model`, base URL with `AEGIVAULT_OLLAMA_BASE_URL` /
     `-Daegivault.ollama.base-url`).
+    Gateway completions are now rate-limited per authenticated actor (20
+    requests per actor per 1-minute fixed window) before inspection,
+    audit, provider selection, or provider invocation: rejected requests
+    return HTTP 429 with the safe message only and append no inspection
+    audit entry, while security BLOCK behavior (HTTP 200 data) is
+    unchanged. The implementation is process-local in-memory only
+    (`InMemoryGatewayRateLimiter` behind `GatewayRateLimiter`) — not
+    shared between instances, not distributed; Redis enforcement is not
+    implemented.
 * No Redis implementation exists.
 * No frontend exists yet.
 

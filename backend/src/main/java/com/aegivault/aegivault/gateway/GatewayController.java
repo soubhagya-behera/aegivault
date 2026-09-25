@@ -69,6 +69,11 @@ public class GatewayController {
      * safe decision with no provider payload and never invokes the
      * provider. Never returns request content, matched values, the actor
      * subject, or audit internals.
+     *
+     * <p>The actor's rate-limit attempt is spent first inside
+     * {@link GatewayCompletionService}: a rate-limited request fails as
+     * HTTP 429 before inspection, audit, provider selection, or provider
+     * invocation, so it appends no inspection audit entry.
      */
     @PostMapping("/complete")
     public GatewayCompleteResponse complete(
@@ -88,6 +93,19 @@ public class GatewayController {
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     GatewayError auditFailed(AuditLedgerException ex) {
         return new GatewayError("Unable to record audit event.");
+    }
+
+    /**
+     * Rate-limit rejection: the actor spent its completion quota, so
+     * nothing was inspected, audited, or forwarded — generic 429 with
+     * the safe message only, never counters, timestamps, the actor
+     * subject, or request content. Distinct from a security BLOCK,
+     * which stays HTTP 200 data.
+     */
+    @ExceptionHandler(GatewayRateLimitExceededException.class)
+    @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
+    GatewayError rateLimitExceeded(GatewayRateLimitExceededException ex) {
+        return new GatewayError(GatewayRateLimitExceededException.MESSAGE);
     }
 
     /**

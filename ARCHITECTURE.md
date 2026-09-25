@@ -588,7 +588,18 @@ the request result. A clean provider response returns as ALLOW with the
  never partially inspected, never returned, never a BLOCK verdict.
  Provider response content is never persisted, never logged, and never
   enters the audit ledger. No external cloud provider exists. No response redaction or rewriting exists: blocking
- is the only response action.
+  is the only response action. Gateway completions are additionally
+  rate-limited per authenticated actor before any inspection or provider
+  work: the completion service spends one `GatewayRateLimiter` attempt
+  (keyed by the verified JWT subject only) first, and a rejected actor
+  fails as HTTP 429 with the safe `Gateway rate limit exceeded.` message
+  — never a BLOCK verdict, which stays HTTP 200 data, and with no
+  inspection audit entry. The only implementation is the process-local
+  in-memory fixed-window `InMemoryGatewayRateLimiter` (20 requests per
+  actor per 1-minute window, expired windows evicted lazily, no Redis, no
+  scheduler): it is not shared between application instances and is not
+  distributed rate limiting. Redis-backed enforcement remains planned,
+  not implemented.
 
 ## High-level request/data flows (planned)
 

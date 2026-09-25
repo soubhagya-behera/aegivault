@@ -8,9 +8,13 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 /**
- * Application-layer seam for gateway completions: inspect the request,
- * then forward only what inspection allowed, then inspect the provider
- * response before returning it. One call inspects the request under the
+ * Application-layer seam for gateway completions: rate-limit the actor,
+ * inspect the request, then forward only what inspection allowed, then inspect the provider
+ * response before returning it. One call first spends one attempt from
+ * {@link GatewayRateLimiter} for the JWT-derived actor — a rejected actor
+ * fails immediately as {@link GatewayRateLimitExceededException} before
+ * inspection, audit, provider selection, or provider invocation — then
+ * inspects the request under the
  * fixed strict policy through {@link SecurityInspectionService}, records
  * the request outcome once through {@link GatewayAuditService}, and —
  * only on request ALLOW — resolves one {@link LlmProvider} through the
@@ -54,6 +58,8 @@ public class GatewayCompletionService {
      */
     public static final int MAX_PROVIDER_RESPONSE_LENGTH = GatewayInspectRequest.MAX_CONTENT_LENGTH;
 
+    private final GatewayRateLimiter rateLimiter;
+
     private final SecurityInspectionService inspections;
 
     private final ProviderResponseInspectionService responseInspections;
@@ -73,6 +79,9 @@ public class GatewayCompletionService {
      *         response was blocked instead of being returned)
      */
     public GatewayCompleteResponse complete(GatewayInspectionRequest inspection) {
+        if (!rateLimiter.tryAcquire(inspection.actorSubject())) {
+            throw new GatewayRateLimitExceededException();
+        }
         SecurityInspectionResult requestDecision = inspections.inspect(inspection, GatewaySecurityPolicy.strict());
         audit.record(inspection, requestDecision);
         if (requestDecision.verdict() == SecurityVerdict.BLOCK) {
