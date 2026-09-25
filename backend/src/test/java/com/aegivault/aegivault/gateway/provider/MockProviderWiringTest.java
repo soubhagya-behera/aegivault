@@ -5,6 +5,9 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.aegivault.aegivault.audit.AuditEventData;
+import com.aegivault.aegivault.audit.AuditLedgerEntry;
+import com.aegivault.aegivault.audit.AuditLedgerEntryRepository;
 import com.aegivault.aegivault.auth.RegisterRequest;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -12,8 +15,10 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -56,6 +61,9 @@ class MockProviderWiringTest {
 
     @Autowired
     private LlmProviderSelector selector;
+
+    @Autowired
+    private AuditLedgerEntryRepository ledger;
 
     private static HttpServer startStub() {
         try {
@@ -143,5 +151,32 @@ class MockProviderWiringTest {
         assertThat(OLLAMA_REQUESTS.get())
                 .as("MOCK mode must never make an Ollama HTTP request")
                 .isZero();
+    }
+    @Test
+    void mockCompletionKeepsTheExistingInspectionAndAuditBehaviour() throws Exception {
+        String token = register();
+        long ledgerBefore = ledger.count();
+        Set<UUID> before = ledger.findAll().stream()
+                .map(AuditLedgerEntry::getId)
+                .collect(Collectors.toSet());
+
+        String body = mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"local-test-model\",\"content\":\"" + CLEAN + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("ALLOW"))
+                .andExpect(jsonPath("$.provider.model").value("local-test-model"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(body).doesNotContain("actorSubject", "requestId", "entryHash", "previousHash", "eventData");
+        var created = ledger.findAll().stream().filter(entry -> !before.contains(entry.getId())).toList();
+        assertThat(ledger.count()).isEqualTo(ledgerBefore + 1);
+        assertThat(created).hasSize(1);
+        assertThat(created.get(0).getEventType()).isEqualTo(AuditEventData.GATEWAY_INSPECTION_ALLOWED);
+        assertThat(created.get(0).getResourceType()).isEqualTo(AuditEventData.AI_GATEWAY_INSPECTION_RESOURCE);
+        assertThat(created.get(0).getEventData()).doesNotContain(CLEAN, token, "actorSubject");
     }
 }
