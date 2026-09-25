@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.aegivault.aegivault.auth.RegisterRequest;
+import com.aegivault.aegivault.gateway.provider.LlmProvider;
 import com.aegivault.aegivault.gateway.provider.LlmProviderSelector;
 import com.aegivault.aegivault.gateway.provider.MockLlmProvider;
 import java.util.UUID;
@@ -20,11 +21,13 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * Completion endpoint through the real Spring wiring (no test doubles):
- * proves the production {@code LlmProviderSelector} resolves the mock
- * provider and serves ALLOW requests while BLOCK still returns the
- * safe decision.
+ * proves the production {@code LlmProviderSelector} resolves the
+ * configuration-wired mock provider ({@code aegivault.gateway.provider=MOCK})
+ * and serves ALLOW requests while BLOCK still returns the
+ * safe decision. The provider is pinned to MOCK so the test never depends
+ * on a developer's local provider configuration.
  */
-@SpringBootTest
+@SpringBootTest(properties = "aegivault.gateway.provider=MOCK")
 @AutoConfigureMockMvc
 class GatewayCompleteWiringTest {
 
@@ -42,7 +45,7 @@ class GatewayCompleteWiringTest {
     private LlmProviderSelector selector;
 
     @Autowired
-    private MockLlmProvider mock;
+    private LlmProvider provider;
 
     private String register() throws Exception {
         String body = objectMapper.writeValueAsString(
@@ -57,7 +60,9 @@ class GatewayCompleteWiringTest {
 
     @Test
     void selectorResolvesTheMockProvider() {
-        assertThat(selector.select("local-test-model")).isSameAs(mock);
+        assertThat(selector.select("local-test-model"))
+                .isSameAs(provider)
+                .isInstanceOf(MockLlmProvider.class);
     }
 
     @Test

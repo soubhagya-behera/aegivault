@@ -26,9 +26,12 @@ import tools.jackson.databind.ObjectMapper;
  * internals, the raw Ollama body, and request content never enter the
  * exception message.
  *
- * <p>Not yet a Spring bean and not yet selected by the gateway: the
- * mock remains the production-selected provider until the selection
- * milestone wires this in.
+ * <p>Wired as the single active {@link LlmProvider} bean when
+ * {@code aegivault.gateway.provider=OLLAMA} (configuration-driven, never
+ * inferred from the model name); the mock stays the default. The provider
+ * makes no call at construction time, so the application starts without a
+ * live Ollama server and only talks to Ollama when a completion is actually
+ * requested.
  */
 public class OllamaLlmProvider implements LlmProvider {
 

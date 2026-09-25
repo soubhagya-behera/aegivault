@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Objects;
-import org.springframework.stereotype.Component;
 
 /**
  * Deterministic local {@link LlmProvider} for tests and local use. This
@@ -17,8 +16,11 @@ import org.springframework.stereotype.Component;
  * different digests. The response carries the model, the input length,
  * and the digest only — never the request content itself. Stateless:
  * no fields, no cache, nothing to configure.
+ *
+ * <p>Wired as the active {@link LlmProvider} when
+ * {@code aegivault.gateway.provider=MOCK} (the default); never a Spring
+ * component itself, so it can never compete with another provider bean.
  */
-@Component
 public class MockLlmProvider implements LlmProvider {
 
     public MockLlmProvider() {

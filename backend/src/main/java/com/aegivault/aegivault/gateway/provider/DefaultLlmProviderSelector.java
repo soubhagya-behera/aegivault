@@ -5,11 +5,14 @@ import org.springframework.stereotype.Component;
 
 /**
  * Single-provider selector: every valid model resolves to the one
- * configured {@link LlmProvider} (currently the mock). Deterministic
- * by design — no registry, no routing table, no network or credential
- * handling. Blank models are rejected before any provider is
- * returned; the completion service fails such selections safely
- * through the existing generic provider-failure behavior.
+ * {@link LlmProvider} wired by configuration
+ * ({@code aegivault.gateway.provider}, default {@code MOCK}) — provider
+ * choice happens during Spring configuration, never here and never from
+ * the model name. Deterministic by design — no registry, no routing
+ * table, no network or credential handling. Blank models are rejected
+ * before any provider is returned; the completion service fails such
+ * selections safely through the existing generic provider-failure
+ * behavior.
  */
 @Component
 @RequiredArgsConstructor

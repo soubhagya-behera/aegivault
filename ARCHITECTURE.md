@@ -559,13 +559,18 @@ plus a deterministic zero-configuration `MockLlmProvider` whose labelled
  behind the same `LlmProvider` interface, using the Ollama generate API
  over plain HTTP via the existing Spring `RestClient` — no SDK, no new
  dependencies — with typed localhost-only configuration for base URL plus
- connection/read timeouts and generic safe failures). It is not yet wired
- in: the mock remains the only selector-resolved provider, so the gateway
- never calls Ollama yet and no Ollama routing exists.
+connection/read timeouts and generic safe failures). Provider selection
+  is configuration-driven only (`aegivault.gateway.provider`, `MOCK`
+  default, `OLLAMA` supported; never inferred from the model name, a URL,
+  content, or headers, and never chosen by callers of
+  `POST /api/gateway/complete`): exactly one `LlmProvider` bean is active
+  at a time, wired at startup, and the default deployment still uses the
+  mock, so Ollama support exists in the application without the deployment
+  being configured to use it. No external cloud provider exists.
 `POST /api/gateway/complete` inspects under the fixed strict policy and
 forwards only ALLOW requests to the `LlmProvider` resolved through the
-small `LlmProviderSelector` abstraction (`select(model)`; currently every
-valid model resolves to the mock) through a small application service; BLOCK returns the safe
+small `LlmProviderSelector` abstraction (`select(model)` validates the
+model and returns the single configuration-wired provider) through a small application service; BLOCK returns the safe
 decision as 200 data and never reaches the provider, and each inspected
 request keeps the single metadata-only audit entry. Every successful
 provider response is inspected separately before it reaches the client
@@ -582,8 +587,7 @@ the request result. A clean provider response returns as ALLOW with the
  provider-failure 500 before response inspection runs — never truncated,
  never partially inspected, never returned, never a BLOCK verdict.
  Provider response content is never persisted, never logged, and never
- enters the audit ledger. No external provider
- integration exists yet. No response redaction or rewriting exists: blocking
+  enters the audit ledger. No external cloud provider exists. No response redaction or rewriting exists: blocking
  is the only response action.
 
 ## High-level request/data flows (planned)

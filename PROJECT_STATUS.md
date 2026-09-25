@@ -295,20 +295,25 @@
     local Ollama provider implementation also exists (`OllamaLlmProvider`
     behind the same interface, generate API over plain HTTP via the
     existing Spring HTTP stack with localhost-only base URL plus
-    connection/read timeout configuration, generic safe failures) but is
-    not yet selected: the mock remains the only selector-resolved
-    provider, so the gateway never calls Ollama yet.
+    connection/read timeout configuration, generic safe failures).
+    Provider selection is now configuration-driven
+    (`aegivault.gateway.provider`, `MOCK` default, `OLLAMA` supported;
+    never inferred from the model name and never chosen by API callers):
+    exactly one `LlmProvider` bean is active at a time and the default
+    deployment still uses the mock, so Ollama support exists in the
+    application without the deployment being configured to use it.
+    No external cloud provider exists.
     `POST /api/gateway/complete` inspects under the fixed strict policy and
     forwards only ALLOW requests to the `LlmProvider` resolved through the
-    small `LlmProviderSelector` abstraction (currently every valid model
-    resolves to the mock); BLOCK never reaches the provider and returns the safe decision as
+    small `LlmProviderSelector` abstraction (validates the model and returns
+    the single configuration-wired provider); BLOCK never reaches the provider and returns the safe decision as
     200 data, with the same single metadata-only audit entry per inspected
     request. Each successful provider response is inspected separately
     before it reaches the client (same detectors, same strict policy,
     distinct response-inspection result): clean responses return unchanged
     as ALLOW, sensitive responses are blocked as 200 BLOCK data with no
     provider payload, and provider content is never persisted or logged.
-    No external provider integration exists yet. No response redaction or
+    No external cloud provider integration exists. No response redaction or
     rewriting exists.
 * No Redis implementation exists.
 * No frontend exists yet.
