@@ -1,6 +1,7 @@
 package com.aegivault.aegivault.gateway;
 
 import com.aegivault.aegivault.gateway.provider.LlmProvider;
+import com.aegivault.aegivault.gateway.provider.LlmProviderSelector;
 import com.aegivault.aegivault.gateway.provider.LlmRequest;
 import com.aegivault.aegivault.gateway.provider.LlmResponse;
 import lombok.RequiredArgsConstructor;
@@ -12,8 +13,9 @@ import org.springframework.stereotype.Service;
  * response before returning it. One call inspects the request under the
  * fixed strict policy through {@link SecurityInspectionService}, records
  * the request outcome once through {@link GatewayAuditService}, and —
- * only on request ALLOW — forwards model plus content through the
- * {@link LlmProvider} abstraction. A successful provider response is
+ * only on request ALLOW — resolves one {@link LlmProvider} through the
+ * {@link LlmProviderSelector} abstraction and forwards model plus
+ * content through the selected provider. A successful provider response is
  * inspected separately through {@link ProviderResponseInspectionService}
  * under the same strict policy: a clean response returns as ALLOW with
  * the provider completion, while a sensitive response returns as BLOCK
@@ -25,7 +27,8 @@ import org.springframework.stereotype.Service;
  * {@link ProviderResponseInspectionResult}); the response check never
  * reuses or mutates the request decision.
  *
- * <p>A provider failure surfaces as {@link GatewayProviderException}
+ * <p>A provider failure — including a provider-selection failure —
+ * surfaces as {@link GatewayProviderException}
  * with a generic message (cause retained for server logs): it is never
  * converted into an ALLOW/BLOCK verdict and never leaks exception text
  * or request content. An oversized provider response fails the same way
@@ -55,7 +58,7 @@ public class GatewayCompletionService {
 
     private final ProviderResponseInspectionService responseInspections;
 
-    private final LlmProvider providers;
+    private final LlmProviderSelector selector;
 
     private final GatewayAuditService audit;
 
@@ -77,7 +80,8 @@ public class GatewayCompletionService {
         }
         final LlmResponse completion;
         try {
-            completion = providers.complete(new LlmRequest(inspection.model(), inspection.content()));
+            LlmProvider selected = selector.select(inspection.model());
+            completion = selected.complete(new LlmRequest(inspection.model(), inspection.content()));
         } catch (RuntimeException ex) {
             throw new GatewayProviderException("Unable to complete gateway request.", ex);
         }

@@ -293,8 +293,9 @@
    with a deterministic zero-configuration `MockLlmProvider` for local/test
    use only — labelled mock completions, no network, no credentials.
     `POST /api/gateway/complete` inspects under the fixed strict policy and
-    forwards only ALLOW requests to the configured provider (currently the
-    mock); BLOCK never reaches the provider and returns the safe decision as
+    forwards only ALLOW requests to the `LlmProvider` resolved through the
+    small `LlmProviderSelector` abstraction (currently every valid model
+    resolves to the mock); BLOCK never reaches the provider and returns the safe decision as
     200 data, with the same single metadata-only audit entry per inspected
     request. Each successful provider response is inspected separately
     before it reaches the client (same detectors, same strict policy,

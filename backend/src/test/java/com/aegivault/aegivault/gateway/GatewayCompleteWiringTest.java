@@ -6,6 +6,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.aegivault.aegivault.auth.RegisterRequest;
+import com.aegivault.aegivault.gateway.provider.LlmProviderSelector;
+import com.aegivault.aegivault.gateway.provider.MockLlmProvider;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,8 +20,9 @@ import tools.jackson.databind.ObjectMapper;
 
 /**
  * Completion endpoint through the real Spring wiring (no test doubles):
- * proves the production {@code LlmProvider} bean resolves and serves
- * ALLOW requests while BLOCK still returns the safe decision.
+ * proves the production {@code LlmProviderSelector} resolves the mock
+ * provider and serves ALLOW requests while BLOCK still returns the
+ * safe decision.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -35,6 +38,12 @@ class GatewayCompleteWiringTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private LlmProviderSelector selector;
+
+    @Autowired
+    private MockLlmProvider mock;
+
     private String register() throws Exception {
         String body = objectMapper.writeValueAsString(
                 new RegisterRequest("gateway-wiring-" + UUID.randomUUID() + "@example.com", "gateway-pass-1", null));
@@ -44,6 +53,11 @@ class GatewayCompleteWiringTest {
                 .andExpect(status().isCreated())
                 .andReturn();
         return objectMapper.readTree(result.getResponse().getContentAsString()).get("token").asText();
+    }
+
+    @Test
+    void selectorResolvesTheMockProvider() {
+        assertThat(selector.select("local-test-model")).isSameAs(mock);
     }
 
     @Test
