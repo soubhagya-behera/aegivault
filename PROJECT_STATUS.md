@@ -291,7 +291,13 @@
    minimal LLM provider abstraction now exists (`gateway.provider`:
    `LlmProvider` plus immutable model/content-only `LlmRequest`/`LlmResponse`)
    with a deterministic zero-configuration `MockLlmProvider` for local/test
-   use only — labelled mock completions, no network, no credentials.
+    use only — labelled mock completions, no network, no credentials. A
+    local Ollama provider implementation also exists (`OllamaLlmProvider`
+    behind the same interface, generate API over plain HTTP via the
+    existing Spring HTTP stack with localhost-only base URL plus
+    connection/read timeout configuration, generic safe failures) but is
+    not yet selected: the mock remains the only selector-resolved
+    provider, so the gateway never calls Ollama yet.
     `POST /api/gateway/complete` inspects under the fixed strict policy and
     forwards only ALLOW requests to the `LlmProvider` resolved through the
     small `LlmProviderSelector` abstraction (currently every valid model
