@@ -552,7 +552,9 @@ never reach inspection (unauthenticated, invalid, oversized) append
 nothing. Enforcement beyond inspection recording and provider
 integration remain planned, not implemented. A minimal LLM provider
 abstraction exists alongside inspection (`gateway.provider`: `LlmProvider`
-with immutable `LlmRequest`/`LlmResponse` carrying model and content only,
+ with immutable `LlmRequest`/`LlmResponse` carrying model and content plus
+ optional provider-reported usage metadata (`LlmUsage`: prompt, completion,
+ and total token counts, each unknown unless the provider supplied it),
 plus a deterministic zero-configuration `MockLlmProvider` whose labelled
  mock completions never touch the network) for local and test use only.
  A local Ollama provider implementation also exists (`OllamaLlmProvider`
@@ -586,8 +588,17 @@ the request result. A clean provider response returns as ALLOW with the
  completion service rejects oversized provider content with the generic
  provider-failure 500 before response inspection runs — never truncated,
  never partially inspected, never returned, never a BLOCK verdict.
- Provider response content is never persisted, never logged, and never
-  enters the audit ledger. No external cloud provider exists. No response redaction or rewriting exists: blocking
+  Provider response content is never persisted, never logged, and never
+   enters the audit ledger. Provider responses may include usage metadata
+ (`LlmUsage`) that is provider-reported when available and preserved as
+ unknown otherwise: the mock always reports unknown usage (its character
+ count is never presented as tokens) and the Ollama provider maps only
+ the documented `prompt_eval_count`/`eval_count` fields, leaving absent
+ or invalid counts unknown rather than estimating them. Usage is exposed
+ to clients only on ALLOW responses (as part of the provider completion;
+ BLOCK carries no provider payload and therefore no usage), is never part
+ of security inspection or audit event data, and no budget, quota, cost,
+ or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
   is the only response action. Gateway completions are additionally
   rate-limited per authenticated actor before any inspection or provider
   work: the completion service spends one `GatewayRateLimiter` attempt

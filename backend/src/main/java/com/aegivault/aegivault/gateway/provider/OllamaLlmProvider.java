@@ -15,8 +15,10 @@ import tools.jackson.databind.ObjectMapper;
  * HTTP stack ({@link RestClient}). Maps {@link LlmRequest} model plus
  * content to the Ollama {@code model} plus {@code prompt} fields
  * (non-streaming) and maps the Ollama {@code response} text back into
- * an {@link LlmResponse} for the requested model. Raw Ollama JSON
- * never leaves this class.
+ * an {@link LlmResponse} for the requested model, plus provider-reported
+ * usage from {@code prompt_eval_count} and {@code eval_count} when Ollama
+ * actually returns them — absent or invalid usage fields stay unknown
+ * rather than estimated. Raw Ollama JSON never leaves this class.
  *
  * <p>Network I/O is this class's explicit responsibility — no other
  * gateway component performs HTTP-provider calls. Request content is
@@ -78,14 +80,40 @@ public class OllamaLlmProvider implements LlmProvider {
             throw new OllamaProviderException("Unable to complete Ollama request.", ex);
         }
         try {
-            JsonNode response = json.readTree(raw).path("response");
+            JsonNode root = json.readTree(raw);
+            JsonNode response = root.path("response");
             if (!response.isTextual()) {
                 throw new IllegalStateException("Invalid Ollama response.");
             }
-            return new LlmResponse(request.model(), response.asText());
+            return new LlmResponse(request.model(), response.asText(), readUsage(root));
         } catch (RuntimeException ex) {
             throw new OllamaProviderException("Unable to complete Ollama request.", ex);
         }
+    }
+
+    /**
+     * Reads provider-reported usage from an Ollama generate response.
+     * Only the documented count fields are mapped ({@code prompt_eval_count}
+     * to prompt tokens, {@code eval_count} to completion tokens); Ollama
+     * reports no total, so the total always stays unknown rather than
+     * derived. Absent, null, non-integral, or negative values stay unknown
+     * — never estimated and never a failure.
+     */
+    private static LlmUsage readUsage(JsonNode root) {
+        Long promptTokens = readCount(root.path("prompt_eval_count"));
+        Long completionTokens = readCount(root.path("eval_count"));
+        if (promptTokens == null && completionTokens == null) {
+            return LlmUsage.unknown();
+        }
+        return new LlmUsage(promptTokens, completionTokens, null);
+    }
+
+    private static Long readCount(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull() || !node.isIntegralNumber()) {
+            return null;
+        }
+        long value = node.longValue();
+        return value < 0 ? null : value;
     }
 
     private static String normalize(String baseUrl) {

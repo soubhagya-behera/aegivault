@@ -363,6 +363,34 @@ class GatewayCompleteApiTest {
     }
 
     @Test
+    void allowExposesProviderUsageWhileBlockExposesNoProvider() throws Exception {
+        String token = register(email());
+
+        mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("ALLOW"))
+                .andExpect(jsonPath("$.provider.model").value("local-test-model"))
+                .andExpect(jsonPath("$.provider.usage").exists())
+                .andExpect(jsonPath("$.actorSubject").doesNotExist());
+
+        providers.respondNext("contact " + EMAIL + " for access.");
+
+        MvcResult blocked = mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("BLOCK"))
+                .andExpect(jsonPath("$.provider").doesNotExist())
+                .andReturn();
+
+        assertThat(blocked.getResponse().getContentAsString()).doesNotContain(EMAIL);
+    }
+
+    @Test
     void cleanProviderResponseReturnsContentUnchanged() throws Exception {
         String token = register(email());
         providers.respondNext("quarterly revenue grew steadily with no sensitive data.");

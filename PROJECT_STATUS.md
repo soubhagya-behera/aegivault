@@ -288,8 +288,16 @@
    names — never request content, PII values, or secrets). No proxy,
    no LLM or network calls, no persistence of request bodies, no logging
    of request content; provider forwarding is still not implemented. A
-   minimal LLM provider abstraction now exists (`gateway.provider`:
-   `LlmProvider` plus immutable model/content-only `LlmRequest`/`LlmResponse`)
+    minimal LLM provider abstraction now exists (`gateway.provider`:
+    `LlmProvider` plus immutable model/content `LlmRequest`/`LlmResponse`,
+    where the response may additionally carry provider-reported usage
+    metadata `LlmUsage` — prompt, completion, and total token counts, each
+    null unless the provider supplied it; the mock always reports unknown
+    usage and Ollama maps only its documented `prompt_eval_count` /
+    `eval_count` fields, with unknown preserved as unknown and never
+    estimated; ALLOW responses expose usage, BLOCK responses carry no
+    provider payload and therefore no usage, and no budget/quota
+    enforcement exists yet)
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`

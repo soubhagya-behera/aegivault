@@ -98,7 +98,7 @@ class MockLlmProviderTest {
                 .collect(Collectors.toSet());
 
         assertThat(requestComponents).containsExactlyInAnyOrder("model", "content");
-        assertThat(responseComponents).containsExactlyInAnyOrder("model", "content");
+        assertThat(responseComponents).containsExactlyInAnyOrder("model", "content", "usage");
     }
 
     @Test

@@ -143,6 +143,80 @@ class OllamaLlmProviderTest {
     }
 
     @Test
+    void responseWithUsageFieldsMapsCountsAndLeavesTotalUnknown() {
+        responseBody =
+                "{\"model\":\"test-model\",\"response\":\"hello.\",\"done\":true,\"prompt_eval_count\":12,\"eval_count\":34}";
+        OllamaLlmProvider provider = new OllamaLlmProvider(properties());
+
+        LlmResponse response = provider.complete(new LlmRequest("test-model", "say hello."));
+
+        assertThat(response.content()).isEqualTo("hello.");
+        assertThat(response.usage()).isEqualTo(new LlmUsage(12L, 34L, null));
+        assertThat(response.usage().isUnknown()).isFalse();
+    }
+
+    @Test
+    void responseWithoutUsageFieldsRemainsUnknown() {
+        responseBody = "{\"model\":\"test-model\",\"response\":\"hello.\",\"done\":true}";
+        OllamaLlmProvider provider = new OllamaLlmProvider(properties());
+
+        LlmResponse response = provider.complete(new LlmRequest("test-model", "say hello."));
+
+        assertThat(response.content()).isEqualTo("hello.");
+        assertThat(response.usage()).isEqualTo(LlmUsage.unknown());
+        assertThat(response.usage().isUnknown()).isTrue();
+    }
+
+    @Test
+    void partialUsageFieldsMapOnlyWhatIsPresent() {
+        responseBody = "{\"model\":\"test-model\",\"response\":\"hello.\",\"done\":true,\"eval_count\":7}";
+        OllamaLlmProvider provider = new OllamaLlmProvider(properties());
+
+        LlmResponse response = provider.complete(new LlmRequest("test-model", "say hello."));
+
+        assertThat(response.usage()).isEqualTo(new LlmUsage(null, 7L, null));
+    }
+
+    @Test
+    void nonNumericUsageValuesStayUnknownWithoutFailing() {
+        responseBody =
+                "{\"model\":\"test-model\",\"response\":\"hello.\",\"done\":true,"
+                        + "\"prompt_eval_count\":\"twelve\",\"eval_count\":true}";
+        OllamaLlmProvider provider = new OllamaLlmProvider(properties());
+
+        LlmResponse response = provider.complete(new LlmRequest("test-model", "say hello."));
+
+        assertThat(response.content()).isEqualTo("hello.");
+        assertThat(response.usage()).isEqualTo(LlmUsage.unknown());
+    }
+
+    @Test
+    void negativeUsageValuesStayUnknownWithoutFailing() {
+        responseBody =
+                "{\"model\":\"test-model\",\"response\":\"hello.\",\"done\":true,"
+                        + "\"prompt_eval_count\":-5,\"eval_count\":-1}";
+        OllamaLlmProvider provider = new OllamaLlmProvider(properties());
+
+        LlmResponse response = provider.complete(new LlmRequest("test-model", "say hello."));
+
+        assertThat(response.content()).isEqualTo("hello.");
+        assertThat(response.usage()).isEqualTo(LlmUsage.unknown());
+    }
+
+    @Test
+    void nullAndFractionalUsageValuesStayUnknownWithoutFailing() {
+        responseBody =
+                "{\"model\":\"test-model\",\"response\":\"hello.\",\"done\":true,"
+                        + "\"prompt_eval_count\":null,\"eval_count\":12.5}";
+        OllamaLlmProvider provider = new OllamaLlmProvider(properties());
+
+        LlmResponse response = provider.complete(new LlmRequest("test-model", "say hello."));
+
+        assertThat(response.content()).isEqualTo("hello.");
+        assertThat(response.usage()).isEqualTo(LlmUsage.unknown());
+    }
+
+    @Test
     void non2xxResponseFailsSafelyWithoutExposingBody() {
         status = 500;
         responseBody = "{\"error\":\"" + ERROR_MARKER + "\"}";

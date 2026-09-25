@@ -20,6 +20,9 @@ import java.util.Objects;
  * <p>Wired as the active {@link LlmProvider} when
  * {@code aegivault.gateway.provider=MOCK} (the default); never a Spring
  * component itself, so it can never compete with another provider bean.
+ *
+ * <p>Usage metadata is always unknown: this mock performs no real LLM
+ * call, so its character count is never presented as a token count.
  */
 public class MockLlmProvider implements LlmProvider {
 
@@ -32,7 +35,7 @@ public class MockLlmProvider implements LlmProvider {
         String digest = sha256Hex(request.model() + "\n" + request.content());
         String text = "MOCK completion (not an AI answer) for model \"" + request.model()
                 + "\": " + request.content().length() + " chars, digest " + digest.substring(0, 16) + ".";
-        return new LlmResponse(request.model(), text);
+        return new LlmResponse(request.model(), text, LlmUsage.unknown());
     }
 
     private static String sha256Hex(String text) {

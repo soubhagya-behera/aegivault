@@ -8,11 +8,13 @@ import java.util.Set;
 
 /**
  * Uniform API response for {@code POST /api/gateway/complete}. ALLOW
- * carries the provider completion; BLOCK carries the safe reason codes
- * and detected type names with no provider payload. Never request
+ * carries the provider completion including its provider-reported usage
+ * metadata (unknown when the provider supplied no counts); BLOCK carries the safe reason codes
+ * and detected type names with no provider payload — and therefore no
+ * provider content and no provider usage. Never request
  * content, matched values, the actor subject, or audit internals — the
- * ALLOW path exposes provider content only through the provider's own
- * response object.
+ * ALLOW path exposes provider content and usage only through the
+ * provider's own response object.
  *
  * @param verdict ALLOW or BLOCK, never null
  * @param reasons safe reason codes, never null; empty exactly when ALLOW
