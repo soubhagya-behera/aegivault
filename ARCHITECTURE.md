@@ -598,7 +598,13 @@ the request result. A clean provider response returns as ALLOW with the
  to clients only on ALLOW responses (as part of the provider completion;
  BLOCK carries no provider payload and therefore no usage), is never part
  of security inspection or audit event data, and no budget, quota, cost,
- or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
+ or accounting enforcement exists yet. Every provider invocation that
+ returns a response is additionally persisted once as a gateway usage
+ record (`gateway.usage`: `GatewayUsageRecord` in PostgreSQL via Flyway
+ V9 — request id, actor, model, exact provider-reported counts with
+ unknown preserved as null, and outcome `DELIVERED` or
+ `SECURITY_BLOCKED`; metadata only, never prompt or response content).
+ No external cloud provider exists. No response redaction or rewriting exists: blocking
   is the only response action. Gateway completions are additionally
   rate-limited per authenticated actor before any inspection or provider
   work: the completion service spends one `GatewayRateLimiter` attempt

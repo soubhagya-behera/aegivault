@@ -11,6 +11,10 @@ import com.aegivault.aegivault.auth.RegisterRequest;
 import com.aegivault.aegivault.gateway.provider.LlmProvider;
 import com.aegivault.aegivault.gateway.provider.LlmRequest;
 import com.aegivault.aegivault.gateway.provider.LlmResponse;
+import com.aegivault.aegivault.gateway.provider.LlmUsage;
+import com.aegivault.aegivault.gateway.usage.GatewayUsageOutcome;
+import com.aegivault.aegivault.gateway.usage.GatewayUsageRecord;
+import com.aegivault.aegivault.gateway.usage.GatewayUsageRepository;
 import com.aegivault.aegivault.identity.UserRepository;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -61,6 +65,8 @@ class GatewayCompleteApiTest {
 
         private volatile String nextContent;
 
+        private volatile LlmUsage nextUsage;
+
         @Override
         public LlmResponse complete(LlmRequest request) {
             calls.add(request);
@@ -68,7 +74,8 @@ class GatewayCompleteApiTest {
                 throw failure;
             }
             if (nextContent != null) {
-                return new LlmResponse(request.model(), nextContent);
+                return new LlmResponse(
+                        request.model(), nextContent, nextUsage != null ? nextUsage : LlmUsage.unknown());
             }
             return new LlmResponse(request.model(), "fake-completion for " + request.model());
         }
@@ -79,6 +86,12 @@ class GatewayCompleteApiTest {
 
         void respondNext(String content) {
             this.nextContent = content;
+            this.nextUsage = null;
+        }
+
+        void respondNext(String content, LlmUsage usage) {
+            this.nextContent = content;
+            this.nextUsage = usage;
         }
 
         List<LlmRequest> calls() {
@@ -89,6 +102,7 @@ class GatewayCompleteApiTest {
             calls.clear();
             failure = null;
             nextContent = null;
+            nextUsage = null;
         }
     }
 
@@ -113,6 +127,9 @@ class GatewayCompleteApiTest {
 
     @Autowired
     private AuditLedgerEntryRepository ledger;
+
+    @Autowired
+    private GatewayUsageRepository usage;
 
     @Autowired
     private UserRepository users;
@@ -142,6 +159,16 @@ class GatewayCompleteApiTest {
 
     private String actorFor(String email) {
         return users.findByEmail(email.trim().toLowerCase(Locale.ROOT)).orElseThrow().getId().toString();
+    }
+
+    private Set<UUID> usageIds() {
+        return usage.findAll().stream().map(GatewayUsageRecord::getId).collect(Collectors.toSet());
+    }
+
+    private List<GatewayUsageRecord> usageCreatedSince(Set<UUID> idsBefore) {
+        return usage.findAll().stream()
+                .filter(entry -> !idsBefore.contains(entry.getId()))
+                .toList();
     }
 
     @Test
@@ -488,5 +515,140 @@ class GatewayCompleteApiTest {
             assertThat(entry.getEventData()).doesNotContain("q".repeat(100));
             assertThat(entry.getEventData()).doesNotContain(CLEAN);
         }
+    }
+
+    @Test
+    void deliveredCompletionPersistsOneDeliveredUsageRecord() throws Exception {
+        String userEmail = email();
+        String token = register(userEmail);
+        Set<UUID> idsBefore = usageIds();
+
+        mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("ALLOW"));
+
+        List<GatewayUsageRecord> created = usageCreatedSince(idsBefore);
+        assertThat(created).hasSize(1);
+        GatewayUsageRecord record = created.get(0);
+        assertThat(record.getOutcome()).isEqualTo(GatewayUsageOutcome.DELIVERED);
+        assertThat(record.getActorSubject()).isEqualTo(actorFor(userEmail));
+        assertThat(record.getModel()).isEqualTo("local-test-model");
+        assertThat(record.getRequestId()).isNotNull();
+        assertThat(record.getCreatedAt()).isNotNull();
+        // The fake reports unknown usage: null stays null, never a character count.
+        assertThat(record.getPromptTokens()).isNull();
+        assertThat(record.getCompletionTokens()).isNull();
+        assertThat(record.getTotalTokens()).isNull();
+        // Metadata only: no request or provider content anywhere on the row.
+        assertThat(record.getActorSubject()).doesNotContain(CLEAN);
+        assertThat(record.getModel()).doesNotContain(CLEAN);
+    }
+
+    @Test
+    void deliveredCompletionPersistsExactProviderUsage() throws Exception {
+        String token = register(email());
+        providers.respondNext(
+                "quarterly revenue grew steadily with no sensitive data.", new LlmUsage(12L, 34L, 46L));
+        Set<UUID> idsBefore = usageIds();
+
+        mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("ALLOW"))
+                .andExpect(jsonPath("$.provider.usage.promptTokens").value(12))
+                .andExpect(jsonPath("$.provider.usage.completionTokens").value(34))
+                .andExpect(jsonPath("$.provider.usage.totalTokens").value(46));
+
+        List<GatewayUsageRecord> created = usageCreatedSince(idsBefore);
+        assertThat(created).hasSize(1);
+        GatewayUsageRecord record = created.get(0);
+        assertThat(record.getOutcome()).isEqualTo(GatewayUsageOutcome.DELIVERED);
+        assertThat(record.getPromptTokens()).isEqualTo(12L);
+        assertThat(record.getCompletionTokens()).isEqualTo(34L);
+        assertThat(record.getTotalTokens()).isEqualTo(46L);
+    }
+
+    @Test
+    void blockedProviderResponsePersistsOneSecurityBlockedRecord() throws Exception {
+        String token = register(email());
+        providers.respondNext("contact " + EMAIL + " for access.", new LlmUsage(10L, 20L, 30L));
+        Set<UUID> idsBefore = usageIds();
+
+        MvcResult result = mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("BLOCK"))
+                .andExpect(jsonPath("$.provider").doesNotExist())
+                .andReturn();
+
+        assertThat(result.getResponse().getContentAsString()).doesNotContain(EMAIL);
+        List<GatewayUsageRecord> created = usageCreatedSince(idsBefore);
+        assertThat(created).hasSize(1);
+        GatewayUsageRecord record = created.get(0);
+        assertThat(record.getOutcome()).isEqualTo(GatewayUsageOutcome.SECURITY_BLOCKED);
+        assertThat(record.getPromptTokens()).isEqualTo(10L);
+        assertThat(record.getCompletionTokens()).isEqualTo(20L);
+        assertThat(record.getTotalTokens()).isEqualTo(30L);
+        assertThat(record.getActorSubject()).doesNotContain(EMAIL);
+    }
+
+    @Test
+    void requestBlockPersistsNoUsageRecord() throws Exception {
+        String token = register(email());
+        long usageBefore = usage.count();
+
+        mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", "contact " + EMAIL + " for access.")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.verdict").value("BLOCK"))
+                .andExpect(jsonPath("$.provider").doesNotExist());
+
+        assertThat(providers.calls()).isEmpty();
+        assertThat(usage.count()).isEqualTo(usageBefore);
+    }
+
+    @Test
+    void providerFailurePersistsNoUsageRecord() throws Exception {
+        String token = register(email());
+        providers.fail(new RuntimeException("simulated-provider-boom-9z"));
+        long usageBefore = usage.count();
+
+        mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(completeBody("local-test-model", CLEAN)))
+                .andExpect(status().isInternalServerError());
+
+        assertThat(usage.count()).isEqualTo(usageBefore);
+    }
+
+    @Test
+    void eachCompletionGetsItsOwnRequestId() throws Exception {
+        String token = register(email());
+        Set<UUID> idsBefore = usageIds();
+
+        for (int i = 0; i < 2; i++) {
+            mvc.perform(post("/api/gateway/complete")
+                            .header("Authorization", "Bearer " + token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(completeBody("local-test-model", CLEAN)))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.verdict").value("ALLOW"));
+        }
+
+        List<GatewayUsageRecord> created = usageCreatedSince(idsBefore);
+        assertThat(created).hasSize(2);
+        assertThat(created.get(0).getRequestId()).isNotNull();
+        assertThat(created.get(1).getRequestId()).isNotNull();
+        assertThat(created.get(1).getRequestId()).isNotEqualTo(created.get(0).getRequestId());
     }
 }

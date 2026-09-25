@@ -4,6 +4,8 @@ import com.aegivault.aegivault.gateway.provider.LlmProvider;
 import com.aegivault.aegivault.gateway.provider.LlmProviderSelector;
 import com.aegivault.aegivault.gateway.provider.LlmRequest;
 import com.aegivault.aegivault.gateway.provider.LlmResponse;
+import com.aegivault.aegivault.gateway.usage.GatewayUsageOutcome;
+import com.aegivault.aegivault.gateway.usage.GatewayUsageRecorder;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -23,7 +25,12 @@ import org.springframework.stereotype.Service;
  * inspected separately through {@link ProviderResponseInspectionService}
  * under the same strict policy: a clean response returns as ALLOW with
  * the provider completion, while a sensitive response returns as BLOCK
- * with safe reason codes and no provider payload.
+ * with safe reason codes and no provider payload. Every provider
+ * invocation that returns a response is then recorded once through
+ * {@link GatewayUsageRecorder} — {@code DELIVERED} for a clean response,
+ * {@code SECURITY_BLOCKED} for a blocked one (the blocked call may still
+ * have consumed provider tokens) — carrying gateway metadata plus the
+ * exact provider-reported counts only.
  *
  * <p>Request inspection and provider-response inspection are two
  * separate security decisions with distinct result types
@@ -42,6 +49,13 @@ import org.springframework.stereotype.Service;
  * the failure path and never on oversized output. The single
  * request-inspection audit entry already recorded is left as-is — never
  * duplicated. Provider responses are never logged or persisted.
+ *
+ * <p>No usage row is recorded when no provider response exists: a
+ * request-side BLOCK, a rate-limit rejection, an oversized provider
+ * response, and a provider (or provider-selection) failure all return or
+ * fail without touching usage persistence. A usage-persistence failure
+ * itself propagates as {@link com.aegivault.aegivault.gateway.usage.GatewayUsageException}
+ * with a generic message instead of the ALLOW/BLOCK response.
  */
 @Service
 @RequiredArgsConstructor
@@ -67,6 +81,8 @@ public class GatewayCompletionService {
     private final LlmProviderSelector selector;
 
     private final GatewayAuditService audit;
+
+    private final GatewayUsageRecorder usage;
 
     /**
      * Inspects one request and completes it when allowed.
@@ -102,8 +118,10 @@ public class GatewayCompletionService {
         ProviderResponseInspectionResult responseDecision =
                 responseInspections.inspect(completion, GatewaySecurityPolicy.strict());
         if (responseDecision.verdict() == SecurityVerdict.BLOCK) {
+            usage.record(inspection, completion, GatewayUsageOutcome.SECURITY_BLOCKED);
             return GatewayCompleteResponse.blocked(responseDecision);
         }
+        usage.record(inspection, completion, GatewayUsageOutcome.DELIVERED);
         return GatewayCompleteResponse.allowed(completion);
     }
 }

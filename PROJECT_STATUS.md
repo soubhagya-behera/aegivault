@@ -297,7 +297,13 @@
     `eval_count` fields, with unknown preserved as unknown and never
     estimated; ALLOW responses expose usage, BLOCK responses carry no
     provider payload and therefore no usage, and no budget/quota
-    enforcement exists yet)
+    enforcement exists yet). Gateway provider usage is now persisted
+    (`gateway.usage`, V9 `gateway_usage_records`: one metadata-only row
+    per provider invocation that returned a response — server-generated
+    request id, JWT-derived actor, model, exact provider-reported counts
+    with unknown preserved as null, outcome `DELIVERED` or
+    `SECURITY_BLOCKED`; never prompt/response content, PII, or secrets;
+    no read endpoint, no budgets, no cost accounting yet)
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`

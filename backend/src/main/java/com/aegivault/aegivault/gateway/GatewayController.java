@@ -1,6 +1,7 @@
 package com.aegivault.aegivault.gateway;
 
 import com.aegivault.aegivault.audit.AuditLedgerException;
+import com.aegivault.aegivault.gateway.usage.GatewayUsageException;
 import jakarta.validation.Valid;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -130,5 +131,18 @@ public class GatewayController {
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     GatewayError providerFailed(GatewayProviderException ex) {
         return new GatewayError("Unable to complete gateway request.");
+    }
+
+    /**
+     * Usage persistence failure: a provider response already existed, but
+     * its usage row could not be stored, so success is not claimed —
+     * generic 500 with no SQL details, actor, request id, or exception
+     * text, cause retained in server logs only. Distinct from the provider
+     * failure above, whose message stays unchanged.
+     */
+    @ExceptionHandler(GatewayUsageException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    GatewayError usageFailed(GatewayUsageException ex) {
+        return new GatewayError("Unable to record gateway usage.");
     }
 }
