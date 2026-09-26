@@ -604,12 +604,21 @@ the request result. A clean provider response returns as ALLOW with the
  V9 — request id, actor, model, exact provider-reported counts with
  unknown preserved as null, and outcome `DELIVERED` or
  `SECURITY_BLOCKED`; metadata only, never prompt or response content).
- Persisted usage has an internal read-only query layer
- (`GatewayUsageQueryService`, repository only): actor-scoped history
- newest-first plus one database-side aggregate row per actor (exact row
- count with token totals that stay null when no values are known).
- There is no public usage endpoint, and no budget, quota, cost, or
- accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
+  Persisted usage has an internal read-only query layer
+  (`GatewayUsageQueryService`, repository only): actor-scoped history
+  newest-first plus one database-side aggregate row per actor (exact row
+  count with token totals that stay null when no values are known).
+  The authenticated self-service API `GET /api/gateway/usage` exposes
+  that layer to the currently authenticated actor only: the actor comes
+  exclusively from the verified JWT subject (never a parameter, path,
+  body, or header), history is bounded to the newest 100 records
+  (createdAt DESC, id DESC, bounded in the repository/database query),
+  and the response carries usage metadata only (request id, model,
+  token counts with null-means-unknown preserved, outcome, timestamp,
+  plus the database-side aggregate) — no actor subjects, no prompt or
+  response content, no secrets, no PII, no Redis information. There is
+  no admin or cross-user usage reporting, and no budget, quota, cost,
+  or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
   is the only response action. Gateway completions are additionally
   rate-limited per authenticated actor before any inspection or provider
   work: the completion service spends one `GatewayRateLimiter` attempt

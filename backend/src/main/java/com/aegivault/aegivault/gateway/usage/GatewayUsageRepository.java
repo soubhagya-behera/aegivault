@@ -25,6 +25,15 @@ public interface GatewayUsageRepository extends JpaRepository<GatewayUsageRecord
     List<GatewayUsageRecord> findByActorSubjectOrderByCreatedAtDescIdDesc(String actorSubject);
 
     /**
+     * Bounded actor-scoped history for the self-service usage API:
+     * at most 100 newest rows for one actor in the same deterministic
+     * order ({@code created_at} descending, {@code id} descending). The
+     * bound is applied in the database query — the full actor history
+     * is never loaded and trimmed in Java.
+     */
+    List<GatewayUsageRecord> findTop100ByActorSubjectOrderByCreatedAtDescIdDesc(String actorSubject);
+
+    /**
      * One aggregate row for one actor, computed database-side: the exact
      * matching-row count plus the exact totals of known token values.
      * Each sum stays null when the actor has no known value for that

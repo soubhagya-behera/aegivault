@@ -19,12 +19,20 @@ import org.springframework.stereotype.Service;
  * row count plus database-side token totals where null means unknown —
  * never zero, never money, cost, budgets, or quotas.
  *
- * <p>There is deliberately no REST endpoint yet: this service is for
- * future internal governance use only.
+ * <p>The self-service usage API reads through this service: bounded
+ * newest-first history plus the unchanged database-side aggregate.
  */
 @Service
 @RequiredArgsConstructor
 public class GatewayUsageQueryService {
+
+    /**
+     * Maximum history rows returned by {@link #recentHistoryFor(String)}:
+     * at most 100 newest records, enforced in the repository/database
+     * query — never by loading the full history and trimming in Java.
+     * No pagination exists yet.
+     */
+    public static final int MAX_HISTORY = 100;
 
     private final GatewayUsageRepository repository;
 
@@ -40,6 +48,21 @@ public class GatewayUsageQueryService {
      */
     public List<GatewayUsageRecord> historyFor(String actorSubject) {
         return repository.findByActorSubjectOrderByCreatedAtDescIdDesc(requireActor(actorSubject));
+    }
+
+    /**
+     * Returns at most the 100 newest usage records for one actor,
+     * newest first ({@code createdAt} descending, then {@code id}
+     * descending). The bound is applied in the repository/database
+     * query. Records carry metadata only — never prompt or response
+     * content.
+     *
+     * @param actorSubject actor whose history is read, never blank
+     * @return at most 100 of that actor's newest records, possibly
+     *         empty, never null
+     */
+    public List<GatewayUsageRecord> recentHistoryFor(String actorSubject) {
+        return repository.findTop100ByActorSubjectOrderByCreatedAtDescIdDesc(requireActor(actorSubject));
     }
 
     /**

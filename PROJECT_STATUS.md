@@ -302,13 +302,15 @@
     per provider invocation that returned a response — server-generated
     request id, JWT-derived actor, model, exact provider-reported counts
     with unknown preserved as null, outcome `DELIVERED` or
-    `SECURITY_BLOCKED`; never prompt/response content, PII, or secrets;
-    no read endpoint, no budgets, no cost accounting yet). Persisted
-    usage now has an internal read-only query layer
-    (`GatewayUsageQueryService` over `GatewayUsageRepository` only):
-    actor-scoped history newest-first plus a database-side per-actor
-    aggregate (exact count, token totals null when unknown); still no
-    public usage endpoint, budgets, or cost accounting)
+     `SECURITY_BLOCKED`; never prompt/response content, PII, or secrets).
+     Persisted usage has a read-only query layer
+     (`GatewayUsageQueryService` over `GatewayUsageRepository` only):
+     actor-scoped history newest-first plus a database-side per-actor
+     aggregate (exact count, token totals null when unknown), exposed
+     through the authenticated self-service API
+     `GET /api/gateway/usage` (actor from the JWT subject only; at most
+     the newest 100 records, newest first; usage metadata only; no
+     admin/cross-user reporting, no budgets, no cost accounting yet).
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`

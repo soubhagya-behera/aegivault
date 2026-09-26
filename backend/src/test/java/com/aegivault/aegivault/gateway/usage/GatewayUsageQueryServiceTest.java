@@ -29,6 +29,8 @@ class GatewayUsageQueryServiceTest {
     void blankActorIsRejected() {
         assertThatThrownBy(() -> service.historyFor(null)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.historyFor("   ")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.recentHistoryFor(null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.recentHistoryFor("   ")).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.aggregateFor(null)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.aggregateFor("   ")).isInstanceOf(IllegalArgumentException.class);
     }
@@ -36,13 +38,16 @@ class GatewayUsageQueryServiceTest {
     @Test
     void actorIsTrimmedBeforeTheRepositoryCall() {
         when(repository.findByActorSubjectOrderByCreatedAtDescIdDesc("analyst")).thenReturn(List.of());
+        when(repository.findTop100ByActorSubjectOrderByCreatedAtDescIdDesc("analyst")).thenReturn(List.of());
         when(repository.aggregateByActorSubject("analyst"))
                 .thenReturn(new GatewayUsageAggregate(0L, null, null, null));
 
         assertThat(service.historyFor("  analyst  ")).isEmpty();
+        assertThat(service.recentHistoryFor("  analyst  ")).isEmpty();
         assertThat(service.aggregateFor("  analyst  "))
                 .isEqualTo(new GatewayUsageAggregate(0L, null, null, null));
         verify(repository).findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
+        verify(repository).findTop100ByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
         verify(repository).aggregateByActorSubject("analyst");
     }
 
@@ -56,6 +61,20 @@ class GatewayUsageQueryServiceTest {
     }
 
     @Test
+    void recentHistoryDelegatesToTheBoundedRepositoryRead() {
+        GatewayUsageRecord record = mock(GatewayUsageRecord.class);
+        when(repository.findTop100ByActorSubjectOrderByCreatedAtDescIdDesc("analyst"))
+                .thenReturn(List.of(record));
+
+        assertThat(service.recentHistoryFor("analyst")).containsExactly(record);
+    }
+
+    @Test
+    void recentHistoryBoundIsOneHundred() {
+        assertThat(GatewayUsageQueryService.MAX_HISTORY).isEqualTo(100);
+    }
+
+    @Test
     void aggregateDelegatesToTheDatabaseAggregate() {
         GatewayUsageAggregate aggregate = new GatewayUsageAggregate(2L, 15L, 25L, 40L);
         when(repository.aggregateByActorSubject("analyst")).thenReturn(aggregate);
@@ -66,13 +85,17 @@ class GatewayUsageQueryServiceTest {
     @Test
     void serviceIsStrictlyReadOnly() {
         when(repository.findByActorSubjectOrderByCreatedAtDescIdDesc(anyString())).thenReturn(List.of());
+        when(repository.findTop100ByActorSubjectOrderByCreatedAtDescIdDesc(anyString()))
+                .thenReturn(List.of());
         when(repository.aggregateByActorSubject(anyString()))
                 .thenReturn(new GatewayUsageAggregate(0L, null, null, null));
 
         service.historyFor("analyst");
+        service.recentHistoryFor("analyst");
         service.aggregateFor("analyst");
 
         verify(repository).findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
+        verify(repository).findTop100ByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
         verify(repository).aggregateByActorSubject("analyst");
         verify(repository, never()).save(any(GatewayUsageRecord.class));
         verify(repository, never()).saveAll(any());
@@ -85,6 +108,7 @@ class GatewayUsageQueryServiceTest {
     @Test
     void dependsOnlyOnTheRepository() {
         var dependencies = java.util.Arrays.stream(GatewayUsageQueryService.class.getDeclaredFields())
+                .filter(field -> !java.lang.reflect.Modifier.isStatic(field.getModifiers()))
                 .map(field -> field.getType().getName())
                 .collect(java.util.stream.Collectors.toSet());
 
