@@ -346,6 +346,22 @@
      resolver, there is no policy activation or default-policy mechanism,
      and rate limiting is still governed solely by `GatewayRateLimiter`
      configuration.
+     A pure `GatewayUsagePolicyEvaluator` now decides whether one
+     already-collected usage snapshot satisfies one policy. It is a static,
+     dependency-free function — no Spring bean, no repository, Redis,
+     rate-limiter, controller, provider, or audit dependency — evaluating
+     requests-per-minute, requests-per-day, and tokens-per-day limits
+     (a null limit is unconstrained, and a limit is the highest permitted
+     value, so exactly at the limit is allowed). It reports `ALLOW`,
+     `LIMIT_EXCEEDED`, or `USAGE_UNKNOWN`, plus a distinct `INACTIVE` state
+     so a disabled policy is never silently treated as satisfied. Unknown
+     token usage is explicitly distinguishable: with a token limit
+     configured but an untrustworthy total the result is `USAGE_UNKNOWN`,
+     never `LIMIT_EXCEEDED` and never `ALLOW`, and the total is never read
+     as zero. All tripped limits are reported together in a fixed
+     declaration order. **The evaluator is not connected to gateway
+     traffic** — nothing calls it and no request or token counters are
+     collected for it — so policies remain unenforced.
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`

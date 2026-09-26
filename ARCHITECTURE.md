@@ -655,6 +655,25 @@ the request result. A clean provider response returns as ALLOW with the
   policy repository. **The gateway is not policy-controlled yet:** nothing
   calls the resolver, so resolution still has zero runtime effect, and
   there is no policy activation, default-policy, or uniqueness mechanism.
+  A pure `GatewayUsagePolicyEvaluator` now answers whether one
+  already-collected usage snapshot satisfies one policy. It is a static,
+  dependency-free function of two in-memory objects — not a Spring bean,
+  with no repository, Redis, rate-limiter, controller, provider, or audit
+  dependency. It checks every configured limit (a null limit is
+  unconstrained; a limit is the highest permitted value, so exactly at the
+  limit is fine) and reports `ALLOW`, `LIMIT_EXCEEDED`, or `USAGE_UNKNOWN`,
+  plus a distinct `INACTIVE` state so a disabled policy is never silently
+  treated as satisfied. Unknown token usage is explicitly distinguishable:
+  when a token limit is configured but the total is untrustworthy the
+  result is `USAGE_UNKNOWN`, never `LIMIT_EXCEEDED` and never `ALLOW`,
+  because an unknown total is neither evidence of excess nor proof of
+  compliance, and it is never read as zero. A definite request-count
+  violation outranks token uncertainty while `tokenUsageUnknown` keeps that
+  uncertainty visible. All tripped limits are reported together in a fixed
+  declaration order, never in set-iteration order. Nothing in the gateway
+  traffic path calls the evaluator and nothing collects usage counters for
+  it, so **policies are still not enforced**; deciding what an inactive
+  policy or an unknown total should mean is a later, separate decision.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
