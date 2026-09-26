@@ -314,6 +314,14 @@
      `GET /api/gateway/usage` (actor from the JWT subject only; at most
      the newest 100 records, newest first; usage metadata only; no
      admin/cross-user reporting, no budgets, no cost accounting yet).
+     The windowed aggregate is now also exposed read-only at
+     `GET /api/gateway/usage/aggregate?from=&to=`: both bounds are
+     required ISO-8601 instants, the actor comes from the JWT subject
+     only, the UTC half-open interval (`from <= createdAt < to`) is the
+     query service's own, invalid or missing windows are safe 400s that
+     never reach the database, and the response is one metadata-only
+     aggregate object (record count plus token totals that stay null when
+     unknown) with no history, pagination, budgets, or cost accounting.
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`

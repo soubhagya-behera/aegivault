@@ -622,6 +622,15 @@ the request result. A clean provider response returns as ALLOW with the
   token counts with null-means-unknown preserved, outcome, timestamp,
   plus the database-side aggregate) — no actor subjects, no prompt or
   response content, no secrets, no PII, no Redis information. There is
+  The companion `GET /api/gateway/usage/aggregate?from=&to=` exposes the
+  windowed aggregate: the actor again comes exclusively from the verified
+  JWT subject, both bounds are required ISO-8601 instants, the window is the
+  same UTC half-open interval (`from <= createdAt < to`) the query service
+  owns, and a missing, malformed, or non-positive window is a safe 400 that
+  never reaches the database. It returns exactly one metadata-only aggregate
+  object — record count plus token totals with null-means-unknown preserved
+  — with no actor subject, no window echo, no request ids, models, prompt or
+  response content, provider details, database ids, or pagination. There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
   is the only response action. Gateway completions are additionally
