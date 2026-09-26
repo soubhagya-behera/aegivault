@@ -10,16 +10,21 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import java.time.Instant;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
  * Pure unit tests for {@link GatewayUsageQueryService} (no Spring
  * context, no database): actor validation and trimming, delegation to
- * the repository's actor-scoped reads, and strict read-only behavior —
- * history and aggregate calls never save, flush, or delete.
+ * the repository's actor-scoped reads, time-window validation and delegation,
+ * and strict read-only behavior — history and aggregate calls never save,
+ * flush, or delete.
  */
 class GatewayUsageQueryServiceTest {
+
+    private static final Instant FROM = Instant.parse("2026-03-01T00:00:00Z");
+    private static final Instant TO = Instant.parse("2026-04-01T00:00:00Z");
 
     private final GatewayUsageRepository repository = mock(GatewayUsageRepository.class);
 
@@ -33,6 +38,28 @@ class GatewayUsageQueryServiceTest {
         assertThatThrownBy(() -> service.recentHistoryFor("   ")).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.aggregateFor(null)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> service.aggregateFor("   ")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.aggregateFor(null, FROM, TO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("actorSubject must not be blank");
+        assertThatThrownBy(() -> service.aggregateFor("   ", FROM, TO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("actorSubject must not be blank");
+    }
+
+    @Test
+    void windowAggregateRejectsNullBoundsAndInvalidIntervals() {
+        assertThatThrownBy(() -> service.aggregateFor("analyst", null, TO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("from must not be null");
+        assertThatThrownBy(() -> service.aggregateFor("analyst", FROM, null))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("to must not be null");
+        assertThatThrownBy(() -> service.aggregateFor("analyst", FROM, FROM))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("from must be strictly before to");
+        assertThatThrownBy(() -> service.aggregateFor("analyst", TO, FROM))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("from must be strictly before to");
     }
 
     @Test
@@ -41,14 +68,19 @@ class GatewayUsageQueryServiceTest {
         when(repository.findTop100ByActorSubjectOrderByCreatedAtDescIdDesc("analyst")).thenReturn(List.of());
         when(repository.aggregateByActorSubject("analyst"))
                 .thenReturn(new GatewayUsageAggregate(0L, null, null, null));
+        when(repository.aggregateByActorSubjectAndCreatedAtBetween("analyst", FROM, TO))
+                .thenReturn(new GatewayUsageAggregate(0L, null, null, null));
 
         assertThat(service.historyFor("  analyst  ")).isEmpty();
         assertThat(service.recentHistoryFor("  analyst  ")).isEmpty();
         assertThat(service.aggregateFor("  analyst  "))
                 .isEqualTo(new GatewayUsageAggregate(0L, null, null, null));
+        assertThat(service.aggregateFor("  analyst  ", FROM, TO))
+                .isEqualTo(new GatewayUsageAggregate(0L, null, null, null));
         verify(repository).findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
         verify(repository).findTop100ByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
         verify(repository).aggregateByActorSubject("analyst");
+        verify(repository).aggregateByActorSubjectAndCreatedAtBetween("analyst", FROM, TO);
     }
 
     @Test
@@ -83,20 +115,33 @@ class GatewayUsageQueryServiceTest {
     }
 
     @Test
+    void windowAggregateDelegatesToTheWindowedDatabaseAggregate() {
+        GatewayUsageAggregate aggregate = new GatewayUsageAggregate(3L, 30L, 50L, 80L);
+        when(repository.aggregateByActorSubjectAndCreatedAtBetween("analyst", FROM, TO))
+                .thenReturn(aggregate);
+
+        assertThat(service.aggregateFor("analyst", FROM, TO)).isEqualTo(aggregate);
+    }
+
+    @Test
     void serviceIsStrictlyReadOnly() {
         when(repository.findByActorSubjectOrderByCreatedAtDescIdDesc(anyString())).thenReturn(List.of());
         when(repository.findTop100ByActorSubjectOrderByCreatedAtDescIdDesc(anyString()))
                 .thenReturn(List.of());
         when(repository.aggregateByActorSubject(anyString()))
                 .thenReturn(new GatewayUsageAggregate(0L, null, null, null));
+        when(repository.aggregateByActorSubjectAndCreatedAtBetween(anyString(), any(), any()))
+                .thenReturn(new GatewayUsageAggregate(0L, null, null, null));
 
         service.historyFor("analyst");
         service.recentHistoryFor("analyst");
         service.aggregateFor("analyst");
+        service.aggregateFor("analyst", FROM, TO);
 
         verify(repository).findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
         verify(repository).findTop100ByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
         verify(repository).aggregateByActorSubject("analyst");
+        verify(repository).aggregateByActorSubjectAndCreatedAtBetween("analyst", FROM, TO);
         verify(repository, never()).save(any(GatewayUsageRecord.class));
         verify(repository, never()).saveAll(any());
         verify(repository, never()).saveAndFlush(any(GatewayUsageRecord.class));

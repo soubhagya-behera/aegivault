@@ -606,8 +606,13 @@ the request result. A clean provider response returns as ALLOW with the
  `SECURITY_BLOCKED`; metadata only, never prompt or response content).
   Persisted usage has an internal read-only query layer
   (`GatewayUsageQueryService`, repository only): actor-scoped history
-  newest-first plus one database-side aggregate row per actor (exact row
-  count with token totals that stay null when no values are known).
+  newest-first, one database-side aggregate row per actor (exact row
+  count with token totals that stay null when no values are known), and
+  actor-scoped aggregation over an explicit UTC time window
+  (`[from, to)`: `from` inclusive, `to` exclusive, computed database-side
+  with identical null-means-unknown semantics as groundwork for future
+  governance and budget enforcement; budgets, quotas, cost, and pricing
+  are NOT implemented yet).
   The authenticated self-service API `GET /api/gateway/usage` exposes
   that layer to the currently authenticated actor only: the actor comes
   exclusively from the verified JWT subject (never a parameter, path,

@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.gateway.usage;
 
+import java.time.Instant;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -76,6 +77,34 @@ public class GatewayUsageQueryService {
      */
     public GatewayUsageAggregate aggregateFor(String actorSubject) {
         return repository.aggregateByActorSubject(requireActor(actorSubject));
+    }
+
+    /**
+     * Returns one actor's usage aggregate over an explicit UTC time window
+     * [{@code from}, {@code to}), computed database-side: {@code from} is inclusive,
+     * {@code to} is exclusive. Semantics match {@link #aggregateFor(String)},
+     * preserving null for token fields where no known values exist and
+     * reporting the exact matching record count.
+     *
+     * @param actorSubject actor whose usage is aggregated, never blank
+     * @param from start of the window (inclusive, UTC), never null
+     * @param to end of the window (exclusive, UTC), never null, strictly after {@code from}
+     * @return the actor's aggregate for the window, never null
+     * @throws IllegalArgumentException when {@code actorSubject} is blank,
+     *         either bound is null, or {@code from} is not strictly before {@code to}
+     */
+    public GatewayUsageAggregate aggregateFor(String actorSubject, Instant from, Instant to) {
+        String actor = requireActor(actorSubject);
+        if (from == null) {
+            throw new IllegalArgumentException("from must not be null");
+        }
+        if (to == null) {
+            throw new IllegalArgumentException("to must not be null");
+        }
+        if (!from.isBefore(to)) {
+            throw new IllegalArgumentException("from must be strictly before to");
+        }
+        return repository.aggregateByActorSubjectAndCreatedAtBetween(actor, from, to);
     }
 
     private static String requireActor(String actorSubject) {

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
@@ -216,6 +217,24 @@ class GatewayUsageRepositoryTest {
         }
     }
 
+    private GatewayUsageRecord storedAt(
+            String actor,
+            Long prompt,
+            Long completion,
+            Long total,
+            GatewayUsageOutcome outcome,
+            Instant createdAt) {
+        GatewayUsageRecord saved = stored(actor, prompt, completion, total, outcome);
+        entities.createNativeQuery(
+                        "UPDATE gateway_usage_records SET created_at = :createdAt WHERE id = :id")
+                .setParameter("createdAt", createdAt)
+                .setParameter("id", saved.getId())
+                .executeUpdate();
+        entities.flush();
+        entities.clear();
+        return saved;
+    }
+
     private static Comparator<GatewayUsageRecord> newestFirst() {
         return Comparator.comparing(GatewayUsageRecord::getCreatedAt)
                 .reversed()
@@ -351,5 +370,167 @@ class GatewayUsageRepositoryTest {
                 "totalTokens",
                 "outcome",
                 "createdAt");
+    }
+
+    @Test
+    void windowAggregateReturnsEmptyAggregateForEmptyWindow() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-03-31T23:59:59Z");
+
+        storedAt("analyst", 10L, 20L, 30L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-02-15T00:00:00Z"));
+        storedAt("analyst", 15L, 25L, 40L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-04-15T00:00:00Z"));
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(0L, null, null, null));
+    }
+
+    @Test
+    void windowAggregateIncludesSingleMatchingRow() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", 12L, 34L, 46L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T12:00:00Z"));
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(1L, 12L, 34L, 46L));
+    }
+
+    @Test
+    void windowAggregateExcludesRowsBeforeTheWindow() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", 100L, 200L, 300L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-02-28T23:59:59Z"));
+        storedAt("analyst", 10L, 20L, 30L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-10T00:00:00Z"));
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(1L, 10L, 20L, 30L));
+    }
+
+    @Test
+    void windowAggregateIncludesRowExactlyAtFromBound() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", 11L, 22L, 33L, GatewayUsageOutcome.DELIVERED, from);
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(1L, 11L, 22L, 33L));
+    }
+
+    @Test
+    void windowAggregateExcludesRowExactlyAtToBound() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", 10L, 20L, 30L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T00:00:00Z"));
+        storedAt("analyst", 50L, 50L, 100L, GatewayUsageOutcome.DELIVERED, to);
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(1L, 10L, 20L, 30L));
+    }
+
+    @Test
+    void windowAggregateAggregatesMultipleMatchingRowsCorrectly() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", 10L, 20L, 30L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-05T00:00:00Z"));
+        storedAt("analyst", 15L, 25L, 40L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T00:00:00Z"));
+        storedAt("analyst", 5L, 10L, 15L, GatewayUsageOutcome.SECURITY_BLOCKED, Instant.parse("2026-03-25T00:00:00Z"));
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(3L, 30L, 55L, 85L));
+    }
+
+    @Test
+    void windowAggregateIsolatesActorsWithinTheSameWindow() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", 10L, 20L, 30L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-10T00:00:00Z"));
+        storedAt("other-actor", 100L, 200L, 300L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-10T00:00:00Z"));
+
+        GatewayUsageAggregate analystAggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+        GatewayUsageAggregate otherAggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("other-actor", from, to);
+
+        assertThat(analystAggregate).isEqualTo(new GatewayUsageAggregate(1L, 10L, 20L, 30L));
+        assertThat(otherAggregate).isEqualTo(new GatewayUsageAggregate(1L, 100L, 200L, 300L));
+    }
+
+    @Test
+    void windowAggregateIncludesSecurityBlockedRecords() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", 12L, 34L, 46L, GatewayUsageOutcome.SECURITY_BLOCKED, Instant.parse("2026-03-12T00:00:00Z"));
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(1L, 12L, 34L, 46L));
+    }
+
+    @Test
+    void windowAggregatePreservesNullWhenAllMatchingTokensAreUnknown() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", null, null, null, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-10T00:00:00Z"));
+        storedAt("analyst", null, null, null, GatewayUsageOutcome.SECURITY_BLOCKED, Instant.parse("2026-03-20T00:00:00Z"));
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(2L, null, null, null));
+    }
+
+    @Test
+    void windowAggregateSumsMixedKnownAndUnknownTokenValuesCorrectly() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        storedAt("analyst", 10L, 20L, 30L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-05T00:00:00Z"));
+        storedAt("analyst", null, null, null, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-10T00:00:00Z"));
+        storedAt("analyst", 5L, null, null, GatewayUsageOutcome.SECURITY_BLOCKED, Instant.parse("2026-03-15T00:00:00Z"));
+
+        GatewayUsageAggregate aggregate =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(aggregate).isEqualTo(new GatewayUsageAggregate(3L, 15L, 20L, 30L));
+    }
+
+    @Test
+    void windowAggregateRecordCountIsExactAndDeterministic() {
+        Instant from = Instant.parse("2026-03-01T00:00:00Z");
+        Instant to = Instant.parse("2026-04-01T00:00:00Z");
+
+        for (int i = 0; i < 5; i++) {
+            storedAt("analyst", (long) i, (long) i, (long) (2 * i), GatewayUsageOutcome.DELIVERED,
+                    Instant.parse(String.format("2026-03-%02dT10:00:00Z", i + 1)));
+        }
+
+        GatewayUsageAggregate firstCall =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+        GatewayUsageAggregate secondCall =
+                records.aggregateByActorSubjectAndCreatedAtBetween("analyst", from, to);
+
+        assertThat(firstCall.recordCount()).isEqualTo(5L);
+        assertThat(firstCall).isEqualTo(secondCall);
+        assertThat(firstCall).isEqualTo(new GatewayUsageAggregate(5L, 10L, 10L, 20L));
     }
 }

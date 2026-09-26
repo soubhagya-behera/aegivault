@@ -305,9 +305,12 @@
      `SECURITY_BLOCKED`; never prompt/response content, PII, or secrets).
      Persisted usage has a read-only query layer
      (`GatewayUsageQueryService` over `GatewayUsageRepository` only):
-     actor-scoped history newest-first plus a database-side per-actor
-     aggregate (exact count, token totals null when unknown), exposed
-     through the authenticated self-service API
+     actor-scoped history newest-first, a database-side per-actor
+     all-time aggregate, and an actor-scoped aggregate over an explicit
+     UTC time window (`from <= createdAt < to`, computed database-side,
+     null token totals preserved when unknown; groundwork for future
+     governance and budget enforcement, while budgets and quotas are NOT
+     implemented yet), exposed through the authenticated self-service API
      `GET /api/gateway/usage` (actor from the JWT subject only; at most
      the newest 100 records, newest first; usage metadata only; no
      admin/cross-user reporting, no budgets, no cost accounting yet).

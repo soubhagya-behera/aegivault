@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.gateway.usage;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -9,12 +10,13 @@ import org.springframework.data.repository.query.Param;
 
 /**
  * Persistence access for {@link GatewayUsageRecord}. Standard CRUD comes
- * from {@link JpaRepository}; usage adds exactly three access paths
+ * from {@link JpaRepository}; usage adds exactly four access paths
  * beyond the primary key: lookup by the server-generated gateway request
- * id (UNIQUE, so at most one row), actor-scoped history newest-first, and
- * one database-side aggregate row per actor. The history ordering
- * ({@code created_at} descending, {@code id} descending) is deterministic
- * even when rows share a timestamp, and the actor filter rides the
+ * id (UNIQUE, so at most one row), actor-scoped history newest-first,
+ * one database-side aggregate row per actor, and one database-side aggregate
+ * row per actor over an explicit UTC time window [{@code from}, {@code to}).
+ * The history ordering ({@code created_at} descending, {@code id} descending)
+ * is deterministic even when rows share a timestamp, and the actor filter rides the
  * dedicated V9 {@code (actor_subject, created_at)} index. There is no
  * global (cross-actor) read path by design.
  */
@@ -45,4 +47,22 @@ public interface GatewayUsageRepository extends JpaRepository<GatewayUsageRecord
                     + "COUNT(r), SUM(r.promptTokens), SUM(r.completionTokens), SUM(r.totalTokens)) "
                     + "FROM GatewayUsageRecord r WHERE r.actorSubject = :actorSubject")
     GatewayUsageAggregate aggregateByActorSubject(@Param("actorSubject") String actorSubject);
+
+    /**
+     * One aggregate row for one actor over an explicit UTC time window
+     * [{@code from}, {@code to}), computed database-side: {@code from} is inclusive,
+     * {@code to} is exclusive. The matching-row count and token sums follow the
+     * same null-means-unknown semantics as {@link #aggregateByActorSubject(String)}.
+     */
+    @Query(
+            "SELECT NEW com.aegivault.aegivault.gateway.usage.GatewayUsageAggregate("
+                    + "COUNT(r), SUM(r.promptTokens), SUM(r.completionTokens), SUM(r.totalTokens)) "
+                    + "FROM GatewayUsageRecord r "
+                    + "WHERE r.actorSubject = :actorSubject "
+                    + "AND r.createdAt >= :from "
+                    + "AND r.createdAt < :to")
+    GatewayUsageAggregate aggregateByActorSubjectAndCreatedAtBetween(
+            @Param("actorSubject") String actorSubject,
+            @Param("from") Instant from,
+            @Param("to") Instant to);
 }
