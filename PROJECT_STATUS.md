@@ -322,6 +322,20 @@
      never reach the database, and the response is one metadata-only
      aggregate object (record count plus token totals that stay null when
      unknown) with no history, pagination, budgets, or cost accounting.
+     Gateway usage policies now also exist as persisted, owner-scoped
+     *definitions* (`gateway.policy`: `GatewayUsagePolicy`, V10
+     `gateway_usage_policies` — owner subject, label, optional
+     description, nullable requests-per-minute / requests-per-day /
+     tokens-per-day limits, an enabled switch, and timestamps; a limit is
+     strictly positive or absent, and at least one must be supplied),
+     managed over authenticated
+     `POST/GET/PUT/DELETE /api/gateway/policies` with the owner taken only
+     from the JWT subject and never from request data. **Policies are NOT
+     enforced**: no gateway path reads the table, no counter is derived
+     from it, and rate limiting remains controlled by `GatewayRateLimiter`
+     configuration alone. Policies define request and token quantity
+     limits only — budgets, pricing, billing, and cost accounting are
+     still not implemented, and no daily or Redis counters exist.
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`

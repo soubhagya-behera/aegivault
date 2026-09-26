@@ -630,7 +630,19 @@ the request result. A clean provider response returns as ALLOW with the
   never reaches the database. It returns exactly one metadata-only aggregate
   object — record count plus token totals with null-means-unknown preserved
   — with no actor subject, no window echo, no request ids, models, prompt or
-  response content, provider details, database ids, or pagination. There is
+  response content, provider details, database ids, or pagination.
+  Owner-scoped gateway usage *policies* now exist as persisted definitions
+  only (`gateway.policy`: `GatewayUsagePolicy` in PostgreSQL via Flyway V10 —
+  owner subject, label, optional description, nullable
+  requests_per_minute / requests_per_day / tokens_per_day limits, an enabled
+  switch, and timestamps; a limit is strictly positive or absent, and at
+  least one must be present), managed through
+  `POST/GET/PUT/DELETE /api/gateway/policies` with the owner again taken
+  only from the verified JWT subject. **These policies are NOT enforced:**
+  no gateway code path reads the table, no counter is derived from it, and
+  current rate limiting remains entirely controlled by `GatewayRateLimiter`
+  configuration. They express request and token *quantities* only — pricing,
+  budgets, billing, and cost accounting remain unimplemented. There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
   is the only response action. Gateway completions are additionally
