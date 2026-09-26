@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
@@ -191,7 +192,10 @@ class GatewayUsagePolicyRepositoryTest {
         // same real database, so a global count would be meaningless here.
         assertThat(policies.findByOwnerSubjectOrderByCreatedAtDescIdDesc("owner-1")).hasSize(1);
         assertThat(found.getOwnerSubject()).isEqualTo("owner-1");
-        assertThat(found.getCreatedAt()).isEqualTo(stored.getCreatedAt());
+        // Compared at millisecond precision because PostgreSQL truncates
+        // sub-microsecond nanos on the round trip.
+        assertThat(found.getCreatedAt().truncatedTo(ChronoUnit.MILLIS))
+                .isEqualTo(stored.getCreatedAt().truncatedTo(ChronoUnit.MILLIS));
     }
 
     @Test
@@ -265,5 +269,101 @@ class GatewayUsagePolicyRepositoryTest {
 
         assertThat(policies.findByOwnerSubjectOrderByCreatedAtDescIdDesc("nobody")).isEmpty();
         assertThat(policies.findByIdAndOwnerSubject(UUID.randomUUID(), "nobody")).isEmpty();
+    }
+
+    @Test
+    void enabledPoliciesAreFoundForTheirOwner() {
+        String owner = isolatedOwner();
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "on", null, 60L, null, null, true));
+        pause();
+        entities.clear();
+
+        List<GatewayUsagePolicy> found =
+                policies.findByOwnerSubjectAndEnabledTrueOrderByCreatedAtDescIdDesc(owner);
+
+        assertThat(found).hasSize(1);
+        assertThat(found.get(0).getName()).isEqualTo("on");
+        assertThat(found.get(0).getOwnerSubject()).isEqualTo(owner);
+    }
+
+    @Test
+    void disabledPoliciesAreExcludedFromTheEnabledLookup() {
+        String owner = isolatedOwner();
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "off", null, 60L, null, null, false));
+        pause();
+        entities.clear();
+
+        assertThat(policies.findByOwnerSubjectAndEnabledTrueOrderByCreatedAtDescIdDesc(owner)).isEmpty();
+        // It is still a stored policy, just not an enabled candidate.
+        assertThat(policies.findByOwnerSubjectOrderByCreatedAtDescIdDesc(owner)).hasSize(1);
+    }
+
+    @Test
+    void onlyEnabledPoliciesAreReturnedWhenBothKindsExist() {
+        String owner = isolatedOwner();
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "off", null, 60L, null, null, false));
+        pause();
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "on", null, 30L, null, null, true));
+        pause();
+        entities.clear();
+
+        assertThat(policies.findByOwnerSubjectAndEnabledTrueOrderByCreatedAtDescIdDesc(owner))
+                .extracting(GatewayUsagePolicy::getName)
+                .containsExactly("on");
+    }
+
+    @Test
+    void multipleEnabledPoliciesAreReturnedNewestFirstDeterministically() {
+        String owner = isolatedOwner();
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "first", null, 1L, null, null, true));
+        pause();
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "second", null, 2L, null, null, true));
+        pause();
+        entities.clear();
+
+        List<GatewayUsagePolicy> firstRead =
+                policies.findByOwnerSubjectAndEnabledTrueOrderByCreatedAtDescIdDesc(owner);
+        List<GatewayUsagePolicy> secondRead =
+                policies.findByOwnerSubjectAndEnabledTrueOrderByCreatedAtDescIdDesc(owner);
+
+        // Deterministic newest-first, and stable across reads. The order is a
+        // read convenience only: the resolver treats more than one candidate
+        // as ambiguous and never breaks the tie with this ordering.
+        assertThat(firstRead)
+                .extracting(GatewayUsagePolicy::getName)
+                .containsExactly("second", "first");
+        assertThat(secondRead)
+                .extracting(GatewayUsagePolicy::getId)
+                .containsExactlyElementsOf(
+                        firstRead.stream().map(GatewayUsagePolicy::getId).toList());
+    }
+
+    @Test
+    void enabledLookupIsOwnerScoped() {
+        String owner = isolatedOwner();
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "mine-on", null, 60L, null, null, true));
+        pause();
+        policies.saveAndFlush(new GatewayUsagePolicy("other-owner", "theirs-on", null, 60L, null, null, true));
+        pause();
+        entities.clear();
+
+        assertThat(policies.findByOwnerSubjectAndEnabledTrueOrderByCreatedAtDescIdDesc(owner))
+                .extracting(GatewayUsagePolicy::getName)
+                .containsExactly("mine-on");
+        assertThat(policies.findByOwnerSubjectAndEnabledTrueOrderByCreatedAtDescIdDesc("other-owner"))
+                .extracting(GatewayUsagePolicy::getName)
+                .containsExactly("theirs-on");
+    }
+
+    @Test
+    void enabledLookupForAnUnknownOwnerIsEmpty() {
+        assertThat(policies.findByOwnerSubjectAndEnabledTrueOrderByCreatedAtDescIdDesc(
+                        "owner-does-not-exist-" + UUID.randomUUID()))
+                .isEmpty();
+    }
+
+    /** A per-test owner so this suite never collides with committed rows. */
+    private static String isolatedOwner() {
+        return "repo-test-owner-" + UUID.randomUUID();
     }
 }

@@ -642,7 +642,20 @@ the request result. A clean provider response returns as ALLOW with the
   no gateway code path reads the table, no counter is derived from it, and
   current rate limiting remains entirely controlled by `GatewayRateLimiter`
   configuration. They express request and token *quantities* only — pricing,
-  budgets, billing, and cost accounting remain unimplemented. There is
+  budgets, billing, and cost accounting remain unimplemented.
+  An explicit `GatewayUsagePolicyResolver` now defines how one actor's
+  effective policy is chosen, and it deliberately refuses to guess: only
+  that actor's *enabled* policies are candidates, exactly one resolves,
+  zero means no policy (a normal, non-error outcome), and two or more is
+  ambiguous configuration that raises a safe exception naming no owner,
+  policy, count, or database detail. No tie-break exists — newest, oldest,
+  tightest, loosest, and alphabetical are all rejected, because enforcing
+  the wrong limit is worse than not resolving. The resolver reads one
+  owner-scoped, deterministically ordered read and depends only on the
+  policy repository. **The gateway is not policy-controlled yet:** nothing
+  calls the resolver, so resolution still has zero runtime effect, and
+  there is no policy activation, default-policy, or uniqueness mechanism.
+  There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
   is the only response action. Gateway completions are additionally

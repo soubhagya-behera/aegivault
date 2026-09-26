@@ -336,6 +336,16 @@
      configuration alone. Policies define request and token quantity
      limits only — budgets, pricing, billing, and cost accounting are
      still not implemented, and no daily or Redis counters exist.
+     An explicit `GatewayUsagePolicyResolver` now defines how an actor's
+     effective policy is resolved: candidates are only that actor's
+     *enabled* policies, exactly one resolves, zero means no policy (a
+     normal, non-error outcome), and two or more is ambiguous
+     configuration that fails explicitly with a safe exception rather than
+     silently picking newest, oldest, tightest, or loosest. The gateway is
+     **not** policy-controlled yet: nothing in the traffic path calls the
+     resolver, there is no policy activation or default-policy mechanism,
+     and rate limiting is still governed solely by `GatewayRateLimiter`
+     configuration.
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`
