@@ -604,7 +604,12 @@ the request result. A clean provider response returns as ALLOW with the
  V9 — request id, actor, model, exact provider-reported counts with
  unknown preserved as null, and outcome `DELIVERED` or
  `SECURITY_BLOCKED`; metadata only, never prompt or response content).
- No external cloud provider exists. No response redaction or rewriting exists: blocking
+ Persisted usage has an internal read-only query layer
+ (`GatewayUsageQueryService`, repository only): actor-scoped history
+ newest-first plus one database-side aggregate row per actor (exact row
+ count with token totals that stay null when no values are known).
+ There is no public usage endpoint, and no budget, quota, cost, or
+ accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
   is the only response action. Gateway completions are additionally
   rate-limited per authenticated actor before any inspection or provider
   work: the completion service spends one `GatewayRateLimiter` attempt

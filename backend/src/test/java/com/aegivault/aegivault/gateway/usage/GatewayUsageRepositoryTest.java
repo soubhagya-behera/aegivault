@@ -5,7 +5,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -193,5 +197,159 @@ class GatewayUsageRepositoryTest {
                                         .setParameter("requestId", UUID.randomUUID())
                                         .executeUpdate())
                 .isInstanceOf(RuntimeException.class);
+    }
+
+    private GatewayUsageRecord stored(
+            String actor, Long prompt, Long completion, Long total, GatewayUsageOutcome outcome) {
+        GatewayUsageRecord saved = records.saveAndFlush(
+                new GatewayUsageRecord(UUID.randomUUID(), actor, "test-model", prompt, completion, total, outcome));
+        pause();
+        return saved;
+    }
+
+    private static void pause() {
+        try {
+            Thread.sleep(5L);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    private static Comparator<GatewayUsageRecord> newestFirst() {
+        return Comparator.comparing(GatewayUsageRecord::getCreatedAt)
+                .reversed()
+                .thenComparing(Comparator.comparing(GatewayUsageRecord::getId).reversed());
+    }
+
+    @Test
+    void emptyActorHasNoHistoryAndUnknownAggregate() {
+        assertThat(records.findByActorSubjectOrderByCreatedAtDescIdDesc("nobody")).isEmpty();
+        assertThat(records.aggregateByActorSubject("nobody"))
+                .isEqualTo(new GatewayUsageAggregate(0L, null, null, null));
+    }
+
+    @Test
+    void singleDeliveredRecordHistoryAndAggregate() {
+        GatewayUsageRecord saved =
+                stored("analyst", 12L, 34L, 46L, GatewayUsageOutcome.DELIVERED);
+        entities.clear();
+
+        assertThat(records.findByActorSubjectOrderByCreatedAtDescIdDesc("analyst"))
+                .extracting(GatewayUsageRecord::getId)
+                .containsExactly(saved.getId());
+        assertThat(records.aggregateByActorSubject("analyst"))
+                .isEqualTo(new GatewayUsageAggregate(1L, 12L, 34L, 46L));
+    }
+
+    @Test
+    void multipleRecordsAreOrderedNewestFirst() {
+        GatewayUsageRecord first =
+                stored("analyst", 1L, 1L, 2L, GatewayUsageOutcome.DELIVERED);
+        GatewayUsageRecord second =
+                stored("analyst", 3L, 4L, 7L, GatewayUsageOutcome.DELIVERED);
+        GatewayUsageRecord third =
+                stored("analyst", 5L, 6L, 11L, GatewayUsageOutcome.SECURITY_BLOCKED);
+        entities.clear();
+
+        List<GatewayUsageRecord> history =
+                records.findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
+
+        assertThat(history)
+                .extracting(GatewayUsageRecord::getId)
+                .containsExactly(third.getId(), second.getId(), first.getId());
+    }
+
+    @Test
+    void multipleActorsRemainIsolated() {
+        stored("analyst", 10L, 20L, 30L, GatewayUsageOutcome.DELIVERED);
+        stored("someone-else", 100L, 200L, 300L, GatewayUsageOutcome.DELIVERED);
+        stored("analyst", 5L, 5L, 10L, GatewayUsageOutcome.SECURITY_BLOCKED);
+        entities.clear();
+
+        List<GatewayUsageRecord> history =
+                records.findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
+
+        assertThat(history).hasSize(2);
+        assertThat(history).allMatch(record -> record.getActorSubject().equals("analyst"));
+        assertThat(records.aggregateByActorSubject("analyst"))
+                .isEqualTo(new GatewayUsageAggregate(2L, 15L, 25L, 40L));
+        assertThat(records.aggregateByActorSubject("someone-else"))
+                .isEqualTo(new GatewayUsageAggregate(1L, 100L, 200L, 300L));
+    }
+
+    @Test
+    void blockedRecordsAreIncludedInHistoryAndAggregate() {
+        stored("analyst", 10L, 20L, 30L, GatewayUsageOutcome.SECURITY_BLOCKED);
+        entities.clear();
+
+        List<GatewayUsageRecord> history =
+                records.findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
+
+        assertThat(history)
+                .extracting(GatewayUsageRecord::getOutcome)
+                .containsExactly(GatewayUsageOutcome.SECURITY_BLOCKED);
+        assertThat(records.aggregateByActorSubject("analyst"))
+                .isEqualTo(new GatewayUsageAggregate(1L, 10L, 20L, 30L));
+    }
+
+    @Test
+    void nullTokenValuesRemainUnknownInAggregates() {
+        stored("analyst", 10L, 20L, 30L, GatewayUsageOutcome.DELIVERED);
+        stored("analyst", null, null, null, GatewayUsageOutcome.DELIVERED);
+        stored("analyst", 5L, null, null, GatewayUsageOutcome.SECURITY_BLOCKED);
+        entities.clear();
+
+        assertThat(records.aggregateByActorSubject("analyst"))
+                .isEqualTo(new GatewayUsageAggregate(3L, 15L, 20L, 30L));
+    }
+
+    @Test
+    void allUnknownTokensAggregateToUnknownWithExactCount() {
+        stored("analyst", null, null, null, GatewayUsageOutcome.DELIVERED);
+        stored("analyst", null, null, null, GatewayUsageOutcome.SECURITY_BLOCKED);
+        entities.clear();
+
+        assertThat(records.aggregateByActorSubject("analyst"))
+                .isEqualTo(new GatewayUsageAggregate(2L, null, null, null));
+    }
+
+    @Test
+    void orderingIsDeterministicWhenTimestampsAreEqual() {
+        stored("analyst", 1L, 1L, 2L, GatewayUsageOutcome.DELIVERED);
+        stored("analyst", 2L, 2L, 4L, GatewayUsageOutcome.DELIVERED);
+        stored("analyst", 3L, 3L, 6L, GatewayUsageOutcome.DELIVERED);
+        entities.clear();
+
+        List<GatewayUsageRecord> firstRead =
+                records.findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
+        List<GatewayUsageRecord> secondRead =
+                records.findByActorSubjectOrderByCreatedAtDescIdDesc("analyst");
+
+        assertThat(firstRead).hasSize(3);
+        assertThat(firstRead).isSortedAccordingTo(newestFirst());
+        assertThat(secondRead)
+                .extracting(GatewayUsageRecord::getId)
+                .containsExactlyElementsOf(
+                        firstRead.stream().map(GatewayUsageRecord::getId).toList());
+    }
+
+    @Test
+    void queryResultCarriesMetadataFieldsOnly() {
+        var fields = Arrays.stream(GatewayUsageRecord.class.getDeclaredFields())
+                .filter(field -> !java.lang.reflect.Modifier.isStatic(field.getModifiers()))
+                .map(field -> field.getName())
+                .collect(Collectors.toSet());
+
+        assertThat(fields).containsExactlyInAnyOrder(
+                "id",
+                "requestId",
+                "actorSubject",
+                "model",
+                "promptTokens",
+                "completionTokens",
+                "totalTokens",
+                "outcome",
+                "createdAt");
     }
 }
