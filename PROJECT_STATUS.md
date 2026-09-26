@@ -362,6 +362,20 @@
      declaration order. **The evaluator is not connected to gateway
      traffic** — nothing calls it and no request or token counters are
      collected for it — so policies remain unenforced.
+     Policy evaluation now has a read-only persisted usage snapshot source
+     (`GatewayUsagePolicyUsageSnapshotProvider`): for one actor and one
+     supplied instant it reads current-minute and current-day usage with two
+     windowed database-side aggregates. The current-minute and current-day
+     request counts are counts of *persisted gateway usage records* — that
+     is, recorded provider invocations that returned a response, not every
+     inbound HTTP request: request-side BLOCKs, rate-limit rejections, and
+     provider or selector failures write no usage row. Windows are UTC and
+     half-open (`[start, start + 1 unit)`), never the JVM default zone. A
+     daily token total is reported only when every matching row supplied
+     one; unknown provider token usage propagates as unknown for the whole
+     day rather than becoming a partial sum, with an empty day as the one
+     known-zero case. The provider is internal and read-only, is not yet
+     connected to enforcement, and no policy is enforced.
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`

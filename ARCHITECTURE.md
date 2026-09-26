@@ -674,6 +674,23 @@ the request result. A clean provider response returns as ALLOW with the
   traffic path calls the evaluator and nothing collects usage counters for
   it, so **policies are still not enforced**; deciding what an inactive
   policy or an unknown total should mean is a later, separate decision.
+  That evaluator now has a read-only data source:
+  `GatewayUsagePolicyUsageSnapshotProvider` builds the snapshot for one
+  actor and one supplied instant from two windowed database-side aggregate
+  reads over persisted usage rows. The windows are UTC and half-open — the
+  minute is `[minuteStart, minuteStart + 1 minute)` and the day is
+  `[dayStart, dayStart + 1 day)` — never derived from the JVM default zone.
+  The request counts are counts of *persisted gateway usage records*, i.e.
+  recorded provider invocations that returned a response: request-side
+  BLOCKs, rate-limit rejections, and provider or selector failures write no
+  usage row, so these limits bound recorded provider usage rather than
+  inbound traffic. A daily token total is reported only when every matching
+  row supplied one; a single unknown provider total makes the whole day
+  unknown and the partial sum is discarded, so unknown propagates as
+  unknown instead of silently undercounting. An empty day is the one
+  known-zero case. **The provider is not connected to enforcement** — it
+  reads only, with no counters, reservation, or check-and-consume — and
+  policies remain unenforced.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking

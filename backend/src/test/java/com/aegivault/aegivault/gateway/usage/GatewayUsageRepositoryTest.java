@@ -235,6 +235,153 @@ class GatewayUsageRepositoryTest {
         return saved;
     }
 
+    private static final Instant WINDOW_MINUTE = Instant.parse("2026-03-15T12:30:00Z");
+
+    private static final Instant WINDOW_DAY = Instant.parse("2026-03-15T00:00:00Z");
+
+    private long minuteCount(String actor, Instant from, Instant to) {
+        return records.countByActorSubjectAndCreatedAtGreaterThanEqualAndCreatedAtLessThan(actor, from, to);
+    }
+
+    private long dayCount(String actor, Instant from, Instant to) {
+        return records.summarizeDayWindow(actor, from, to).getRecordCount();
+    }
+
+    @Test
+    void currentMinuteCountIsEmptyForAnActorWithNoUsage() {
+        assertThat(minuteCount("analyst", WINDOW_MINUTE, WINDOW_MINUTE.plusSeconds(60L))).isZero();
+    }
+
+    @Test
+    void oneCurrentMinuteRecordIsCounted() {
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T12:30:30Z"));
+
+        assertThat(minuteCount("analyst", WINDOW_MINUTE, WINDOW_MINUTE.plusSeconds(60L))).isEqualTo(1L);
+    }
+
+    @Test
+    void recordsOutsideTheCurrentMinuteAreExcluded() {
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T12:29:59Z"));
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T12:30:00Z"));
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T12:30:59Z"));
+
+        // The 12:29:59 row is outside [12:30:00, 12:31:00); the other two,
+        // including the start boundary, are inside it.
+        assertThat(minuteCount("analyst", WINDOW_MINUTE, WINDOW_MINUTE.plusSeconds(60L))).isEqualTo(2L);
+    }
+
+    @Test
+    void exactMinuteBoundaryIsHalfOpen() {
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_MINUTE);
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_MINUTE.plusSeconds(60L));
+
+        assertThat(minuteCount("analyst", WINDOW_MINUTE, WINDOW_MINUTE.plusSeconds(60L))).isEqualTo(1L);
+    }
+
+    @Test
+    void currentDayCountIncludesTheWholeUtcDay() {
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_DAY);
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T12:30:00Z"));
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-15T23:59:59Z"));
+
+        assertThat(dayCount("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L))).isEqualTo(3L);
+    }
+
+    @Test
+    void previousAndFollowingDaysAreExcluded() {
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-14T23:59:59Z"));
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_DAY);
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, Instant.parse("2026-03-16T00:00:00Z"));
+
+        assertThat(dayCount("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L))).isEqualTo(1L);
+    }
+
+    @Test
+    void exactDayBoundaryIsHalfOpen() {
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_DAY);
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_DAY.plusSeconds(86400L));
+
+        assertThat(dayCount("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L))).isEqualTo(1L);
+    }
+
+    @Test
+    void windowedCountsIsolateActors() {
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_MINUTE);
+        storedAt("other-actor", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_MINUTE);
+        storedAt("other-actor", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_MINUTE);
+
+        assertThat(minuteCount("analyst", WINDOW_MINUTE, WINDOW_MINUTE.plusSeconds(60L))).isEqualTo(1L);
+        assertThat(dayCount("other-actor", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L))).isEqualTo(2L);
+    }
+
+    @Test
+    void securityBlockedRecordsAreCounted() {
+        storedAt("analyst", 10L, 20L, 30L, GatewayUsageOutcome.SECURITY_BLOCKED, WINDOW_MINUTE);
+
+        assertThat(minuteCount("analyst", WINDOW_MINUTE, WINDOW_MINUTE.plusSeconds(60L))).isEqualTo(1L);
+        assertThat(dayCount("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L))).isEqualTo(1L);
+    }
+
+    @Test
+    void dailyTokenTotalIsSummedWhenEveryTotalIsKnown() {
+        storedAt("analyst", 1L, 2L, 30L, GatewayUsageOutcome.DELIVERED, WINDOW_DAY);
+        storedAt("analyst", 1L, 2L, 70L, GatewayUsageOutcome.DELIVERED, WINDOW_MINUTE);
+
+        GatewayUsageDayWindow day =
+                records.summarizeDayWindow("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L));
+
+        assertThat(day.getRecordCount()).isEqualTo(2L);
+        assertThat(day.getTotalTokens()).isEqualTo(100L);
+        assertThat(day.getKnownTokenCount()).isEqualTo(2L);
+    }
+
+    @Test
+    void aSingleUnknownTotalMakesTheWholeDayUnknown() {
+        storedAt("analyst", 1L, 2L, 30L, GatewayUsageOutcome.DELIVERED, WINDOW_DAY);
+        storedAt("analyst", null, null, null, GatewayUsageOutcome.DELIVERED, WINDOW_MINUTE);
+
+        GatewayUsageDayWindow day =
+                records.summarizeDayWindow("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L));
+
+        // The partial sum is still visible to the database, but the known
+        // count exposes that it covers only half the rows.
+        assertThat(day.getRecordCount()).isEqualTo(2L);
+        assertThat(day.getKnownTokenCount()).isEqualTo(1L);
+    }
+
+    @Test
+    void anEmptyDayHasNoRowsAndNoTokenTotal() {
+        GatewayUsageDayWindow day =
+                records.summarizeDayWindow("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L));
+
+        assertThat(day.getRecordCount()).isZero();
+        assertThat(day.getKnownTokenCount()).isZero();
+        assertThat(day.getTotalTokens()).isNull();
+    }
+
+    @Test
+    void windowedReadsAreDeterministicAcrossRepeats() {
+        storedAt("analyst", 1L, 2L, 30L, GatewayUsageOutcome.DELIVERED, WINDOW_DAY);
+        storedAt("analyst", 1L, 2L, 70L, GatewayUsageOutcome.DELIVERED, WINDOW_MINUTE);
+
+        GatewayUsageDayWindow first =
+                records.summarizeDayWindow("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L));
+        GatewayUsageDayWindow second =
+                records.summarizeDayWindow("analyst", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L));
+
+        assertThat(first.getRecordCount()).isEqualTo(second.getRecordCount());
+        assertThat(first.getKnownTokenCount()).isEqualTo(second.getKnownTokenCount());
+        assertThat(first.getTotalTokens()).isEqualTo(second.getTotalTokens());
+    }
+
+    @Test
+    void unknownActorSeesAnEmptyDay() {
+        storedAt("analyst", 1L, 2L, 3L, GatewayUsageOutcome.DELIVERED, WINDOW_DAY);
+
+        assertThat(minuteCount("nobody", WINDOW_MINUTE, WINDOW_MINUTE.plusSeconds(60L))).isZero();
+        assertThat(dayCount("nobody", WINDOW_DAY, WINDOW_DAY.plusSeconds(86400L))).isZero();
+    }
+
     private static Comparator<GatewayUsageRecord> newestFirst() {
         return Comparator.comparing(GatewayUsageRecord::getCreatedAt)
                 .reversed()
