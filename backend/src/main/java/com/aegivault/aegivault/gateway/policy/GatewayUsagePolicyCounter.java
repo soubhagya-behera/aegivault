@@ -33,8 +33,14 @@ package com.aegivault.aegivault.gateway.policy;
  * controller, no audit entry, no provider, no PII detector, no repository, no
  * usage record, and no policy interpretation. It is deliberately independent
  * of all of them.
+ *
+ * <p>Two operations, deliberately not merged into one: the single-window
+ * {@link #tryConsume(String, GatewayUsagePolicyCounterWindow, long)} is the
+ * simple case, and {@link #tryConsume(GatewayUsagePolicyCounterRequest)} is
+ * the atomic multi-window case that several limits must be admitted by a
+ * single indivisible decision. Keeping both means a caller with one limit
+ * reads naturally, while a caller with two limits can never half-apply them.
  */
-@FunctionalInterface
 public interface GatewayUsagePolicyCounter {
 
     /**
@@ -68,4 +74,49 @@ public interface GatewayUsagePolicyCounter {
      *         must fail closed rather than admit the request
      */
     boolean tryConsume(String actorSubject, GatewayUsagePolicyCounterWindow window, long limit);
+
+    /**
+     * Atomically consumes one request unit from <em>every</em> window named by
+     * {@code request}, treating them as a single unit of work.
+     *
+     * <p>This is the operation that removes partial consumption. Consuming the
+     * day limit and the minute limit in two separate calls means the day's
+     * capacity is already spent when the minute call rejects, so a refused
+     * request still costs the actor a unit of one of their limits. Here the
+     * whole set is decided together:
+     * <ul>
+     *   <li>if <strong>every</strong> requested window can admit the request,
+     *       <strong>all</strong> of them are incremented and
+     *       {@link GatewayUsagePolicyCounterResult.State#ALLOWED} is
+     *       returned;</li>
+     *   <li>if <strong>any</strong> requested window is already spent,
+     *       <strong>none</strong> is incremented and
+     *       {@link GatewayUsagePolicyCounterResult.State#REJECTED} is returned
+     *       with the exhausted window.</li>
+     * </ul>
+     *
+     * <p>All requested windows are therefore incremented together or not at
+     * all. A request that names a single window behaves exactly like
+     * {@link #tryConsume(String, GatewayUsagePolicyCounterWindow, long)},
+     * including the {@code currentCount + 1 <= limit} boundary.
+     *
+     * <p>The per-window comparison is exactly the same
+     * {@code currentCount + 1 <= limit} as the single-window operation, and
+     * the counting remains atomic per window: concurrent attempts for the same
+     * actor and window still cannot overshoot, and a multi-window attempt is
+     * indivisible with respect to other attempts for that actor.
+     *
+     * <p>When several requested windows are exhausted, the one reported is the
+     * first in {@link GatewayUsagePolicyCounterWindow#evaluationRank()} order
+     * (day, then minute) — a fixed order, independent of configured limit
+     * values, map iteration order, and timestamps.
+     *
+     * @param request the actor, the instant, and the per-window limits, never
+     *        null
+     * @return the attempt outcome, never null
+     * @throws GatewayUsagePolicyCounterUnavailableException when the
+     *         underlying store could not answer; a failure is never reported
+     *         as either {@code ALLOWED} or {@code REJECTED}
+     */
+    GatewayUsagePolicyCounterResult tryConsume(GatewayUsagePolicyCounterRequest request);
 }

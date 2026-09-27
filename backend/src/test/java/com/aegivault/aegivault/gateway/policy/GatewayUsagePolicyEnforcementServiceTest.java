@@ -3,26 +3,28 @@ package com.aegivault.aegivault.gateway.policy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.inOrder;
+import static org.assertj.core.api.Assertions.entry;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.InOrder;
 
 /**
  * Pure unit tests for {@link GatewayUsagePolicyEnforcementService} (no Spring
- * context, no database, no Redis, no gateway wiring). They pin that capacity
- * is consumed only when a limit actually applies, that both configured
- * request limits must admit, that a rejection short-circuits the remaining
- * limit, that ambiguity and unavailability stay distinct from a rejection,
- * and that the service cannot have grown a dependency on the gateway traffic
- * flow.
+ * context, no database, no Redis, no gateway wiring). They pin the
+ * orchestration only: the service builds <em>one</em> atomic counter request
+ * from the resolved policy's configured request limits, calls the counter
+ * once, and maps the single result onto its own states. Counter internals —
+ * atomicity, increment semantics, window arithmetic — are deliberately left
+ * to the counter's own tests, and the counter is a mock throughout.
  */
 class GatewayUsagePolicyEnforcementServiceTest {
 
@@ -34,23 +36,42 @@ class GatewayUsagePolicyEnforcementServiceTest {
 
     private GatewayUsagePolicyEnforcementService service;
 
+    /** The single request the service handed to the counter, if any. */
+    private GatewayUsagePolicyCounterRequest lastRequest;
+
     @BeforeEach
     void setUp() {
         resolver = mock(GatewayUsagePolicyResolver.class);
         counter = mock(GatewayUsagePolicyCounter.class);
         service = new GatewayUsagePolicyEnforcementService(resolver, counter);
+        lastRequest = null;
+        // Default: every configured window admits.
+        stubCounter(null);
+    }
+
+    /**
+     * Stubs the one atomic consume call, capturing the request and rejecting
+     * on {@code rejectedOn} when the service actually requested that window.
+     */
+    private void stubCounter(GatewayUsagePolicyCounterWindow rejectedOn) {
+        when(counter.tryConsume(any(GatewayUsagePolicyCounterRequest.class)))
+                .thenAnswer(invocation -> {
+                    GatewayUsagePolicyCounterRequest request = invocation.getArgument(0);
+                    lastRequest = request;
+                    return rejectedOn == null || !request.limits().containsKey(rejectedOn)
+                            ? GatewayUsagePolicyCounterResult.allowed()
+                            : GatewayUsagePolicyCounterResult.rejected(rejectedOn);
+                });
+    }
+
+    private void failCounter() {
+        when(counter.tryConsume(any(GatewayUsagePolicyCounterRequest.class)))
+                .thenThrow(new GatewayUsagePolicyCounterUnavailableException(
+                        new RuntimeException("redis-connection-refused-9z")));
     }
 
     private void resolved(GatewayUsagePolicy policy) {
         when(resolver.resolve("actor-1")).thenReturn(GatewayUsagePolicyResolution.resolved(policy));
-    }
-
-    private void admit(GatewayUsagePolicyCounterWindow window, long limit) {
-        when(counter.tryConsume("actor-1", window, limit)).thenReturn(true);
-    }
-
-    private void reject(GatewayUsagePolicyCounterWindow window, long limit) {
-        when(counter.tryConsume("actor-1", window, limit)).thenReturn(false);
     }
 
     private static GatewayUsagePolicy policy(Long perMinute, Long perDay, boolean enabled) {
@@ -87,147 +108,17 @@ class GatewayUsagePolicyEnforcementServiceTest {
     }
 
     @Test
-    void aMinuteOnlyPolicyAllowedByTheMinuteCounterIsAllowed() {
-        resolved(policy(10L, null, true));
-        admit(GatewayUsagePolicyCounterWindow.MINUTE, 10L);
+    void aTokenOnlyPolicyMakesNoCounterCall() {
+        // tokensPerDay is not enforced, and a policy that declares nothing
+        // else gives the service no request limit to consume.
+        resolved(new GatewayUsagePolicy("actor-1", "tokens-only", null, null, null, 5_000L, true));
 
         var result = service.enforce("actor-1", NOW);
 
+        // The vacuous truth "no configured request limit refused this request"
+        // — the token limit was never checked and no capacity was spent.
         assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.ALLOW);
-        assertThat(result.isAdmitted()).isTrue();
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-    }
-
-    @Test
-    void aMinuteOnlyPolicyRejectedByTheMinuteCounterIsRejectedOnMinute() {
-        resolved(policy(10L, null, true));
-        reject(GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-
-        var result = service.enforce("actor-1", NOW);
-
-        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.REJECTED);
-        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.MINUTE);
-        assertThat(result.isAdmitted()).isFalse();
-    }
-
-    @Test
-    void aDayOnlyPolicyAllowedByTheDayCounterIsAllowed() {
-        resolved(policy(null, 100L, true));
-        admit(GatewayUsagePolicyCounterWindow.DAY, 100L);
-
-        var result = service.enforce("actor-1", NOW);
-
-        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.ALLOW);
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L);
-    }
-
-    @Test
-    void aDayOnlyPolicyRejectedByTheDayCounterIsRejectedOnDay() {
-        resolved(policy(null, 100L, true));
-        reject(GatewayUsagePolicyCounterWindow.DAY, 100L);
-
-        var result = service.enforce("actor-1", NOW);
-
-        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.REJECTED);
-        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.DAY);
-    }
-
-    @Test
-    void aDayOnlyPolicyNeverTouchesTheMinuteCounter() {
-        resolved(policy(null, 100L, true));
-        admit(GatewayUsagePolicyCounterWindow.DAY, 100L);
-
-        service.enforce("actor-1", NOW);
-
-        // An unset limit is unconstrained and is skipped, not checked with a
-        // made-up number.
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L);
-        verifyNoMoreInteractions(counter);
-    }
-
-    @Test
-    void aMinuteOnlyPolicyNeverTouchesTheDayCounter() {
-        resolved(policy(10L, null, true));
-        admit(GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-
-        service.enforce("actor-1", NOW);
-
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-        verifyNoMoreInteractions(counter);
-    }
-
-    @Test
-    void bothLimitsAllowedYieldsAllowAndConsumesBoth() {
-        resolved(policy(10L, 100L, true));
-        admit(GatewayUsagePolicyCounterWindow.DAY, 100L);
-        admit(GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-
-        var result = service.enforce("actor-1", NOW);
-
-        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.ALLOW);
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L);
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-    }
-
-    @Test
-    void minuteAcceptedButDayRejectedIsRejectedOnDay() {
-        resolved(policy(10L, 100L, true));
-        admit(GatewayUsagePolicyCounterWindow.DAY, 100L);
-        reject(GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-
-        var result = service.enforce("actor-1", NOW);
-
-        // Both limits must admit; one rejection decides the outcome. This is
-        // also the documented non-transactional case: the day's unit was
-        // already consumed and is not returned.
-        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.REJECTED);
-        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.MINUTE);
-        assertThat(result.isAdmitted()).isFalse();
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L);
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-    }
-
-    @Test
-    void dayAcceptedButMinuteRejectedIsRejectedOnMinute() {
-        resolved(policy(10L, 100L, true));
-        admit(GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-        reject(GatewayUsagePolicyCounterWindow.DAY, 100L);
-
-        var result = service.enforce("actor-1", NOW);
-
-        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.REJECTED);
-        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.DAY);
-    }
-
-    @Test
-    void aDayRejectionShortCircuitsBeforeTheMinuteCounter() {
-        // Day is evaluated first, so a day rejection must not spend minute
-        // capacity on a request that is already refused.
-        resolved(policy(10L, 100L, true));
-        reject(GatewayUsagePolicyCounterWindow.DAY, 100L);
-
-        var result = service.enforce("actor-1", NOW);
-
-        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.REJECTED);
-        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.DAY);
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L);
-        verifyNoMoreInteractions(counter);
-    }
-
-    @Test
-    void bothLimitsAreEvaluatedInAFixedDayThenMinuteOrder() {
-        resolved(policy(10L, 100L, true));
-        admit(GatewayUsagePolicyCounterWindow.DAY, 100L);
-        admit(GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-
-        service.enforce("actor-1", NOW);
-
-        // The order is deterministic so behavior does not depend on hashing
-        // or reflection order.
-        InOrder order = inOrder(counter);
-        order.verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L);
-        order.verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 10L);
-        order.verifyNoMoreInteractions();
+        verifyNoInteractions(counter);
     }
 
     @Test
@@ -244,11 +135,85 @@ class GatewayUsagePolicyEnforcementServiceTest {
     }
 
     @Test
-    void aCounterFailurePropagatesAsASafeEnforcementFailureNotARejection() {
+    void bothConfiguredLimitsAllowedYieldAllowWithExactlyOneCounterCall() {
+        resolved(policy(10L, 100L, true));
+
+        var result = service.enforce("actor-1", NOW);
+
+        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.ALLOW);
+        // One interaction, not one per window: the whole point of the atomic
+        // multi-window operation.
+        verify(counter, times(1)).tryConsume(any(GatewayUsagePolicyCounterRequest.class));
+        verifyNoMoreInteractions(counter);
+    }
+
+    @Test
+    void oneAtomicRequestCarriesBothLimitsTheActorAndTheInstant() {
+        resolved(policy(10L, 100L, true));
+
+        service.enforce("actor-1", NOW);
+
+        assertThat(lastRequest).isNotNull();
+        assertThat(lastRequest.actorSubject()).isEqualTo("actor-1");
+        assertThat(lastRequest.now()).isEqualTo(NOW);
+        assertThat(lastRequest.limits())
+                .containsExactlyInAnyOrderEntriesOf(Map.of(
+                        GatewayUsagePolicyCounterWindow.DAY, 100L,
+                        GatewayUsagePolicyCounterWindow.MINUTE, 10L));
+    }
+
+    @Test
+    void aMinuteRejectionIsMappedFromTheSingleCounterResult() {
+        resolved(policy(10L, 100L, true));
+        stubCounter(GatewayUsagePolicyCounterWindow.MINUTE);
+
+        var result = service.enforce("actor-1", NOW);
+
+        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.REJECTED);
+        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.MINUTE);
+        assertThat(result.isAdmitted()).isFalse();
+        // Exactly one atomic attempt: there is no second window call to make.
+        verify(counter, times(1)).tryConsume(any(GatewayUsagePolicyCounterRequest.class));
+        verifyNoMoreInteractions(counter);
+    }
+
+    @Test
+    void aDayRejectionIsMappedFromTheSingleCounterResult() {
+        resolved(policy(10L, 100L, true));
+        stubCounter(GatewayUsagePolicyCounterWindow.DAY);
+
+        var result = service.enforce("actor-1", NOW);
+
+        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.REJECTED);
+        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.DAY);
+        verify(counter, times(1)).tryConsume(any(GatewayUsagePolicyCounterRequest.class));
+        verifyNoMoreInteractions(counter);
+    }
+
+    @Test
+    void aMinuteOnlyPolicyRequestsOnlyTheMinuteWindow() {
         resolved(policy(10L, null, true));
-        when(counter.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 10L))
-                .thenThrow(new GatewayUsagePolicyCounterUnavailableException(
-                        new RuntimeException("redis-connection-refused-9z")));
+
+        assertThat(service.enforce("actor-1", NOW).isAdmitted()).isTrue();
+
+        assertThat(lastRequest.limits())
+                .containsExactly(entry(GatewayUsagePolicyCounterWindow.MINUTE, 10L));
+    }
+
+    @Test
+    void aDayOnlyPolicyRequestsOnlyTheDayWindow() {
+        resolved(policy(null, 100L, true));
+
+        assertThat(service.enforce("actor-1", NOW).isAdmitted()).isTrue();
+
+        assertThat(lastRequest.limits())
+                .containsExactly(entry(GatewayUsagePolicyCounterWindow.DAY, 100L));
+    }
+
+    @Test
+    void aCounterFailurePropagatesAsASafeEnforcementFailureNotARejection() {
+        resolved(policy(10L, 100L, true));
+        failCounter();
 
         // "Could not check" stays distinct from "limit exceeded": no result
         // object is produced at all, so it cannot be mistaken for REJECTED.
@@ -257,6 +222,9 @@ class GatewayUsagePolicyEnforcementServiceTest {
                 .hasMessage(GatewayUsagePolicyEnforcementException.MESSAGE)
                 .hasMessage("Unable to enforce gateway usage policy.")
                 .hasMessageNotContaining("redis-connection-refused-9z");
+        // The failed attempt stops immediately: no retry against the counter.
+        verify(counter, times(1)).tryConsume(any(GatewayUsagePolicyCounterRequest.class));
+        verifyNoMoreInteractions(counter);
     }
 
     @Test
@@ -266,33 +234,15 @@ class GatewayUsagePolicyEnforcementServiceTest {
     }
 
     @Test
-    void aCounterFailureStopsTheCallImmediately() {
-        // No second counter is touched after a failure: continuing would
-        // consume more capacity for a request that cannot be admitted.
-        resolved(policy(10L, 100L, true));
-        when(counter.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L))
-                .thenThrow(new GatewayUsagePolicyCounterUnavailableException(new RuntimeException("down")));
-
-        assertThatThrownBy(() -> service.enforce("actor-1", NOW))
-                .isInstanceOf(GatewayUsagePolicyEnforcementException.class);
-        // Exactly one attempt: the minute counter is never reached.
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L);
-        verifyNoMoreInteractions(counter);
-    }
-
-    @Test
     void theSameTrimmedActorReachesBothResolverAndCounter() {
         resolved(policy(10L, 100L, true));
-        admit(GatewayUsagePolicyCounterWindow.DAY, 100L);
-        admit(GatewayUsagePolicyCounterWindow.MINUTE, 10L);
 
         service.enforce("  actor-1  ", NOW);
 
         // One actor identity for both lookups: a policy can never be enforced
         // against a different subject's capacity.
         verify(resolver).resolve("actor-1");
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L);
-        verify(counter).tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 10L);
+        assertThat(lastRequest.actorSubject()).isEqualTo("actor-1");
     }
 
     @Test
@@ -357,64 +307,12 @@ class GatewayUsagePolicyEnforcementServiceTest {
     void admissionNeverGoesThroughTheObservationalEvaluator() {
         // The evaluator reads a persisted snapshot, which is after the fact;
         // two simultaneous requests would both see the same count and both
-        // pass. Admission must use the atomic counter instead, so the
-        // evaluator is neither a field nor a called collaborator here.
-        var dependencies = java.util.Arrays.stream(
+        // pass. Admission must use the atomic counter instead.
+        var fieldTypes = java.util.Arrays.stream(
                         GatewayUsagePolicyEnforcementService.class.getDeclaredFields())
                 .map(field -> field.getType().getName())
                 .toList();
-        assertThat(dependencies).doesNotContain(GatewayUsagePolicyEvaluator.class.getName());
-        assertThat(java.util.Arrays.stream(GatewayUsagePolicyEnforcementService.class.getDeclaredMethods())
-                        .filter(method -> !java.lang.reflect.Modifier.isPrivate(method.getModifiers()))
-                        .map(java.lang.reflect.Method::getName)
-                        .toList())
-                .containsExactly("enforce");
-    }
-
-    @Test
-    void aTokenOnlyPolicyConsumesNoRequestCapacity() {
-        // tokensPerDay alone declares no request limit, so there is nothing to
-        // consume at admission time. ALLOW here is the vacuous truth "no
-        // configured request limit refused this request" — it does NOT mean the
-        // token limit was checked, and no capacity is spent.
-        GatewayUsagePolicy tokenOnly =
-                new GatewayUsagePolicy("actor-1", "tokens-only", null, null, null, 5_000L, true);
-        resolved(tokenOnly);
-
-        var result = service.enforce("actor-1", NOW);
-
-        assertThat(result.state()).isEqualTo(GatewayUsagePolicyEnforcementResult.State.ALLOW);
-        assertThat(result.rejectedWindow()).isNull();
-        // The token limit is never turned into a counter call or an estimate.
-        verifyNoInteractions(counter);
-    }
-
-    @Test
-    void theResultCarriesNoActorRedisOrLimitDetail() {
-        assertThat(java.util.Arrays.stream(GatewayUsagePolicyEnforcementResult.class.getRecordComponents())
-                        .map(java.lang.reflect.RecordComponent::getName)
-                        .toList())
-                .containsExactly("state", "rejectedWindow");
-        assertThat(java.util.Arrays.stream(GatewayUsagePolicyEnforcementResult.State.values())
-                        .map(Enum::name)
-                        .toList())
-                .containsExactly("NO_POLICY", "ALLOW", "REJECTED", "INACTIVE");
-    }
-
-    @Test
-    void aRejectionAlwaysNamesTheWindowAndOtherStatesNeverDo() {
-        assertThat(GatewayUsagePolicyEnforcementResult
-                        .rejected(GatewayUsagePolicyCounterWindow.MINUTE)
-                        .rejectedWindow())
-                .isEqualTo(GatewayUsagePolicyCounterWindow.MINUTE);
-        // A REJECTED without a window could not be acted on, and a window on a
-        // non-rejection would imply a limit was consulted when none was.
-        assertThatThrownBy(() -> new GatewayUsagePolicyEnforcementResult(
-                        GatewayUsagePolicyEnforcementResult.State.REJECTED, null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new GatewayUsagePolicyEnforcementResult(
-                        GatewayUsagePolicyEnforcementResult.State.ALLOW, GatewayUsagePolicyCounterWindow.DAY))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(fieldTypes).doesNotContain(GatewayUsagePolicyEvaluator.class.getName());
     }
 
     @Test
@@ -426,5 +324,17 @@ class GatewayUsagePolicyEnforcementServiceTest {
                         .map(annotation -> annotation.annotationType().getName())
                         .toList())
                 .isEmpty();
+    }
+
+    @Test
+    void theEnforcementResultCarriesNoActorRedisOrLimitDetail() {
+        assertThat(java.util.Arrays.stream(GatewayUsagePolicyEnforcementResult.class.getRecordComponents())
+                        .map(java.lang.reflect.RecordComponent::getName)
+                        .toList())
+                .containsExactly("state", "rejectedWindow");
+        assertThat(java.util.Arrays.stream(GatewayUsagePolicyEnforcementResult.State.values())
+                        .map(Enum::name)
+                        .toList())
+                .containsExactly("NO_POLICY", "ALLOW", "REJECTED", "INACTIVE");
     }
 }

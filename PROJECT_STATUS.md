@@ -471,22 +471,37 @@
      failure is **not** a rejection: it propagates
      `GatewayUsagePolicyEnforcementException` with a fixed safe message and
      produces no result at all, so "could not check" is never mistaken for
-     "limit exceeded", and it fails closed. **Multi-limit consumption is
-     deliberately NOT transactional**: with both limits configured, an
-     earlier successful consume is not returned if a later limit rejects, so
-     a request rejected on the minute limit may still have spent a unit of
-     the day's allowance. No rollback, compensation, or reservation was
-     invented — the counter is an atomic consume, not a transaction — and
-     reordering the limits cannot fix it because the first rejection depends
-     on runtime counts, not configured values. The inaccuracy is bounded (at
-     most one unit per window per rejected request) and conservative
-     (capacity is over-counted, never under-counted, so a limit still cannot
-     be exceeded). `tokensPerDay` remains unenforced: it is never read, and
-     there is no token reservation, pre-request token check, response token
-     rollback, or character heuristic. **The enforcement service is not wired
-     into live gateway traffic** — it is not a Spring bean and no gateway
-     path calls it, so policies remain unenforced and rate limiting is still
-     governed solely by `GatewayRateLimiter` configuration.
+     "limit exceeded", and it fails closed. **Multi-window consumption is now
+     atomic**, which removes the earlier partial-consumption limitation: the
+     counter contract now takes a typed
+     `GatewayUsagePolicyCounterRequest` (actor, instant, per-window limits) and
+     returns a `GatewayUsagePolicyCounterResult` (`ALLOWED`, or `REJECTED`
+     naming the window), deciding and consuming every requested window as one
+     indivisible operation — if all windows have room all are incremented, if
+     any is exhausted none is — so a refused request costs the actor nothing in
+     any window. `IN_MEMORY` uses a single per-actor atomic state boundary (one
+     `ConcurrentHashMap.compute` covers rollover, every capacity check, and
+     every increment; never two independent computes per request); `REDIS` uses
+     one Lua invocation for the whole attempt, whose read-only check loop
+     returns on the first exhausted window before writing anything and whose
+     second loop increments every key only when all had room, applying TTLs
+     only to newly created keys. The script returns `n` for an admission and
+     `-i` for a rejection, so a rejection at the last position can never read
+     as an admission, and the rejected window is reported in the fixed
+     `evaluationRank()` order (day, then minute) rather than by limit value,
+     map order, or timestamp. The single-window operation is preserved and
+     delegates to the same path, its `currentCount + 1 <= limit` boundary
+     unchanged, and the key format
+     `aegivault:gateway:policy-counter:<window>:<windowStart>:<actorSubject>`
+     is unchanged. The enforcement service now builds one atomic request from
+     the resolved policy's configured request limits and calls the counter
+     once, mapping the single result onto its existing states. `tokensPerDay`
+     remains unenforced: it is never read, and there is no token reservation,
+     pre-request token check, response token rollback, or character heuristic.
+     **The enforcement service is not wired into live gateway traffic** — it
+     is not a Spring bean and no gateway path calls it, so policies remain
+     unenforced and rate limiting is still governed solely by
+     `GatewayRateLimiter` configuration.
 
 
 

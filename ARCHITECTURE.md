@@ -810,21 +810,35 @@ the request result. A clean provider response returns as ALLOW with the
   `GatewayUsagePolicyEnforcementException` with a fixed safe message, and no
   result object is produced at all, so "could not check" can never be
   mistaken for "limit exceeded"; it fails closed.
-  **Multi-limit consumption is deliberately NOT transactional.** With both
-  limits configured, if the first consume succeeds and a later one rejects,
-  the earlier capacity is already spent and is not returned — so a request
-  rejected on the minute limit may still have consumed a unit of the day's
-  allowance. There is no rollback, compensation, or reservation, and none is
-  invented: the counter is an atomic consume, not a transaction, and
-  compensating it would need an atomic multi-key operation the counter
-  contract does not define. Reordering the two limits cannot fix this either,
-  because which limit rejects first depends on runtime counts rather than on
-  the configured values. The inaccuracy is bounded (at most one unit per
-  window per rejected request) and fails in the conservative direction —
-  capacity is over-counted, never under-counted, so a configured limit still
-  cannot be exceeded — and the result's `rejectedWindow` always tells the
-  caller the request was not admitted. Resolving this asymmetry belongs to
-  the later runtime-enforcement milestone.
+  **Multi-window consumption is now atomic.** The counter contract accepts a
+  typed `GatewayUsagePolicyCounterRequest` (actor, the caller's instant, and
+  per-window limits) and answers with a `GatewayUsagePolicyCounterResult`
+  (`ALLOWED`, or `REJECTED` naming the window). All requested windows are
+  decided as one indivisible operation: if every window has room, **all** of
+  them are incremented; if any window is exhausted, **none** is. A refused
+  request therefore costs the actor nothing in any window, which removes the
+  earlier partial-consumption case where a request rejected on the minute limit
+  had already spent a unit of the day's allowance. `IN_MEMORY` gets this from a
+  single per-actor atomic state boundary — one `ConcurrentHashMap.compute`
+  covers the rollover check, every capacity check, and every increment, and it
+  never issues two independent computes for one request. `REDIS` gets it from
+  one Lua invocation for the whole attempt: a read-only check loop over every
+  requested key returns on the first exhausted window before writing anything,
+  and a second loop increments every key only when all had room; TTLs are
+  applied only to newly created keys. The script returns `n` for an admission
+  and `-i` for a rejection, the sign keeping a rejection at the last position
+  from ever reading as an admission. A rejected window is reported in the fixed
+  `evaluationRank()` order (day, then minute) — never derived from configured
+  limit values, map iteration order, or timestamps. The single-window
+  `tryConsume(actor, window, limit)` operation is preserved and delegates to
+  the same path, so its `currentCount + 1 <= limit` boundary is unchanged. The
+  key format `aegivault:gateway:policy-counter:<window>:<windowStart>:<actorSubject>`
+  is unchanged by this contract upgrade, as is the global rate limiter's
+  separate namespace. The enforcement service now builds one atomic request
+  from the resolved policy's configured `requestsPerMinute` /
+  `requestsPerDay` and calls the counter once, mapping the single result onto
+  its existing `NO_POLICY` / `ALLOW` / `REJECTED` / `INACTIVE` states, with
+  ambiguity propagation and fail-closed behaviour unchanged.
   **`tokensPerDay` remains unenforced**: it is never read by the enforcement
   service, and there is no token reservation, pre-request token check,
   response token rollback, or character heuristic.

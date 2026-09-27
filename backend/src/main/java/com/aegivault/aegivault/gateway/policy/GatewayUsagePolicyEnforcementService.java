@@ -1,6 +1,7 @@
 package com.aegivault.aegivault.gateway.policy;
 
 import java.time.Instant;
+import java.util.EnumMap;
 import java.util.Objects;
 
 /**
@@ -28,51 +29,35 @@ import java.util.Objects;
  * response-size heuristic is used. Token enforcement needs an explicit
  * reservation/accounting design in a later milestone.
  *
- * <p><strong>All configured request limits must admit the request.</strong> A
- * policy with both limits set is admitted only if both consume successfully.
- * Evaluation order is fixed and deterministic: the day window first, then the
- * minute window. A null limit is unconstrained and is skipped entirely, so a
+ * <p><strong>All configured request limits must admit the request, as one
+ * indivisible decision.</strong> The configured request limits are packed into
+ * a single {@link GatewayUsagePolicyCounterRequest} and consumed with one
+ * {@link GatewayUsagePolicyCounter#tryConsume(GatewayUsagePolicyCounterRequest)}
+ * call, so the day and minute capacity are consumed together or not at all.
+ * A null limit is unconstrained and is left out of the request entirely, so a
  * minute-only policy never touches the day counter and vice versa.
  *
- * <p><strong>Short-circuits, and never partially consumes after a failure.</strong>
- * The first limit that rejects or fails stops the call immediately, so no
- * later counter is touched.
+ * <p><strong>Multi-limit consumption is atomic, not best-effort.</strong> An
+ * earlier milestone consumed each window in its own call, which meant a
+ * request rejected by the minute limit had already spent a unit of the day's
+ * allowance. That partial-consumption case is gone: when any requested window
+ * is exhausted, no window is incremented, so a refused request costs the actor
+ * nothing. The result always names the window that actually rejected.
  *
- * <p><strong>Multi-limit consumption is NOT transactional — a known,
- * deliberate limitation.</strong> When both limits are configured and the
- * first consume succeeds while a later one rejects, the earlier capacity has
- * already been consumed and is <em>not</em> returned. So a request rejected
- * on the minute limit may still have spent a unit of the day's allowance.
- * There is no rollback, compensation, or reservation here, and none is
- * invented: the counter is an atomic consume, not a transaction, and
- * compensating it would require an atomic multi-key operation the counter
- * contract does not define. Evaluating one limit before the other does not
- * remove the asymmetry either — which limit rejects first depends on runtime
- * counts, not on the configured values, so no ordering of the two limit
- * values can make this safe in general.
- *
- * <p>The consequence is deliberate and is why {@link
- * GatewayUsagePolicyEnforcementResult#rejectedWindow()} always names the
- * window that actually rejected: a caller can always tell that the request
- * was <em>not</em> admitted, while knowing a sibling limit may have been
- * charged. For a fixed-window allowance the inaccuracy is bounded — at most
- * one unit per window per rejected request — and it fails in the
- * conservative direction: capacity is over-counted, never under-counted, so
- * a configured limit still cannot be exceeded. Resolving the asymmetry
- * properly belongs to the later runtime-enforcement milestone.
- *
- * <p><strong>Nothing is consumed unless a limit can actually be checked.</strong>
- * An actor with no enabled policy, or a disabled policy, consumes nothing:
- * there is no limit to apply, and spending capacity for a request that no
- * limit governs would silently shrink the actor's real allowance. Ambiguous
- * configuration propagates {@link GatewayUsagePolicyAmbiguousException}
- * unchanged and consumes nothing, for the same reason.
+ * <p>Nothing is consumed unless a limit can actually be checked. An actor with
+ * no enabled policy, or a disabled policy, consumes nothing: there is no limit
+ * to apply, and spending capacity for a request that no limit governs would
+ * silently shrink the actor's real allowance. Ambiguous configuration
+ * propagates {@link GatewayUsagePolicyAmbiguousException} unchanged and
+ * consumes nothing, for the same reason. A policy that constrains only
+ * {@code tokensPerDay} also consumes nothing, because this service does not
+ * enforce tokens.
  *
  * <p><strong>Failure is not rejection.</strong> If the counter cannot answer,
  * {@link GatewayUsagePolicyEnforcementException} propagates and the request is
- * neither admitted nor rejected. A counter that fails after an earlier
- * consume succeeded has the same asymmetry described above, and fails
- * closed: the request is not admitted.
+ * neither admitted nor rejected. A counter that fails part-way through a
+ * multi-window attempt consumes nothing, since the counter's decision and
+ * increments are one operation, and fails closed.
  *
  * <p>Depends only on the resolver and the counter abstraction: no completion
  * service, no controller, no repository, no Redis, no provider, no PII
@@ -135,36 +120,38 @@ public class GatewayUsagePolicyEnforcementService {
             return GatewayUsagePolicyEnforcementResult.inactive();
         }
 
-        return consumeRequestLimits(actor, policy);
+        return consumeRequestLimits(actor, policy, now);
     }
 
-    private GatewayUsagePolicyEnforcementResult consumeRequestLimits(String actor, GatewayUsagePolicy policy) {
-        // Fixed order: day, then minute. Both configured limits must admit the
-        // request; a null limit is unconstrained and is skipped, so an unset
-        // limit never causes a counter call.
-        GatewayUsagePolicyCounterWindow rejected = firstRejection(actor, policy);
-        return rejected == null
+    private GatewayUsagePolicyEnforcementResult consumeRequestLimits(
+            String actor, GatewayUsagePolicy policy, Instant now) {
+        // One atomic request covering every configured request limit, never one
+        // call per window: a day consume followed by a minute consume would
+        // leave the day's capacity already spent when the minute limit rejects.
+        EnumMap<GatewayUsagePolicyCounterWindow, Long> limits = new EnumMap<>(GatewayUsagePolicyCounterWindow.class);
+        if (policy.getRequestsPerDay() != null) {
+            limits.put(GatewayUsagePolicyCounterWindow.DAY, policy.getRequestsPerDay());
+        }
+        if (policy.getRequestsPerMinute() != null) {
+            limits.put(GatewayUsagePolicyCounterWindow.MINUTE, policy.getRequestsPerMinute());
+        }
+        if (limits.isEmpty()) {
+            // The policy constrains only tokens, which this service does not
+            // enforce. No request capacity is consumed, and no counter call is
+            // made to discover that.
+            return GatewayUsagePolicyEnforcementResult.allow();
+        }
+
+        GatewayUsagePolicyCounterResult outcome = consume(
+                new GatewayUsagePolicyCounterRequest(actor, now, limits));
+        return outcome.isAllowed()
                 ? GatewayUsagePolicyEnforcementResult.allow()
-                : GatewayUsagePolicyEnforcementResult.rejected(rejected);
+                : GatewayUsagePolicyEnforcementResult.rejected(outcome.rejectedWindow());
     }
 
-    private GatewayUsagePolicyCounterWindow firstRejection(String actor, GatewayUsagePolicy policy) {
-        Long perDay = policy.getRequestsPerDay();
-        if (perDay != null && !consume(actor, GatewayUsagePolicyCounterWindow.DAY, perDay)) {
-            // Short-circuit: the minute limit is not touched once the day
-            // limit has rejected.
-            return GatewayUsagePolicyCounterWindow.DAY;
-        }
-        Long perMinute = policy.getRequestsPerMinute();
-        if (perMinute != null && !consume(actor, GatewayUsagePolicyCounterWindow.MINUTE, perMinute)) {
-            return GatewayUsagePolicyCounterWindow.MINUTE;
-        }
-        return null;
-    }
-
-    private boolean consume(String actor, GatewayUsagePolicyCounterWindow window, long limit) {
+    private GatewayUsagePolicyCounterResult consume(GatewayUsagePolicyCounterRequest request) {
         try {
-            return counter.tryConsume(actor, window, limit);
+            return counter.tryConsume(request);
         } catch (GatewayUsagePolicyCounterUnavailableException ex) {
             // "Could not check" must never become REJECTED: the caller is
             // told the limit is unknown, not that it was exceeded.

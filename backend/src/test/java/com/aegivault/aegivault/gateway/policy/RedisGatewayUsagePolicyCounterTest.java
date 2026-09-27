@@ -15,10 +15,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.invocation.InvocationOnMock;
@@ -30,10 +29,10 @@ import org.springframework.data.redis.core.script.RedisScript;
  * Pure unit tests for {@link RedisGatewayUsagePolicyCounter} with a Mockito
  * {@link StringRedisTemplate} — no Spring context, no Redis server, no
  * network, following the approach the existing Redis rate-limiter test
- * already uses. A recording answer stands in for the Lua execution: it
- * captures the key and arguments and counts per key exactly as the script's
- * INCR would, so key format, per-window isolation, single-call atomicity,
- * TTL arguments, and fail-closed behavior are all proven without a server.
+ * already uses. A recording answer stands in for the Lua execution and
+ * simulates its two phases faithfully: it checks every requested key first
+ * and returns before writing anything if one is exhausted, so "a rejection
+ * increments nothing" is proven rather than assumed.
  */
 class RedisGatewayUsagePolicyCounterTest {
 
@@ -46,28 +45,50 @@ class RedisGatewayUsagePolicyCounterTest {
     private final List<Object[]> argsSeen = Collections.synchronizedList(new ArrayList<>());
 
     /** Stands in for the server-side counters, one per Redis key. */
-    private final Map<String, AtomicLong> serverCounters = new ConcurrentHashMap<>();
+    private final Map<String, Long> serverCounters = new HashMap<>();
+
+    /**
+     * Mirrors the two-phase script exactly: check every key, return on the
+     * first exhausted one without writing, otherwise increment them all.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Answer<Long> luaScript() {
+        return (InvocationOnMock invocation) -> {
+            List<String> keys = List.copyOf((List<String>) invocation.getArgument(1));
+            Object[] all = invocation.getArguments();
+            Object[] scriptArgs = new Object[all.length - 2];
+            System.arraycopy(all, 2, scriptArgs, 0, scriptArgs.length);
+            keysSeen.add(keys);
+            argsSeen.add(scriptArgs);
+
+            // Phase one: read-only checks.
+            for (int i = 0; i < keys.size(); i++) {
+                long limit = Long.parseLong((String) scriptArgs[i * 2]);
+                long current = serverCounters.getOrDefault(keys.get(i), 0L);
+                if (current + 1L > limit) {
+                    return -(long) (i + 1);
+                }
+            }
+            // Phase two: every window had room, so increment them all.
+            for (String key : keys) {
+                serverCounters.merge(key, 1L, Long::sum);
+            }
+            return (long) keys.size();
+        };
+    }
 
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
-    void scriptCountsLikeRedisWould() {
+    void stubRedis() {
         redis = mock(StringRedisTemplate.class);
         keysSeen.clear();
         argsSeen.clear();
         serverCounters.clear();
-        Answer<Long> tryConsume = (InvocationOnMock invocation) -> {
-            List<String> keys = List.copyOf((List<String>) invocation.getArgument(1));
-            String limit = (String) invocation.getArgument(2);
-            keysSeen.add(keys);
-            argsSeen.add(new Object[] {invocation.getArgument(2), invocation.getArgument(3)});
-            long current = serverCounters
-                    .computeIfAbsent(keys.get(0), key -> new AtomicLong())
-                    .incrementAndGet();
-            return current <= Long.parseLong(limit) ? 1L : 0L;
-        };
-        // Two matchers: Mockito matches the two trailing script arguments as
-        // expanded varargs, and production always passes exactly two.
-        when(redis.execute(any(RedisScript.class), anyList(), any(), any())).thenAnswer(tryConsume);
+        // Production passes one (limit, ttl) pair per requested window, so the
+        // two arities are a single-window and a two-window request.
+        when(redis.execute(any(RedisScript.class), anyList(), any(), any())).thenAnswer(luaScript());
+        when(redis.execute(any(RedisScript.class), anyList(), any(), any(), any(), any()))
+                .thenAnswer(luaScript());
     }
 
     private RedisGatewayUsagePolicyCounter counter() {
@@ -76,6 +97,16 @@ class RedisGatewayUsagePolicyCounterTest {
 
     private boolean consume(String actor, GatewayUsagePolicyCounterWindow window, long limit) {
         return counter().tryConsume(actor, window, limit);
+    }
+
+    private GatewayUsagePolicyCounterResult both(long perDay, long perMinute) {
+        return counter().tryConsume(GatewayUsagePolicyCounterRequest.ofBoth("actor-1", NOW, perDay, perMinute));
+    }
+
+    /** The server-side count for this actor in one window at {@link #NOW}. */
+    private long countFor(GatewayUsagePolicyCounterWindow window) {
+        return serverCounters.getOrDefault(
+                GatewayUsagePolicyCounterRequest.of("actor-1", NOW, window, 1L).keyFor(window), 0L);
     }
 
     @Test
@@ -98,93 +129,166 @@ class RedisGatewayUsagePolicyCounterTest {
     }
 
     @Test
-    void eachConsumeIsExactlyOneAtomicScriptExecution() {
-        // The whole point: one round trip per attempt, not GET + INCR +
-        // EXPIRE. A separate read and write would leave a check-then-act gap
-        // that two concurrent requests could both slip through.
-        RedisGatewayUsagePolicyCounter counter = counter();
-        counter.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 5L);
-        counter.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 5L);
-        counter.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 5L);
+    void aMultiWindowAttemptIsExactlyOneAtomicScriptExecution() {
+        // The whole point: one round trip decides and consumes both windows,
+        // never one script per window and never a read-then-write split.
+        both(100L, 2L);
 
-        verify(redis, times(3)).execute(any(RedisScript.class), anyList(), any(), any());
-
-        // Increment, TTL, and the limit comparison all live inside the one
-        // script; no separate INCR or EXPIRE command is ever issued.
-        String script = RedisGatewayUsagePolicyCounter.TRY_CONSUME_SCRIPT.getScriptAsString();
-        assertThat(script).contains("INCR").contains("PEXPIRE").contains("current <= tonumber(ARGV[1])");
+        verify(redis, times(1)).execute(any(RedisScript.class), anyList(), any(), any(), any(), any());
         verifyNoMoreInteractions(redis);
     }
 
     @Test
-    void theLimitIsPassedIntoTheAtomicOperation() {
-        consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 7L);
+    void bothWindowKeysAreSentInOneCallInDayThenMinuteOrder() {
+        both(100L, 2L);
 
-        // The limit travels as a script argument, so the comparison happens
-        // server-side against the value the caller asked for.
-        assertThat(argsSeen).hasSize(1);
-        assertThat(argsSeen.get(0)[0]).isEqualTo("7");
+        // Deterministic documented key shape, unchanged by this upgrade:
+        // aegivault:gateway:policy-counter:<window>:<windowStart>:<actorSubject>
+        assertThat(keysSeen).containsExactly(List.of(
+                "aegivault:gateway:policy-counter:day:1773532800:actor-1",
+                "aegivault:gateway:policy-counter:minute:1773577800:actor-1"));
     }
 
     @Test
-    void theKeyIsNamespacedByWindowAndWindowStart() {
-        consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 5L);
-        consume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 5L);
+    void eachWindowContributesItsLimitAndTtlAsScriptArguments() {
+        both(100L, 2L);
 
-        // Deterministic documented format:
-        // aegivault:gateway:policy-counter:<window>:<windowStart>:<actorSubject>
-        assertThat(keysSeen).containsExactly(
-                List.of("aegivault:gateway:policy-counter:minute:1773577800:actor-1"),
-                List.of("aegivault:gateway:policy-counter:day:1773532800:actor-1"));
+        Object[] scriptArgs = argsSeen.get(0);
+        assertThat(scriptArgs).hasSize(4);
+        assertThat(scriptArgs[0]).isEqualTo("100");
+        assertThat(scriptArgs[2]).isEqualTo("2");
+        // Both TTLs are positive and cover the rest of their own window.
+        assertThat(Long.parseLong((String) scriptArgs[1])).isPositive();
+        assertThat(Long.parseLong((String) scriptArgs[3])).isPositive();
+    }
+
+    @Test
+    void anAllowedMultiWindowAttemptIncrementsBothCounters() {
+        assertThat(both(100L, 2L).isAllowed()).isTrue();
+
+        assertThat(countFor(GatewayUsagePolicyCounterWindow.DAY)).as("day count").isEqualTo(1L);
+        assertThat(countFor(GatewayUsagePolicyCounterWindow.MINUTE)).as("minute count").isEqualTo(1L);
+    }
+
+    @Test
+    void aMinuteRejectionIncrementsNeitherCounter() {
+        // Exhaust the minute window, leaving day capacity to spare.
+        assertThat(consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L)).isTrue();
+
+        var result = both(100L, 1L);
+
+        // Rejected on minute, and the day counter is untouched: no partial
+        // consumption.
+        assertThat(result.state()).isEqualTo(GatewayUsagePolicyCounterResult.State.REJECTED);
+        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.MINUTE);
+        assertThat(countFor(GatewayUsagePolicyCounterWindow.DAY))
+                .as("day count after rejection")
+                .isZero();
+        assertThat(countFor(GatewayUsagePolicyCounterWindow.MINUTE))
+                .as("minute count after rejection")
+                .isEqualTo(1L);
+    }
+
+    @Test
+    void aDayRejectionIncrementsNeitherCounter() {
+        assertThat(consume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 1L)).isTrue();
+
+        var result = both(1L, 100L);
+
+        assertThat(result.state()).isEqualTo(GatewayUsagePolicyCounterResult.State.REJECTED);
+        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.DAY);
+        assertThat(countFor(GatewayUsagePolicyCounterWindow.DAY))
+                .as("day count after rejection")
+                .isEqualTo(1L);
+        assertThat(countFor(GatewayUsagePolicyCounterWindow.MINUTE))
+                .as("minute count after rejection")
+                .isZero();
+    }
+
+    @Test
+    void bothExhaustedReportsTheDayWindowDeterministically() {
+        assertThat(consume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 1L)).isTrue();
+        assertThat(consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L)).isTrue();
+
+        var result = both(1L, 1L);
+
+        // DAY is reported because the script checks keys in the caller's fixed
+        // order and returns the first exhausted position.
+        assertThat(result.state()).isEqualTo(GatewayUsagePolicyCounterResult.State.REJECTED);
+        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.DAY);
+    }
+
+    @Test
+    void aRejectionAtTheLastPositionIsNotMistakenForAnAdmission() {
+        // The script returns -i for a rejection and +n for an admission. With
+        // two windows a naive encoding would return 2 for both "second window
+        // rejected" and "admitted", so the sign is what keeps them apart.
+        assertThat(consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L)).isTrue();
+        assertThat(consume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 100L)).isTrue();
+
+        // Day 2 <= 100 so the first key passes; minute is full, so the second
+        // key rejects at position 2 and must not read as an admission.
+        var result = both(100L, 1L);
+
+        assertThat(result.isAllowed()).isFalse();
+        assertThat(result.rejectedWindow()).isEqualTo(GatewayUsagePolicyCounterWindow.MINUTE);
+    }
+
+    @Test
+    void aSingleWindowAttemptStillUsesOneScriptExecution() {
+        assertThat(consume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 5L)).isTrue();
+
+        verify(redis, times(1)).execute(any(RedisScript.class), anyList(), any(), any());
+    }
+
+    @Test
+    void theScriptChecksBeforeItWritesAndAppliesTtlsToNewKeys() {
+        String script = RedisGatewayUsagePolicyCounter.TRY_CONSUME_ALL_SCRIPT.getScriptAsString();
+
+        // The read-only check loop runs before any write, and increments only
+        // appear in the second loop, so a rejection cannot have written.
+        assertThat(script).contains("GET").contains("INCR").contains("PEXPIRE");
+        assertThat(script.indexOf("current + 1 > limit"))
+                .as("the rejection check exists")
+                .isPositive();
+        assertThat(script.indexOf("INCR"))
+                .as("increments come after the check")
+                .isGreaterThan(script.indexOf("current + 1 > limit"));
+        assertThat(script).contains("if current == 0 then")
+                .as("TTL is applied only to newly created keys");
     }
 
     @Test
     void policyKeysCanNeverCollideWithTheGlobalRateLimiterKeys() {
-        consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 5L);
+        both(100L, 2L);
 
-        String key = keysSeen.get(0).get(0);
-        assertThat(key).startsWith(GatewayUsagePolicyCounterWindow.KEY_PREFIX);
-        assertThat(key).doesNotContain("rate-limit");
-        assertThat(key).isNotEqualTo("aegivault:gateway:rate-limit:actor-1");
-    }
-
-    @Test
-    void minuteAndDayWindowsUseDifferentKeysAndIndependentCounters() {
-        RedisGatewayUsagePolicyCounter counter = counter();
-        counter.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L);
-        assertThat(counter.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L)).isFalse();
-
-        // A separate key per window: the exhausted minute quota does not
-        // carry over into the day counter.
-        assertThat(counter.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.DAY, 5L)).isTrue();
-        // keysSeen holds one entry per call, so the day call is the last one.
-        assertThat(keysSeen.get(keysSeen.size() - 1).get(0))
-                .isNotEqualTo(keysSeen.get(0).get(0))
-                .contains("policy-counter:day:");
+        for (String key : keysSeen.get(0)) {
+            assertThat(key).startsWith(GatewayUsagePolicyCounterWindow.KEY_PREFIX).doesNotContain("rate-limit");
+        }
     }
 
     @Test
     void separateActorsUseDifferentKeys() {
-        consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L);
-        consume("actor-2", GatewayUsagePolicyCounterWindow.MINUTE, 1L);
+        counter().tryConsume(GatewayUsagePolicyCounterRequest.ofBoth("actor-1", NOW, 5L, 5L));
+        counter().tryConsume(GatewayUsagePolicyCounterRequest.ofBoth("actor-2", NOW, 5L, 5L));
 
         assertThat(keysSeen).containsExactly(
-                List.of("aegivault:gateway:policy-counter:minute:1773577800:actor-1"),
-                List.of("aegivault:gateway:policy-counter:minute:1773577800:actor-2"));
+                List.of(
+                        "aegivault:gateway:policy-counter:day:1773532800:actor-1",
+                        "aegivault:gateway:policy-counter:minute:1773577800:actor-1"),
+                List.of(
+                        "aegivault:gateway:policy-counter:day:1773532800:actor-2",
+                        "aegivault:gateway:policy-counter:minute:1773577800:actor-2"));
     }
 
     @Test
-    void theKeyCarriesATtlThatOutlivesTheRestOfTheWindow() {
-        // The key must expire by itself once its window ends — no cleanup job.
-        // NOW is 12:30:45.123 into a minute that ends at 12:31:00, so ~14.877s
-        // remain, plus a one-second clock-skew grace.
+    void theMinuteTtlCoversTheRestOfTheWindowPlusGrace() {
         consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 5L);
 
+        // NOW is 12:30:45.123 into a minute ending at 12:31:00: 14.877s left,
+        // plus the one-second clock-skew grace.
         long ttl = Long.parseLong((String) argsSeen.get(0)[1]);
-        long remainingInWindow = 15_000L - 123L;
-        assertThat(ttl)
-                .isEqualTo(remainingInWindow + GatewayUsagePolicyCounterWindow.EXPIRY_GRACE.toMillis())
-                .isLessThanOrEqualTo(GatewayUsagePolicyCounterWindow.MINUTE.length().toMillis());
+        assertThat(ttl).isEqualTo(15_000L - 123L + GatewayUsagePolicyCounterWindow.EXPIRY_GRACE.toMillis());
     }
 
     @Test
@@ -198,35 +302,43 @@ class RedisGatewayUsagePolicyCounterTest {
     }
 
     @Test
-    void aNewWindowUsesANewKeyAndRestartsTheCount() {
-        RedisGatewayUsagePolicyCounter first = counter();
-        assertThat(first.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L)).isTrue();
-        assertThat(first.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L)).isFalse();
-        String exhaustedWindowKey = keysSeen.get(0).get(0);
+    void redisFailureFailsClosedWithAGenericSafeError() {
+        when(redis.execute(any(RedisScript.class), anyList(), any(), any(), any(), any()))
+                .thenThrow(new RuntimeException("redis-connection-refused-9z"));
 
-        // A minute later the window has rolled over. The new window start is
-        // part of the key, so the counter is a new one rather than a reset of
-        // the old one — no in-place mutation is needed on the server.
-        RedisGatewayUsagePolicyCounter next = new RedisGatewayUsagePolicyCounter(
-                redis, Clock.fixed(NOW.plusSeconds(60), java.time.ZoneOffset.UTC));
-        assertThat(next.tryConsume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 1L)).isTrue();
-
-        String newWindowKey = keysSeen.get(keysSeen.size() - 1).get(0);
-        assertThat(newWindowKey)
-                .isNotEqualTo(exhaustedWindowKey)
-                .contains("minute:1773577860:actor-1");
+        assertThatThrownBy(() -> both(100L, 2L))
+                .isInstanceOf(GatewayUsagePolicyCounterUnavailableException.class)
+                .hasMessage(GatewayUsagePolicyCounterUnavailableException.MESSAGE)
+                .hasMessageNotContaining("redis-connection-refused-9z");
     }
 
     @Test
-    void redisFailureFailsClosedWithAGenericSafeError() {
-        when(redis.execute(any(RedisScript.class), anyList(), any(), any()))
-                .thenThrow(new RuntimeException("redis-connection-refused-9z"));
+    void aFailureDuringAMultiWindowAttemptIsNeitherAllowedNorRejected() {
+        when(redis.execute(any(RedisScript.class), anyList(), any(), any(), any(), any()))
+                .thenThrow(new RuntimeException("down"));
 
-        assertThatThrownBy(() -> consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 5L))
+        // "Could not check" must never be reported as either outcome: a
+        // rejection would wrongly say the limit was exceeded, and an
+        // admission would let a request through on a broken counter.
+        assertThatThrownBy(() -> both(100L, 2L))
+                .isInstanceOf(GatewayUsagePolicyCounterUnavailableException.class);
+    }
+
+    @Test
+    void anEmptyScriptResultFailsClosedRatherThanAdmitting() {
+        when(redis.execute(any(RedisScript.class), anyList(), any(), any(), any(), any())).thenReturn(null);
+
+        assertThatThrownBy(() -> both(100L, 2L))
                 .isInstanceOf(GatewayUsagePolicyCounterUnavailableException.class)
-                .hasMessage(GatewayUsagePolicyCounterUnavailableException.MESSAGE)
-                .hasMessage("Unable to check gateway usage policy limit.")
-                .hasMessageNotContaining("redis-connection-refused-9z");
+                .hasMessage(GatewayUsagePolicyCounterUnavailableException.MESSAGE);
+    }
+
+    @Test
+    void anUnrecognisedScriptResultFailsClosed() {
+        when(redis.execute(any(RedisScript.class), anyList(), any(), any(), any(), any())).thenReturn(99L);
+
+        assertThatThrownBy(() -> both(100L, 2L))
+                .isInstanceOf(GatewayUsagePolicyCounterUnavailableException.class);
     }
 
     @Test
@@ -236,42 +348,25 @@ class RedisGatewayUsagePolicyCounterTest {
     }
 
     @Test
-    void anEmptyScriptResultFailsClosedRatherThanRejecting() {
-        when(redis.execute(any(RedisScript.class), anyList(), any(), any())).thenReturn(null);
-
-        // "Could not tell" must not be reported as "limit spent": the caller
-        // would see a false rejection and could retry forever, and a future
-        // integration might map false to a user-visible error.
-        assertThatThrownBy(() -> consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 5L))
-                .isInstanceOf(GatewayUsagePolicyCounterUnavailableException.class)
-                .hasMessage(GatewayUsagePolicyCounterUnavailableException.MESSAGE);
-    }
-
-    @Test
-    void blankActorsAreRejectedWithoutTouchingRedis() {
+    void blankActorsAndInvalidLimitsAreRejectedWithoutTouchingRedis() {
         assertThatThrownBy(() -> consume(null, GatewayUsagePolicyCounterWindow.MINUTE, 5L))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("actorSubject must not be blank");
         assertThatThrownBy(() -> consume("  ", GatewayUsagePolicyCounterWindow.MINUTE, 5L))
-                .isInstanceOf(IllegalArgumentException.class);
-        verify(redis, times(0)).execute(any(RedisScript.class), anyList(), any(), any());
-    }
-
-    @Test
-    void invalidLimitsAreRejectedWithoutTouchingRedis() {
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("actorSubject must not be blank");
         assertThatThrownBy(() -> consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, 0L))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("limit must be positive");
-        assertThatThrownBy(() -> consume("actor-1", GatewayUsagePolicyCounterWindow.MINUTE, -5L))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("limit must be positive");
+        assertThatThrownBy(() -> consume("actor-1", null, 5L))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("window must not be null");
+
         verify(redis, times(0)).execute(any(RedisScript.class), anyList(), any(), any());
     }
 
     @Test
-    void aNullWindowAndNullCollaboratorsAreRejected() {
-        assertThatThrownBy(() -> consume("actor-1", null, 5L))
-                .isInstanceOf(NullPointerException.class)
-                .hasMessage("window must not be null");
+    void aNullCollaboratorIsRejected() {
         assertThatThrownBy(() -> new RedisGatewayUsagePolicyCounter(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("redis must not be null");
@@ -282,16 +377,16 @@ class RedisGatewayUsagePolicyCounterTest {
 
     @Test
     void theCounterKnowsNothingAboutPoliciesOrTokens() {
-        // This is the enforcement primitive, not policy interpretation: it
-        // handles actor + window + limit and nothing else, and it has no
-        // notion of a token window, a budget, or a resolved policy.
-        assertThat(java.util.Arrays.stream(GatewayUsagePolicyCounter.class.getDeclaredMethods())
-                        .map(java.lang.reflect.Method::getName)
-                        .toList())
-                .containsExactly("tryConsume");
+        // The enforcement primitive, not policy interpretation: it handles
+        // actor + window + limit and has no notion of a token window, a
+        // budget, or a resolved policy.
         assertThat(java.util.Arrays.stream(GatewayUsagePolicyCounterWindow.values())
                         .map(Enum::name)
                         .toList())
                 .containsExactly("MINUTE", "DAY");
+        assertThat(java.util.Arrays.stream(GatewayUsagePolicyCounterRequest.class.getRecordComponents())
+                        .map(java.lang.reflect.RecordComponent::getName)
+                        .toList())
+                .containsExactly("actorSubject", "now", "limits");
     }
 }

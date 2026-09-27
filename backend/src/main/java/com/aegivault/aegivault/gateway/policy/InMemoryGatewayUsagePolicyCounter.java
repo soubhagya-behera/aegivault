@@ -2,6 +2,8 @@ package com.aegivault.aegivault.gateway.policy;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.EnumMap;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -17,6 +19,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * taken and no check-then-act gap exists, so simultaneous requests for one
  * actor and window cannot overshoot the limit: at most {@code limit} of them
  * can observe an admitting count.
+ *
+ * <p><strong>Multi-window attempts are atomic per actor.</strong> State is
+ * keyed by actor, with each actor's per-window counts held in a single value,
+ * so one {@link ConcurrentHashMap#compute} covers the rollover check, every
+ * capacity check, and every increment of a multi-window attempt. The
+ * implementation deliberately never issues two independent
+ * {@code compute} calls for one request: that would reintroduce exactly the
+ * partial consumption the atomic multi-window operation exists to prevent.
  *
  * <p><strong>Deliberately separate from the rate limiter.</strong> This class
  * shares no internals, no state, and no constants with
@@ -44,9 +54,20 @@ public class InMemoryGatewayUsagePolicyCounter implements GatewayUsagePolicyCoun
 
     private final Clock clock;
 
-    private final ConcurrentHashMap<CounterKey, long[]> counts = new ConcurrentHashMap<>();
+    /**
+     * One entry per actor, holding that actor's live per-window counts.
+     *
+     * <p>Keying by actor rather than by {@code (window, actor, start)} is
+     * what makes a multi-window attempt atomic: every window an actor has is
+     * inside a single value, so one {@link ConcurrentHashMap#compute} covers
+     * them all. With per-window keys, checking two windows would need two
+     * independent operations and could half-apply.
+     */
+    private final ConcurrentHashMap<String, EnumMap<GatewayUsagePolicyCounterWindow, WindowCount>> counts =
+            new ConcurrentHashMap<>();
 
-    private record CounterKey(GatewayUsagePolicyCounterWindow window, String actorSubject, Instant windowStart) {}
+    /** One window's count and the window it belongs to. */
+    private record WindowCount(Instant windowStart, long count) {}
 
     /** Production constructor using the system UTC clock. */
     public InMemoryGatewayUsagePolicyCounter() {
@@ -66,49 +87,89 @@ public class InMemoryGatewayUsagePolicyCounter implements GatewayUsagePolicyCoun
     @Override
     public boolean tryConsume(
             String actorSubject, GatewayUsagePolicyCounterWindow window, long limit) {
-        String actor = requireActor(actorSubject);
-        Objects.requireNonNull(window, "window must not be null");
-        if (limit <= 0L) {
-            throw new IllegalArgumentException("limit must be positive");
-        }
+        return tryConsume(GatewayUsagePolicyCounterRequest.of(actorSubject, clock.instant(), window, limit))
+                .isAllowed();
+    }
 
-        Instant now = clock.instant();
-        // A new window is a distinct key, so an old window's count cannot
-        // bleed into the new one and no in-place reset is needed.
-        CounterKey key = new CounterKey(window, actor, window.windowStart(now));
-        boolean[] allowed = new boolean[1];
+    @Override
+    public GatewayUsagePolicyCounterResult tryConsume(GatewayUsagePolicyCounterRequest request) {
+        Objects.requireNonNull(request, "request must not be null");
+        // The request's own instant drives window selection, so a caller
+        // controls the windows deterministically; the clock is only used by
+        // the convenience single-window overload.
+        Instant now = request.now();
+        // Evaluation order is fixed by the request (day, then minute), never by
+        // map iteration order or limit values.
+        List<GatewayUsagePolicyCounterWindow> windows = request.windowsInEvaluationOrder();
+        GatewayUsagePolicyCounterResult[] outcome = new GatewayUsagePolicyCounterResult[1];
 
-        // One atomic map operation encloses the read, the increment, and the
-        // comparison. ConcurrentHashMap.compute holds the bin lock for this
-        // key, so two threads can never both read the same count and both
-        // conclude there is room.
-        counts.compute(key, (ignored, existing) -> {
-            long current = existing == null ? 0L : existing[0];
-            if (current + 1L <= limit) {
-                allowed[0] = true;
-                return new long[] {current + 1L};
+        // A single atomic map operation encloses every window's rollover, every
+        // capacity check, and every increment. ConcurrentHashMap.compute holds
+        // the bin lock for this actor, so two threads can never interleave a
+        // "check both, then increment both" and half-apply a multi-window
+        // attempt.
+        counts.compute(request.actorSubject(), (ignored, existing) -> {
+            EnumMap<GatewayUsagePolicyCounterWindow, WindowCount> state = rolled(existing, windows, now);
+
+            // Check every window before touching any of them: a rejection
+            // must leave all counts exactly as they were, so a refused request
+            // never costs the actor capacity in a sibling window.
+            for (GatewayUsagePolicyCounterWindow window : windows) {
+                if (state.get(window).count() + 1L > request.limits().get(window)) {
+                    outcome[0] = GatewayUsagePolicyCounterResult.rejected(window);
+                    return state;
+                }
             }
-            allowed[0] = false;
-            // Rejected attempts do not consume: the count stays equal to the
-            // number of admitted requests, so a client hammering a spent
-            // limit cannot inflate the counter it is already over.
-            return existing;
+
+            // All windows had room: increment them together.
+            windows.forEach(window -> {
+                WindowCount current = state.get(window);
+                state.put(window, new WindowCount(current.windowStart(), current.count() + 1L));
+            });
+            outcome[0] = GatewayUsagePolicyCounterResult.allowed();
+            return state;
         });
 
-        evictSupersededWindows(window, key);
-        return allowed[0];
+        evictSupersededWindows(request.actorSubject(), now);
+        return outcome[0];
     }
 
-    private void evictSupersededWindows(GatewayUsagePolicyCounterWindow window, CounterKey current) {
-        counts.keySet().removeIf(existing -> existing.window() == window
-                && !existing.windowStart().equals(current.windowStart())
-                && existing.actorSubject().equals(current.actorSubject()));
-    }
-
-    private static String requireActor(String actorSubject) {
-        if (actorSubject == null || actorSubject.isBlank()) {
-            throw new IllegalArgumentException("actorSubject must not be blank");
+    /**
+     * Returns the actor's live counts for {@code windows}, resetting any
+     * window whose start no longer matches {@code now}.
+     */
+    private static EnumMap<GatewayUsagePolicyCounterWindow, WindowCount> rolled(
+            EnumMap<GatewayUsagePolicyCounterWindow, WindowCount> existing,
+            List<GatewayUsagePolicyCounterWindow> windows,
+            Instant now) {
+        EnumMap<GatewayUsagePolicyCounterWindow, WindowCount> state = new EnumMap<>(GatewayUsagePolicyCounterWindow.class);
+        if (existing != null) {
+            state.putAll(existing);
         }
-        return actorSubject.trim();
+        for (GatewayUsagePolicyCounterWindow window : windows) {
+            Instant start = window.windowStart(now);
+            WindowCount current = state.get(window);
+            if (current == null || !current.windowStart().equals(start)) {
+                // A new window starts from zero; an old count can never bleed
+                // into the new window.
+                state.put(window, new WindowCount(start, 0L));
+            }
+        }
+        return state;
+    }
+
+    private void evictSupersededWindows(String actorSubject, Instant now) {
+        // An actor idle since an earlier window holds no useful state, so its
+        // stale windows are dropped rather than accumulating. Only that
+        // actor's entry is touched; others keep their own live windows.
+        counts.computeIfPresent(actorSubject, (ignored, state) -> {
+            EnumMap<GatewayUsagePolicyCounterWindow, WindowCount> kept = new EnumMap<>(GatewayUsagePolicyCounterWindow.class);
+            state.forEach((window, windowCount) -> {
+                if (window.windowStart(now).equals(windowCount.windowStart())) {
+                    kept.put(window, windowCount);
+                }
+            });
+            return kept.isEmpty() ? null : kept;
+        });
     }
 }

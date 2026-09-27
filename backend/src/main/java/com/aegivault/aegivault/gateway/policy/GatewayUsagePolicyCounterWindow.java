@@ -77,6 +77,24 @@ public enum GatewayUsagePolicyCounterWindow {
         this.unit = unit;
     }
     /**
+     * The deterministic position of this window when several are checked
+     * together. Lower ranks are checked (and therefore reported) first.
+     *
+     * <p>The order is fixed by this method, not derived from configured limit
+     * values, map iteration order, or timestamps: which window rejects first
+     * depends on runtime counts, not on what a policy happens to declare, so
+     * no data-dependent ordering could be both useful and deterministic. The
+     * order only decides <em>which</em> exhausted window is named in a
+     * rejection; the accept/reject outcome itself is order-independent.
+     */
+    public int evaluationRank() {
+        return switch (this) {
+            case DAY -> 0;
+            case MINUTE -> 1;
+        };
+    }
+
+    /**
      * Returns the inclusive start of the window containing {@code now}.
      *
      * @param now the instant to place in a window, never null
