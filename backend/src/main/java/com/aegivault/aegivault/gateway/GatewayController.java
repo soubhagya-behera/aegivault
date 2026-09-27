@@ -1,6 +1,8 @@
 package com.aegivault.aegivault.gateway;
 
 import com.aegivault.aegivault.audit.AuditLedgerException;
+import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyAmbiguousException;
+import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementException;
 import com.aegivault.aegivault.gateway.usage.GatewayUsageException;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -119,6 +121,45 @@ public class GatewayController {
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     GatewayError rateLimitUnavailable(GatewayRateLimitUnavailableException ex) {
         return new GatewayError(GatewayRateLimitUnavailableException.MESSAGE);
+    }
+
+    /**
+     * Usage-policy request-limit rejection: the actor's own enabled policy
+     * had no room for this request. Nothing was inspected, audited,
+     * forwarded, or recorded, because admission happens before all of them —
+     * generic 429 with a message deliberately distinct from the global rate
+     * limiter's, and never the rejected window, actor, policy id, counter,
+     * limit, or Redis detail.
+     */
+    @ExceptionHandler(GatewayUsagePolicyLimitExceededException.class)
+    @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
+    GatewayError usagePolicyLimitExceeded(GatewayUsagePolicyLimitExceededException ex) {
+        return new GatewayError(GatewayUsagePolicyLimitExceededException.MESSAGE);
+    }
+
+    /**
+     * Policy-counter infrastructure failure: the request limit could not be
+     * checked, so the request is neither admitted nor treated as exceeded —
+     * generic 500 with no Redis host, key, counter, actor, policy detail, or
+     * exception text, cause retained in server logs only. Deliberately not a
+     * 429: an outage is not an exceeded limit.
+     */
+    @ExceptionHandler(GatewayUsagePolicyEnforcementException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    GatewayError usagePolicyUnavailable(GatewayUsagePolicyEnforcementException ex) {
+        return new GatewayError(GatewayUsagePolicyEnforcementException.MESSAGE);
+    }
+
+    /**
+     * Ambiguous policy configuration: several enabled policies exist, so none
+     * can be chosen without risking the wrong limit. No policy is selected and
+     * nothing is inspected, audited, forwarded, or recorded — generic 500 that
+     * names only the failure, never a candidate count, policy id, or owner.
+     */
+    @ExceptionHandler(GatewayUsagePolicyAmbiguousException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    GatewayError usagePolicyAmbiguous(GatewayUsagePolicyAmbiguousException ex) {
+        return new GatewayError("Unable to resolve gateway usage policy.");
     }
 
     /**

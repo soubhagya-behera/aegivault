@@ -496,12 +496,37 @@
      is unchanged. The enforcement service now builds one atomic request from
      the resolved policy's configured request limits and calls the counter
      once, mapping the single result onto its existing states. `tokensPerDay`
-     remains unenforced: it is never read, and there is no token reservation,
-     pre-request token check, response token rollback, or character heuristic.
-     **The enforcement service is not wired into live gateway traffic** — it
-     is not a Spring bean and no gateway path calls it, so policies remain
-     unenforced and rate limiting is still governed solely by
-     `GatewayRateLimiter` configuration.
+     **`tokensPerDay` remains unenforced**: it is never read, and there is no
+     token reservation, pre-request token check, response token rollback, or
+     character heuristic. **Actor-scoped request limits are now enforced on
+     live gateway completions** (`POST /api/gateway/complete`): the global
+     `GatewayRateLimiter` runs **first**, then persistent policy
+     request-limit enforcement, and only then request inspection, inspection
+     audit, provider selection, provider invocation, response inspection, and
+     usage recording. A global rejection never reaches the policy check and
+     spends no policy capacity; a policy rejection reaches nothing downstream.
+     The two controls are independent — never merged, never compensating for
+     one another — and keep distinct messages: a global rejection stays HTTP
+     429 `Gateway rate limit exceeded.`, while a policy rejection is HTTP 429
+     `Gateway usage policy limit exceeded.` with no rejected window, actor,
+     policy id, counter, limit, or Redis detail. `NO_POLICY`, `INACTIVE`, and
+     `ALLOW` continue through the existing flow unchanged. A policy-counter
+     outage is fail-closed and distinct from a rejection: HTTP 500
+     `Unable to enforce gateway usage policy.`, never a 429, because an outage
+     is not an exceeded limit. Ambiguous policy configuration is HTTP 500
+     `Unable to resolve gateway usage policy.`, choosing no policy and
+     exposing no policy id, owner, or candidate count. A policy-rejected
+     request inspects nothing, writes no `AI_GATEWAY_INSPECTION_ALLOWED` or
+     `AI_GATEWAY_INSPECTION_BLOCKED` audit entry, selects no provider, invokes
+     none, and records no usage row, because admission happens before all of
+     that work. No new audit event type was added, and no policy state, limit,
+     counter, or rejected window was added to existing inspection audit
+     metadata. This is **request-limit enforcement, not token-budget
+     enforcement**: `tokensPerDay` is still unenforced, and a policy declaring
+     only `tokensPerDay` is admitted without consuming request capacity. The
+     completion service depends only on the enforcement service, never on the
+     policy repository, the counter, a counter implementation, Redis, or the
+     evaluator. Existing global rate limiting is otherwise unchanged.
 
 
 

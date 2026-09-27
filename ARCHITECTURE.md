@@ -842,10 +842,36 @@ the request result. A clean provider response returns as ALLOW with the
   **`tokensPerDay` remains unenforced**: it is never read by the enforcement
   service, and there is no token reservation, pre-request token check,
   response token rollback, or character heuristic.
-  **The enforcement service is not wired into live gateway traffic** — it is
-  not a Spring bean, no gateway path calls it, and it therefore has zero
-  effect on real requests. Policies remain unenforced, and rate limiting is
-  still governed solely by `GatewayRateLimiter` configuration.
+  **Usage-policy request limits are now enforced on live gateway completions.**
+  `GatewayCompletionService` calls the enforcement service for the
+  JWT-derived actor, in a fixed order: the global `GatewayRateLimiter` runs
+  **first**, then persistent policy request-limit enforcement, and only then
+  request inspection, inspection audit, provider selection, provider
+  invocation, response inspection, and usage recording. A global rejection
+  therefore never reaches the policy check and spends no policy capacity; a
+  policy rejection never reaches anything downstream. Because the two controls
+  are independent they are never merged and never compensate for one another,
+  and each keeps its own message: a global rejection stays HTTP 429
+  `Gateway rate limit exceeded.`, while a policy rejection is HTTP 429
+  `Gateway usage policy limit exceeded.` — a distinct body that names no
+  rejected window, actor, policy id, counter, limit, or Redis detail.
+  `NO_POLICY`, `INACTIVE`, and `ALLOW` all continue through the existing flow
+  unchanged. A policy-counter outage is **fail-closed** and distinct from a
+  rejection: it surfaces as HTTP 500 `Unable to enforce gateway usage
+  policy.`, never as a 429, because an outage is not an exceeded limit.
+  Ambiguous policy configuration is likewise HTTP 500
+  `Unable to resolve gateway usage policy.`, choosing no policy and exposing
+  no policy id, owner, or candidate count. A policy-rejected request inspects
+  nothing, writes no `AI_GATEWAY_INSPECTION_ALLOWED` or
+  `AI_GATEWAY_INSPECTION_BLOCKED` audit entry, selects no provider, invokes
+  none, and records no usage row — admission happens before all of that work.
+  No new audit event type was added and no policy state, limit, counter, or
+  rejected window was added to existing inspection audit metadata. This is
+  **request-limit enforcement, not token-budget enforcement**: `tokensPerDay`
+  is still unenforced, and a policy declaring only `tokensPerDay` is admitted
+  without consuming request capacity. The completion service depends only on
+  the enforcement service, never on the policy repository, the counter, a
+  counter implementation, Redis, or the evaluator.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking

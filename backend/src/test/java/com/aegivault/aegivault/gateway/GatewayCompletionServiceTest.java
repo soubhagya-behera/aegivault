@@ -63,9 +63,25 @@ class GatewayCompletionServiceTest {
     private final GatewayUsageRecorder usage = mock(GatewayUsageRecorder.class);
 
     private final GatewayRateLimiter rateLimiter = actor -> true;
+    /**
+     * The actor has no enabled policy by default, so every pre-existing
+     * assertion in this class still runs through a real enforcement service
+     * that simply admits — the added dependency is inert here.
+     */
+    private final com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyResolver policyResolver =
+            mock(com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyResolver.class);
+
+    /**
+     * The actor has no enabled policy by default, so every pre-existing
+     * assertion in this class still runs through a real enforcement service
+     * that admits the request — the added dependency is inert here.
+     */
+    private final com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementService policyEnforcement =
+            new com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementService(
+                    policyResolver, new AlwaysAdmitsPolicyCounter());
 
     private final GatewayCompletionService service = new GatewayCompletionService(
-            rateLimiter, inspections, responseInspections, selector, audit, usage);
+            rateLimiter, policyEnforcement, inspections, responseInspections, selector, audit, usage);
 
     private static GatewayInspectionRequest inspection(String content) {
         return new GatewayInspectionRequest(UUID.randomUUID(), "analyst", "test-model", content);
@@ -74,6 +90,17 @@ class GatewayCompletionServiceTest {
     @BeforeEach
     void selectTheMockedProvider() {
         when(selector.select(any())).thenReturn(selected);
+        noPolicy();
+    }
+
+    /**
+     * The default: the actor has no enabled policy, so policy enforcement
+     * admits without consuming anything. Pre-existing gateway behavior is
+     * therefore exercised unchanged.
+     */
+    private void noPolicy() {
+        when(policyResolver.resolve(any()))
+                .thenReturn(com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyResolution.none());
     }
 
     @Test
@@ -183,7 +210,7 @@ class GatewayCompletionServiceTest {
     void providerFailureDoesNotExecuteResponseInspection() {
         ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
         GatewayCompletionService failingService =
-                new GatewayCompletionService(rateLimiter, inspections, responseSpy, selector, audit, usage);
+                new GatewayCompletionService(rateLimiter, policyEnforcement, inspections, responseSpy, selector, audit, usage);
         when(selected.complete(any())).thenThrow(new RuntimeException("simulated-provider-boom-9z"));
 
         assertThatThrownBy(() -> failingService.complete(inspection("Summarize quarterly revenue trends.")))
@@ -210,7 +237,7 @@ class GatewayCompletionServiceTest {
     void providerSelectionFailureDoesNotExecuteResponseInspection() {
         ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
         GatewayCompletionService failingService =
-                new GatewayCompletionService(rateLimiter, inspections, responseSpy, selector, audit, usage);
+                new GatewayCompletionService(rateLimiter, policyEnforcement, inspections, responseSpy, selector, audit, usage);
         when(selector.select(any())).thenThrow(new RuntimeException("simulated-routing-boom-7q"));
 
         assertThatThrownBy(() -> failingService.complete(inspection("Summarize quarterly revenue trends.")))
@@ -253,7 +280,7 @@ class GatewayCompletionServiceTest {
     void oversizedProviderResponseNeverReachesResponseInspection() {
         ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
         GatewayCompletionService oversizedService =
-                new GatewayCompletionService(rateLimiter, inspections, responseSpy, selector, audit, usage);
+                new GatewayCompletionService(rateLimiter, policyEnforcement, inspections, responseSpy, selector, audit, usage);
         String oversized = "a".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH + 1);
         when(selected.complete(any())).thenReturn(new LlmResponse("test-model", oversized));
 
@@ -269,7 +296,7 @@ class GatewayCompletionServiceTest {
     void oversizedProviderResponseWithPiiStillFailsInsteadOfBlocking() {
         ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
         GatewayCompletionService oversizedService =
-                new GatewayCompletionService(rateLimiter, inspections, responseSpy, selector, audit, usage);
+                new GatewayCompletionService(rateLimiter, policyEnforcement, inspections, responseSpy, selector, audit, usage);
         String oversizedPii = EMAIL + " " + "a".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH);
         when(selected.complete(any())).thenReturn(new LlmResponse("test-model", oversizedPii));
 
@@ -291,7 +318,7 @@ class GatewayCompletionServiceTest {
     void rateLimitedActorFailsBeforeInspectionAuditOrProvider() {
         SecurityInspectionService inspectionsSpy = mock(SecurityInspectionService.class);
         GatewayCompletionService limitedService = new GatewayCompletionService(
-                actor -> false, inspectionsSpy, responseInspections, selector, audit, usage);
+                actor -> false, policyEnforcement, inspectionsSpy, responseInspections, selector, audit, usage);
 
         assertThatThrownBy(() -> limitedService.complete(inspection("Summarize quarterly revenue trends.")))
                 .isInstanceOf(GatewayRateLimitExceededException.class)
@@ -310,7 +337,7 @@ class GatewayCompletionServiceTest {
             return true;
         };
         GatewayCompletionService recordingService = new GatewayCompletionService(
-                recording, inspections, responseInspections, selector, audit, usage);
+                recording, policyEnforcement, inspections, responseInspections, selector, audit, usage);
         when(selected.complete(any())).thenReturn(new LlmResponse("test-model", "completion text"));
 
         recordingService.complete(inspection("Summarize quarterly revenue trends."));

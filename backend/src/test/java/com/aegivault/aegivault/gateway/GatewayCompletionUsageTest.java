@@ -55,8 +55,19 @@ class GatewayCompletionUsageTest {
 
     private final GatewayUsageRecorder usage = mock(GatewayUsageRecorder.class);
 
+    private final GatewayRateLimiter rateLimiter = actor -> true;
+
+    private final com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyResolver policyResolver =
+            mock(com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyResolver.class);
+
+
+    /** No enabled policy by default, so usage-recording behavior is unchanged. */
+    private final com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementService policyEnforcement =
+            new com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementService(
+                    policyResolver, new AlwaysAdmitsPolicyCounter());
+
     private final GatewayCompletionService service = new GatewayCompletionService(
-            actor -> true, inspections, responseInspections, selector, audit, usage);
+            actor -> true, policyEnforcement, inspections, responseInspections, selector, audit, usage);
 
     private static GatewayInspectionRequest inspection(String content) {
         return new GatewayInspectionRequest(UUID.randomUUID(), "analyst", "test-model", content);
@@ -65,6 +76,10 @@ class GatewayCompletionUsageTest {
     @BeforeEach
     void selectTheMockedProvider() {
         when(selector.select(any())).thenReturn(selected);
+        // No enabled policy by default, so usage-recording behavior is
+        // exercised unchanged.
+        when(policyResolver.resolve(any()))
+                .thenReturn(com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyResolution.none());
     }
 
     @Test
@@ -205,7 +220,7 @@ class GatewayCompletionUsageTest {
     @Test
     void rateLimitedRequestRecordsNoUsage() {
         GatewayCompletionService limitedService = new GatewayCompletionService(
-                actor -> false, inspections, responseInspections, selector, audit, usage);
+                actor -> false, policyEnforcement, inspections, responseInspections, selector, audit, usage);
 
         assertThatThrownBy(() -> limitedService.complete(inspection("Summarize quarterly revenue trends.")))
                 .isInstanceOf(GatewayRateLimitExceededException.class);

@@ -1,11 +1,14 @@
 package com.aegivault.aegivault.gateway;
 
+import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementResult;
+import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementService;
 import com.aegivault.aegivault.gateway.provider.LlmProvider;
 import com.aegivault.aegivault.gateway.provider.LlmProviderSelector;
 import com.aegivault.aegivault.gateway.provider.LlmRequest;
 import com.aegivault.aegivault.gateway.provider.LlmResponse;
 import com.aegivault.aegivault.gateway.usage.GatewayUsageOutcome;
 import com.aegivault.aegivault.gateway.usage.GatewayUsageRecorder;
+import java.time.Instant;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -37,6 +40,24 @@ import org.springframework.stereotype.Service;
  * ({@link SecurityInspectionResult} vs
  * {@link ProviderResponseInspectionResult}); the response check never
  * reuses or mutates the request decision.
+ *
+ * <p>Two independent admission controls run before anything else, in this
+ * fixed order. First the platform-wide {@link GatewayRateLimiter} — a
+ * rejected actor fails as {@link GatewayRateLimitExceededException} without
+ * any policy check. Then the actor's own persistent
+ * {@link GatewayUsagePolicyEnforcementService} request limits — a rejected
+ * actor fails as {@link GatewayUsagePolicyLimitExceededException}, and
+ * `NO_POLICY` or `INACTIVE` simply continue. They are never merged and never
+ * compensate for one another: a global rejection never spends policy capacity,
+ * because the policy check does not run, and the two keep distinct messages so
+ * a caller can tell which control stopped it. Only after both admit does
+ * inspection, audit, provider selection, or provider invocation happen, so
+ * either rejection leaves no inspection audit entry and no usage record.
+ *
+ * <p><strong>Request limits, not token budgets.</strong> Only
+ * {@code requestsPerMinute} and {@code requestsPerDay} are enforced here.
+ * {@code tokensPerDay} is not: token usage is known only after a provider
+ * response, whereas admission happens before provider invocation.
  *
  * <p>A provider failure — including a provider-selection failure —
  * surfaces as {@link GatewayProviderException}
@@ -74,6 +95,8 @@ public class GatewayCompletionService {
 
     private final GatewayRateLimiter rateLimiter;
 
+    private final GatewayUsagePolicyEnforcementService policyEnforcement;
+
     private final SecurityInspectionService inspections;
 
     private final ProviderResponseInspectionService responseInspections;
@@ -83,6 +106,36 @@ public class GatewayCompletionService {
     private final GatewayAuditService audit;
 
     private final GatewayUsageRecorder usage;
+
+    /**
+     * Applies the actor's enabled usage policy's request limits, after the
+     * global rate limiter and before anything else happens.
+     *
+     * <p>{@code NO_POLICY} and {@code INACTIVE} both continue: a request with
+     * no policy, or with a policy that is switched off, is simply not governed
+     * by one, and an inactive policy is never silently treated as a satisfied
+     * one. Neither creates an audit entry, because neither is a security
+     * decision.
+     *
+     * <p>{@code REJECTED} fails as {@link GatewayUsagePolicyLimitExceededException},
+     * which the controller maps to HTTP 429 with a message distinct from the
+     * global rate limiter's. Failing here — before inspection — is what
+     * guarantees a policy-rejected request inspects nothing, audits nothing,
+     * selects no provider, invokes none, and records no usage.
+     *
+     * <p>Ambiguous policy configuration and an unavailable policy counter
+     * propagate unchanged: both are failures to decide rather than rejections,
+     * so neither can be turned into a 429 here.
+     */
+    private void enforceUsagePolicy(GatewayInspectionRequest inspection) {
+        GatewayUsagePolicyEnforcementResult decision =
+                policyEnforcement.enforce(inspection.actorSubject(), Instant.now());
+        if (decision.state() == GatewayUsagePolicyEnforcementResult.State.REJECTED) {
+            // The rejecting window is deliberately not surfaced: the response
+            // names the policy limit, never the actor's counts or limits.
+            throw new GatewayUsagePolicyLimitExceededException();
+        }
+    }
 
     /**
      * Inspects one request and completes it when allowed.
@@ -98,6 +151,7 @@ public class GatewayCompletionService {
         if (!rateLimiter.tryAcquire(inspection.actorSubject())) {
             throw new GatewayRateLimitExceededException();
         }
+        enforceUsagePolicy(inspection);
         SecurityInspectionResult requestDecision = inspections.inspect(inspection, GatewaySecurityPolicy.strict());
         audit.record(inspection, requestDecision);
         if (requestDecision.verdict() == SecurityVerdict.BLOCK) {
