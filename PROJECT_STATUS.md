@@ -410,6 +410,45 @@
      and no transactions around gateway completion — since two independent
      reads are not an atomic check; that belongs to the later
      runtime-enforcement milestone.
+     An atomic enforcement primitive for policy **request** limits now
+     exists (`GatewayUsagePolicyCounter`): `tryConsume(actor, window, limit)`
+     atomically decides whether consuming one request stays within the limit
+     and reports whether the caller may proceed. It exists because the
+     persisted-usage snapshot is after the fact — two simultaneous requests
+     could read the same historical count and both pass — so the count and
+     the decision happen as one indivisible operation, and the count a
+     request is admitted against already includes requests admitted before
+     it, including in-flight ones. Adoption is all-or-nothing and rejected
+     attempts do not increment. It is the primitive only: it knows an actor,
+     a window, and a number, and has no notion of `GatewayUsagePolicy` or of
+     policy interpretation. It supports the two request limits —
+     `MINUTE` (current UTC minute) and `DAY` (current UTC calendar day),
+     fixed UTC windows, never the JVM default zone — with the comparison
+     `currentCount + 1 <= limit`, so exactly n requests pass under a limit of
+     n. Two implementations: the default process-local, thread-safe
+     `InMemoryGatewayUsagePolicyCounter` (one atomic map compute per attempt,
+     local only, not shared between instances) and
+     `RedisGatewayUsagePolicyCounter`, **intended for multi-instance
+     enforcement** via one atomic Lua execution per consume (INCR, TTL, and
+     the limit compare in a single script — never separate GET/INCR/EXPIRE),
+     with counters at
+     `aegivault:gateway:policy-counter:<window>:<windowStart>:<actorSubject>`
+     namespaced away from the rate limiter's keys and expiring on their own
+     at the end of the window; selected by `aegivault.gateway.policy-counter`
+     (`IN_MEMORY` default, `REDIS` optional), a switch separate from and
+     independent of `aegivault.gateway.rate-limiter`. Redis failures fail
+     closed as `GatewayUsagePolicyCounterUnavailableException` with a fixed
+     safe message, leaking no host, key, counter, or subject; no HTTP status
+     is chosen yet. **The counter is not wired into gateway traffic** — no
+     gateway path calls it, so it has zero effect on real requests and
+     policies remain unenforced. **`tokensPerDay` remains unenforced by
+     design**: token usage is only known after a provider response while
+     admission happens before provider invocation, so no truthful token
+     number exists to compare; no estimate, max-token assumption,
+     character-to-token conversion, or response-size heuristic was invented,
+     and token enforcement needs an explicit reservation/accounting design
+     in a later milestone.
+
 
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A

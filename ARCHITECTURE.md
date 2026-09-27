@@ -727,6 +727,59 @@ the request result. A clean provider response returns as ALLOW with the
   gateway completion, because two independent reads are not an atomic check.
   That belongs to the later runtime-enforcement milestone, together with
   deciding what `USAGE_UNKNOWN` and `INACTIVE` should mean for a caller.
+  The atomic enforcement primitive those pieces need now exists as
+  `GatewayUsagePolicyCounter`: `tryConsume(actorSubject, window, limit)`
+  atomically decides whether consuming one request would stay within a
+  limit, and returns whether the caller may proceed. It is the
+  enforcement primitive only — it knows an actor, a window, and a number,
+  and has no notion of `GatewayUsagePolicy`, policy resolution, or policy
+  interpretation, which belong to a later service. It exists because the
+  persisted-usage snapshot is inherently after the fact: two requests
+  arriving together can both read the same historical count and both
+  conclude there is room, so deciding from that snapshot and then admitting
+  would let both through. This counter instead performs the count and the
+  decision as **one indivisible operation**, so the count a request is
+  admitted against already includes every request admitted before it,
+  including ones still in flight. Adoption is all-or-nothing: `true` means
+  the unit was consumed and the request may proceed, `false` means it was
+  not consumed; rejected attempts deliberately do not increment, so a
+  client hammering a spent limit cannot inflate the count it is already
+  over. Only the two **request** limits are supported —
+  `GatewayUsagePolicyCounterWindow.MINUTE` (the current UTC minute) and
+  `DAY` (the current UTC calendar day), fixed UTC windows, never a rolling
+  window and never the JVM default zone. The comparison is exactly
+  `currentCount + 1 <= limit`, so a limit is the highest permitted value:
+  the first request under a limit of 1 is admitted, the second is rejected,
+  and with a limit of n exactly n requests are admitted. Two
+  implementations sit behind the abstraction: the default process-local,
+  thread-safe `InMemoryGatewayUsagePolicyCounter` (one atomic
+  `ConcurrentHashMap.compute` per attempt, deterministic for local
+  development) and `RedisGatewayUsagePolicyCounter`, **intended for
+  multi-instance enforcement** because every instance consults the same
+  counter, selected by `aegivault.gateway.policy-counter` (`IN_MEMORY`
+  default, `REDIS` optional) — a switch separate from, and independent of,
+  the global rate limiter's `aegivault.gateway.rate-limiter`. The Redis
+  implementation issues **one atomic Lua execution per consume** (INCR,
+  TTL on first creation, and the limit compare inside the same script),
+  never separate GET/INCR/EXPIRE round trips. Counters live at
+  `aegivault:gateway:policy-counter:<window>:<windowStart>:<actorSubject>`,
+  namespaced so they can never collide with the rate limiter's
+  `aegivault:gateway:rate-limit:<actorSubject>` keys, and each key carries a
+  TTL covering the rest of its window plus a small clock-skew grace, so Redis
+  expires it with no background cleanup job. It **fails closed**: any Redis
+  failure or empty script result raises
+  `GatewayUsagePolicyCounterUnavailableException` with a fixed safe message
+  and never admits the request, leaking no host, port, key, counter, actor
+  subject, or underlying exception text; no HTTP status is chosen yet.
+  **This counter is not wired into gateway traffic** — no gateway path calls
+  it, so it has zero effect on real requests and policies remain
+  unenforced. **`tokensPerDay` is intentionally not implemented**: token
+  usage is only known after a provider response, while request admission
+  happens before provider invocation, so there is no truthful token number
+  to compare at admission time. No estimated token count, max-token
+  assumption, character-to-token conversion, or response-size heuristic is
+  used anywhere; token enforcement requires an explicit
+  reservation/accounting design in a later milestone.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
