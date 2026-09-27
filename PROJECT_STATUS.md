@@ -376,6 +376,41 @@
      day rather than becoming a partial sum, with an empty day as the one
      known-zero case. The provider is internal and read-only, is not yet
      connected to enforcement, and no policy is enforced.
+     Policy resolution, usage snapshot collection, and evaluation are now
+     composed into one decision service
+     (`GatewayUsagePolicyDecisionService`), which answers "what is this
+     actor's current gateway usage policy decision right now?" by resolving
+     the policy, reading the snapshot for the same actor at the caller's
+     supplied instant, and evaluating the one resolved policy against that
+     one snapshot. It adds no new evaluation logic — every limit comparison
+     and the violation order still come solely from the pure
+     `GatewayUsagePolicyEvaluator`, which it merely calls and whose answer it
+     projects onto a flat `GatewayUsagePolicyDecisionOutcome` with five
+     distinguishable states: `NO_POLICY`, `ALLOW`, `LIMIT_EXCEEDED`,
+     `USAGE_UNKNOWN`, `INACTIVE`. **`NO_POLICY` is distinct from `ALLOW`**:
+     an actor with no enabled policy is not an actor whose limits were
+     checked and found satisfied, and no usage is even read when no policy
+     exists. Ambiguous configuration remains an explicit error —
+     `GatewayUsagePolicyAmbiguousException` propagates unchanged and no
+     policy is picked. The caller's exact instant is forwarded unchanged (the
+     service never calls `Instant.now()`), keeping the answer deterministic
+     and testable, and the same trimmed actor is used for both lookups. The
+     result carries a state plus already-computed violation metadata only: no
+     actor subject, no policy owner/id/label, no raw usage rows, no provider
+     content, no request or response content, no secrets, and no PII. The
+     service depends only on the resolver and the snapshot provider (the
+     evaluator is a static call) and holds no reference to the completion
+     service, rate limiter, Redis, providers, repositories, controllers, or
+     audit services. **It is not connected to live gateway traffic**: it is
+     not a Spring bean and nothing in the gateway path calls it, so it has
+     zero effect on real requests and rate limiting is still governed solely
+     by `GatewayRateLimiter` configuration. **Concurrent enforcement and
+     reservation are intentionally not implemented** — no Redis counters, no
+     request or token reservations, no atomic check-and-consume, no locks,
+     and no transactions around gateway completion — since two independent
+     reads are not an atomic check; that belongs to the later
+     runtime-enforcement milestone.
+
    with a deterministic zero-configuration `MockLlmProvider` for local/test
     use only — labelled mock completions, no network, no credentials. A
     local Ollama provider implementation also exists (`OllamaLlmProvider`

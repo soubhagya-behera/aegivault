@@ -691,6 +691,42 @@ the request result. A clean provider response returns as ALLOW with the
   known-zero case. **The provider is not connected to enforcement** — it
   reads only, with no counters, reservation, or check-and-consume — and
   policies remain unenforced.
+  These three pieces are now composed by a small internal
+  `GatewayUsagePolicyDecisionService`, which answers one question — "what is
+  this actor's current gateway usage policy decision, right now?" — by
+  resolving the policy, reading the usage snapshot for the same actor at the
+  caller's supplied instant, and evaluating the one resolved policy against
+  that one snapshot. It adds no new evaluation logic: every limit comparison
+  and the violation order still come solely from the pure
+  `GatewayUsagePolicyEvaluator`, which the service merely calls and whose
+  answer it projects. Its result is a flat
+  `GatewayUsagePolicyDecisionOutcome` with five distinguishable states:
+  `NO_POLICY`, `ALLOW`, `LIMIT_EXCEEDED`, `USAGE_UNKNOWN`, and `INACTIVE`.
+  **`NO_POLICY` is deliberately not `ALLOW`**: an actor with no enabled
+  policy is not an actor whose limits were checked and found satisfied, so
+  the two remain distinguishable and no usage is even read when no policy
+  exists. Ambiguous configuration is **not** converted into a decision:
+  `GatewayUsagePolicyAmbiguousException` propagates unchanged and no policy
+  is picked, because enforcing an arbitrarily chosen limit is worse than
+  declaring the configuration undecidable. The instant is supplied by the
+  caller and forwarded unchanged — the service never calls
+  `Instant.now()` — so the answer is deterministic and testable, and the same
+  trimmed actor is used for both lookups so a policy can never be evaluated
+  against another actor's usage. The result carries a state and
+  already-computed violation metadata only: no actor subject, no policy
+  owner, id, or label, no raw usage row, no provider content, no request or
+  response content, no secrets, and no PII. The service depends only on the
+  resolver and the snapshot provider (the evaluator is a static call), and
+  holds no reference to the completion service, the rate limiter, Redis,
+  providers, repositories, controllers, or audit services. **It is not
+  connected to live gateway traffic**: it is not a Spring bean, nothing in
+  the completion or rate-limit path calls it, and it therefore has zero
+  effect on real requests. **Concurrent enforcement is intentionally not
+  implemented** — there are no Redis counters, request or token
+  reservations, atomic check-and-consume steps, locks, or transactions around
+  gateway completion, because two independent reads are not an atomic check.
+  That belongs to the later runtime-enforcement milestone, together with
+  deciding what `USAGE_UNKNOWN` and `INACTIVE` should mean for a caller.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
