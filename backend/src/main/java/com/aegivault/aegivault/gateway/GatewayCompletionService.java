@@ -117,23 +117,36 @@ public class GatewayCompletionService {
      * one. Neither creates an audit entry, because neither is a security
      * decision.
      *
-     * <p>{@code REJECTED} fails as {@link GatewayUsagePolicyLimitExceededException},
-     * which the controller maps to HTTP 429 with a message distinct from the
-     * global rate limiter's. Failing here — before inspection — is what
+     * <p>{@code REJECTED} is <em>audited before</em> it is thrown, so the
+     * evidence that the request was refused exists even though the refusal
+     * never reached a provider. Failing here — before inspection — is what
      * guarantees a policy-rejected request inspects nothing, audits nothing,
      * selects no provider, invokes none, and records no usage.
      *
      * <p>Ambiguous policy configuration and an unavailable policy counter
      * propagate unchanged: both are failures to decide rather than rejections,
-     * so neither can be turned into a 429 here.
+     * so neither can be turned into a 429 here, and neither is audited as a
+     * decision because no decision was made.
      */
     private void enforceUsagePolicy(GatewayInspectionRequest inspection) {
         GatewayUsagePolicyEnforcementResult decision =
                 policyEnforcement.enforce(inspection.actorSubject(), Instant.now());
-        if (decision.state() == GatewayUsagePolicyEnforcementResult.State.REJECTED) {
-            // The rejecting window is deliberately not surfaced: the response
-            // names the policy limit, never the actor's counts or limits.
-            throw new GatewayUsagePolicyLimitExceededException();
+        switch (decision.state()) {
+            case NO_POLICY, INACTIVE -> {
+                // No event: nothing was applied, so there is no decision to
+                // evidence. The inspection audit below is unaffected.
+            }
+            case ALLOW -> audit.recordUsagePolicy(inspection.actorSubject(), decision);
+            case REJECTED -> {
+                // Audit first. If the append fails, the 500 propagates and the
+                // request never returns 429 — a refusal whose evidence was not
+                // stored must not be reported as if it had been.
+                audit.recordUsagePolicy(inspection.actorSubject(), decision);
+                // The rejecting window is deliberately not surfaced: the
+                // response names the policy limit, never the actor's counts.
+                throw new GatewayUsagePolicyLimitExceededException();
+            }
+            default -> throw new IllegalStateException("Unhandled policy decision state.");
         }
     }
 

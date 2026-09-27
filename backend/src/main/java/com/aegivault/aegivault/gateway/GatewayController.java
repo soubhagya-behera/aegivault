@@ -163,6 +163,20 @@ public class GatewayController {
     }
 
     /**
+     * Policy audit infrastructure failure: a quota decision was made but its
+     * evidence could not be stored, so the request is neither admitted nor
+     * reported as refused — generic 500 with no database detail, hash, actor,
+     * policy id, counter, or exception text, cause retained in server logs
+     * only. Deliberately separate from the inspection audit failure above,
+     * which records evidence about a different stage.
+     */
+    @ExceptionHandler(GatewayUsagePolicyAuditException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    GatewayError usagePolicyAuditFailed(GatewayUsagePolicyAuditException ex) {
+        return new GatewayError(GatewayUsagePolicyAuditException.MESSAGE);
+    }
+
+    /**
      * Provider failure: inspection and its audit entry already happened,
      * so success is not claimed — generic 500 with no provider details,
      * exception text, or request content, cause retained in server logs

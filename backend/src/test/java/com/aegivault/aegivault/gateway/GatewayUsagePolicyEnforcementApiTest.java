@@ -4,7 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.aegivault.aegivault.audit.AuditEventData;
+import com.aegivault.aegivault.audit.AuditLedgerEntry;
+import com.aegivault.aegivault.audit.AuditLedgerEntryRepository;
 import com.aegivault.aegivault.auth.RegisterRequest;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,6 +48,15 @@ class GatewayUsagePolicyEnforcementApiTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private AuditLedgerEntryRepository ledger;
+
+    private List<AuditLedgerEntry> entriesOfType(String eventType) {
+        return ledger.findAll().stream()
+                .filter(entry -> eventType.equals(entry.getEventType()))
+                .toList();
+    }
 
     private String register() throws Exception {
         String body = objectMapper.writeValueAsString(
@@ -174,6 +187,123 @@ class GatewayUsagePolicyEnforcementApiTest {
         // nothing about the existing security outcome.
         assertThat(result.getResponse().getStatus()).isEqualTo(200);
         assertThat(result.getResponse().getContentAsString()).contains("BLOCK");
+    }
+
+    @Test
+    void anAdmittedRequestWritesAPolicyAllowedEventToTheRealLedger() throws Exception {
+        String token = register();
+        createPolicy(token, "{\"name\":\"audited\",\"requestsPerMinute\":50,\"enabled\":true}");
+        long before = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED).size();
+
+        assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);
+
+        // A real ledger entry, written by the real audit seam.
+        var created = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED);
+        assertThat(created.size()).isEqualTo(before + 1);
+        AuditLedgerEntry entry = created.get(created.size() - 1);
+        assertThat(entry.getResourceType()).isEqualTo(AuditEventData.GATEWAY_USAGE_POLICY_RESOURCE);
+        assertThat(entry.getResourceId()).isNotNull();
+        assertThat(entry.getEventData())
+                .isEqualTo("{\"decision\":\"ALLOW\",\"enforcedWindows\":[\"MINUTE\"]}");
+        // The actor is stored as its own column, never repeated in the data.
+        assertThat(entry.getEventData()).doesNotContain(entry.getActorSubject());
+    }
+
+    @Test
+    void aRejectedRequestIsAuditedBeforeItReturns429() throws Exception {
+        String token = register();
+        createPolicy(token, "{\"name\":\"one-per-minute\",\"requestsPerMinute\":1,\"enabled\":true}");
+        complete(token, CLEAN);
+        long before = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_REJECTED).size();
+
+        assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(429);
+
+        // The refusal left evidence even though the request went nowhere.
+        var created = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_REJECTED);
+        assertThat(created.size()).isEqualTo(before + 1);
+        assertThat(created.get(created.size() - 1).getEventData())
+                .isEqualTo("{\"decision\":\"REJECTED\",\"rejectedWindow\":\"MINUTE\"}");
+    }
+
+    @Test
+    void aRejectedRequestProducesNoInspectionEvent() throws Exception {
+        String token = register();
+        createPolicy(token, "{\"name\":\"one-per-minute\",\"requestsPerMinute\":1,\"enabled\":true}");
+        long allowedBefore = entriesOfType(AuditEventData.GATEWAY_INSPECTION_ALLOWED).size();
+        long blockedBefore = entriesOfType(AuditEventData.GATEWAY_INSPECTION_BLOCKED).size();
+
+        // The first request is admitted and inspected; the second is refused
+        // before inspection, so the ledger gains no further inspection event.
+        complete(token, CLEAN);
+        assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(429);
+
+        assertThat(entriesOfType(AuditEventData.GATEWAY_INSPECTION_ALLOWED).size())
+                .isEqualTo(allowedBefore + 1);
+        assertThat(entriesOfType(AuditEventData.GATEWAY_INSPECTION_BLOCKED).size())
+                .isEqualTo(blockedBefore);
+    }
+
+    @Test
+    void anActorWithNoPolicyWritesNoPolicyEvent() throws Exception {
+        String token = register();
+        long allowedBefore = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED).size();
+        long rejectedBefore = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_REJECTED).size();
+
+        assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);
+
+        // No policy consulted, so no policy decision to evidence.
+        assertThat(entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED).size())
+                .isEqualTo(allowedBefore);
+        assertThat(entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_REJECTED).size())
+                .isEqualTo(rejectedBefore);
+    }
+
+    @Test
+    void aDisabledPolicyWritesNoPolicyEvent() throws Exception {
+        String token = register();
+        createPolicy(token, "{\"name\":\"switched-off\",\"requestsPerMinute\":1,\"enabled\":false}");
+        long allowedBefore = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED).size();
+        long rejectedBefore = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_REJECTED).size();
+
+        assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);
+
+        // Documented choice: a disabled policy is not applied, so an ALLOWED
+        // event would claim a quota check that never ran.
+        assertThat(entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED).size())
+                .isEqualTo(allowedBefore);
+        assertThat(entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_REJECTED).size())
+                .isEqualTo(rejectedBefore);
+    }
+
+    @Test
+    void aTokenOnlyPolicyIsRecordedButEnforcesNoRequestLimit() throws Exception {
+        String token = register();
+        createPolicy(token, "{\"name\":\"tokens-only\",\"tokensPerDay\":1000,\"enabled\":true}");
+        long before = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED).size();
+
+        assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);
+
+        // The policy was applied (and so is recorded), but with no request
+        // window configured, so tokensPerDay is still unenforced.
+        var created = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED);
+        assertThat(created.size()).isEqualTo(before + 1);
+        assertThat(created.get(created.size() - 1).getEventData())
+                .isEqualTo("{\"decision\":\"ALLOW\",\"enforcedWindows\":[]}");
+    }
+
+    @Test
+    void aSecurityBlockStillUsesTheExistingInspectionBlockEvent() throws Exception {
+        String token = register();
+        createPolicy(token, "{\"name\":\"generous\",\"requestsPerMinute\":100,\"enabled\":true}");
+        long blockedBefore = entriesOfType(AuditEventData.GATEWAY_INSPECTION_BLOCKED).size();
+
+        assertThat(complete(token, "contact " + EMAIL + " for access.").getResponse().getStatus())
+                .isEqualTo(200);
+
+        // The inspection audit path is untouched: a BLOCK is still recorded as
+        // an inspection event, alongside the policy event, not instead of it.
+        assertThat(entriesOfType(AuditEventData.GATEWAY_INSPECTION_BLOCKED).size())
+                .isEqualTo(blockedBefore + 1);
     }
 
     @Test

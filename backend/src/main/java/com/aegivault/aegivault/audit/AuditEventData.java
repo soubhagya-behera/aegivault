@@ -36,6 +36,30 @@ public final class AuditEventData {
     /** Resource type recorded on every gateway inspection event. */
     public static final String AI_GATEWAY_INSPECTION_RESOURCE = "AI_GATEWAY_INSPECTION";
 
+    /**
+     * Event recorded when an enabled usage policy admitted a request.
+     *
+     * <p>Deliberately distinct from
+     * {@link #GATEWAY_INSPECTION_ALLOWED}: that event means a security
+     * inspection passed, this one means a quota check passed. A request
+     * produces both at different moments, and conflating them would make an
+     * admitted-but-inspected request look like one decision instead of two.
+     */
+    public static final String GATEWAY_USAGE_POLICY_ALLOWED = "GATEWAY_USAGE_POLICY_ALLOWED";
+
+    /**
+     * Event recorded when an enabled usage policy refused a request.
+     *
+     * <p>No inspection event exists for the same request: admission runs first,
+     * so a refused request is never inspected and
+     * {@link #GATEWAY_INSPECTION_BLOCKED} must not be used to describe it. A
+     * policy refusal is a quota decision, not a security verdict.
+     */
+    public static final String GATEWAY_USAGE_POLICY_REJECTED = "GATEWAY_USAGE_POLICY_REJECTED";
+
+    /** Resource type recorded on every gateway usage policy event. */
+    public static final String GATEWAY_USAGE_POLICY_RESOURCE = "GATEWAY_USAGE_POLICY";
+
     private AuditEventData() {
     }
 
@@ -84,6 +108,40 @@ public final class AuditEventData {
         Objects.requireNonNull(detectedPiiTypes, "detectedPiiTypes must not be null");
         return "{\"model\":\"" + escape(model) + "\",\"verdict\":\"" + escape(verdict)
                 + "\",\"reasons\":" + codes(reasons) + ",\"detectedPiiTypes\":" + codes(detectedPiiTypes) + "}";
+    }
+
+    /**
+     * Metadata for a policy decision that <strong>admitted</strong> a request.
+     *
+     * @param decision the closed-vocabulary decision code
+     * @param enforcedWindows the request windows that were actually checked,
+     *        already ordered by the caller so the serialized bytes are stable
+     * @return {@code {"decision":"...","enforcedWindows":[...]}}, fixed field
+     *         order, closed-vocabulary values only
+     */
+    public static String gatewayUsagePolicyAllowed(
+            String decision, List<String> enforcedWindows) {
+        Objects.requireNonNull(decision, "decision must not be null");
+        Objects.requireNonNull(enforcedWindows, "enforcedWindows must not be null");
+        return "{\"decision\":\"" + escape(decision) + "\",\"enforcedWindows\":" + codes(enforcedWindows) + "}";
+    }
+
+    /**
+     * Metadata for a policy decision that <strong>refused</strong> a request.
+     *
+     * <p>Names only the exhausted window, never the counts, the configured
+     * limits, or the counter: the ledger records which window decided, not how
+     * much was used or how much was allowed.
+     *
+     * @param decision the closed-vocabulary decision code
+     * @param rejectedWindow the window that refused, a closed-vocabulary code
+     * @return {@code {"decision":"...","rejectedWindow":"..."}}, fixed field
+     *         order, closed-vocabulary values only
+     */
+    public static String gatewayUsagePolicyRejected(String decision, String rejectedWindow) {
+        Objects.requireNonNull(decision, "decision must not be null");
+        Objects.requireNonNull(rejectedWindow, "rejectedWindow must not be null");
+        return "{\"decision\":\"" + escape(decision) + "\",\"rejectedWindow\":\"" + escape(rejectedWindow) + "\"}";
     }
 
     private static String codes(List<String> codes) {

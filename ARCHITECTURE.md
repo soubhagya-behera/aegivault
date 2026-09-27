@@ -857,21 +857,41 @@ the request result. A clean provider response returns as ALLOW with the
   rejected window, actor, policy id, counter, limit, or Redis detail.
   `NO_POLICY`, `INACTIVE`, and `ALLOW` all continue through the existing flow
   unchanged. A policy-counter outage is **fail-closed** and distinct from a
-  rejection: it surfaces as HTTP 500 `Unable to enforce gateway usage
+  rejection: it surfaces as HTTP 500 `Unable to enforce gateway
   policy.`, never as a 429, because an outage is not an exceeded limit.
   Ambiguous policy configuration is likewise HTTP 500
   `Unable to resolve gateway usage policy.`, choosing no policy and exposing
-  no policy id, owner, or candidate count. A policy-rejected request inspects
-  nothing, writes no `AI_GATEWAY_INSPECTION_ALLOWED` or
-  `AI_GATEWAY_INSPECTION_BLOCKED` audit entry, selects no provider, invokes
-  none, and records no usage row — admission happens before all of that work.
-  No new audit event type was added and no policy state, limit, counter, or
-  rejected window was added to existing inspection audit metadata. This is
-  **request-limit enforcement, not token-budget enforcement**: `tokensPerDay`
-  is still unenforced, and a policy declaring only `tokensPerDay` is admitted
-  without consuming request capacity. The completion service depends only on
-  the enforcement service, never on the policy repository, the counter, a
-  counter implementation, Redis, or the evaluator.
+  no policy id, owner, or candidate count.
+  **Policy decisions are now auditable, under their own event types.** A quota
+  decision is not a security verdict, so it never reuses
+  `AI_GATEWAY_INSPECTION_ALLOWED` or `AI_GATEWAY_INSPECTION_BLOCKED`; the
+  ledger instead records `GATEWAY_USAGE_POLICY_ALLOWED` or
+  `GATEWAY_USAGE_POLICY_REJECTED` under resource type `GATEWAY_USAGE_POLICY`,
+  with the resolved policy UUID as the resource id and hand-built,
+  fixed-field-order metadata only: `{"decision":"ALLOW","enforcedWindows":[...]}`
+  or `{"decision":"REJECTED","rejectedWindow":"MINUTE"}`. The metadata never
+  contains the actor (the ledger stores it as its own column), the policy owner
+  or label, a configured limit, a usage count, a counter value, a Redis key, or
+  any request content, provider output, PII, or secret. An admitted request
+  records its policy event *before* inspection and then its ordinary
+  inspection event, so one request can legitimately hold two entries for two
+  different decisions; a policy-rejected request records only its policy
+  event, because it is never inspected. `NO_POLICY` records **nothing** — no
+  policy was consulted, so there is no decision to evidence — and `INACTIVE`
+  records nothing either, which is a deliberate choice: a disabled policy is
+  not applied, so an `ALLOWED` event would claim a quota check that never ran,
+  leaving `ALLOWED` in the ledger meaning exactly "an enabled policy admitted
+  this". A policy-audit failure is **fail-closed** as HTTP 500
+  `Unable to record gateway policy audit event.`, and for a refused request it
+  replaces the 429: a rejection whose evidence was not stored must not be
+  reported as though it had been. A policy-rejected request records no usage
+  row, because there was no provider call.
+  The completion service depends only on the enforcement service, never on
+  the policy repository, the counter, a counter implementation, Redis, or the
+  evaluator. This is **request-limit enforcement, not token-budget
+  enforcement**: `tokensPerDay` is still unenforced, and a policy declaring
+  only `tokensPerDay` is admitted without consuming request capacity (and is
+  recorded with an empty `enforcedWindows`).
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking

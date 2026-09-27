@@ -2,6 +2,7 @@ package com.aegivault.aegivault.gateway.policy;
 
 import java.time.Instant;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -117,7 +118,7 @@ public class GatewayUsagePolicyEnforcementService {
             // A disabled policy is not applied, and applying nothing must not
             // cost capacity. The resolver only hands back enabled policies, so
             // this is a guard against a contract change, not a live path.
-            return GatewayUsagePolicyEnforcementResult.inactive();
+            return GatewayUsagePolicyEnforcementResult.inactive(policy.getId());
         }
 
         return consumeRequestLimits(actor, policy, now);
@@ -139,14 +140,20 @@ public class GatewayUsagePolicyEnforcementService {
             // The policy constrains only tokens, which this service does not
             // enforce. No request capacity is consumed, and no counter call is
             // made to discover that.
-            return GatewayUsagePolicyEnforcementResult.allow();
+            return GatewayUsagePolicyEnforcementResult.allow(policy.getId(), List.of());
         }
+
+        // Reported back so the audit ledger can name which windows were
+        // actually checked, in the same fixed order the counter saw.
+        List<GatewayUsagePolicyCounterWindow> enforced = new GatewayUsagePolicyCounterRequest(
+                actor, now, limits).windowsInEvaluationOrder();
 
         GatewayUsagePolicyCounterResult outcome = consume(
                 new GatewayUsagePolicyCounterRequest(actor, now, limits));
         return outcome.isAllowed()
-                ? GatewayUsagePolicyEnforcementResult.allow()
-                : GatewayUsagePolicyEnforcementResult.rejected(outcome.rejectedWindow());
+                ? GatewayUsagePolicyEnforcementResult.allow(policy.getId(), enforced)
+                : GatewayUsagePolicyEnforcementResult.rejected(
+                        outcome.rejectedWindow(), policy.getId(), enforced);
     }
 
     private GatewayUsagePolicyCounterResult consume(GatewayUsagePolicyCounterRequest request) {

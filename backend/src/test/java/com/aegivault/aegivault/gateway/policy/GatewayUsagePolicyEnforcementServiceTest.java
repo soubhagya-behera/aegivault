@@ -328,13 +328,18 @@ class GatewayUsagePolicyEnforcementServiceTest {
 
     @Test
     void theEnforcementResultCarriesNoActorRedisOrLimitDetail() {
+        // It now also carries the policy id and the enforced window names for
+        // the audit ledger, so this pins the whole shape: still no actor
+        // subject, no counter value, no key, no configured limit.
         assertThat(java.util.Arrays.stream(GatewayUsagePolicyEnforcementResult.class.getRecordComponents())
                         .map(java.lang.reflect.RecordComponent::getName)
                         .toList())
-                .containsExactly("state", "rejectedWindow");
+                .containsExactly("state", "rejectedWindow", "policyId", "enforcedWindows");
         assertThat(java.util.Arrays.stream(GatewayUsagePolicyEnforcementResult.State.values())
                         .map(Enum::name)
                         .toList())
                 .containsExactly("NO_POLICY", "ALLOW", "REJECTED", "INACTIVE");
+        assertThat(GatewayUsagePolicyEnforcementResult.noPolicy().toString())
+                .doesNotContain("redis", "localhost", "actor");
     }
 }

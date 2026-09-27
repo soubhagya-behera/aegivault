@@ -3,11 +3,14 @@ package com.aegivault.aegivault.gateway;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicy;
@@ -111,10 +114,13 @@ class GatewayCompletionPolicyEnforcementTest {
     }
 
     @Test
-    void noPolicyLetsTheRequestThroughTheWholeProviderPath() {
+    void noPolicyLetsTheRequestThroughTheWholeProviderPathWithNoPolicyAuditEvent() {
         service.complete(inspection(CLEAN));
 
-        // No policy means no limit to check: existing behavior is untouched.
+        // No policy means no limit to check and no decision to evidence:
+        // existing gateway behavior is untouched and the ledger gains nothing
+        // beyond the one inspection entry.
+        verify(audit, never()).recordUsagePolicy(any(), any());
         verify(inspections, times(1)).inspect(any(), any());
         verify(audit, times(1)).record(any(), any());
         verify(selector, times(1)).select("test-model");
@@ -123,16 +129,112 @@ class GatewayCompletionPolicyEnforcementTest {
     }
 
     @Test
-    void anInactivePolicyIsNotReachableThroughTheResolverAndTheResultAdmitsNothing() {
+    void anAllowedPolicyWritesExactlyOnePolicyAuditEventBeforeInspection() {
+        AlwaysAdmitsPolicyCounter counter = new AlwaysAdmitsPolicyCounter();
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+
+        serviceWith(counter).complete(inspection(CLEAN));
+
+        // Exactly one policy event, and it precedes inspection because the
+        // quota decision was made first.
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(audit, inspections);
+        order.verify(audit).recordUsagePolicy(eq("actor-1"), any());
+        order.verify(inspections).inspect(any(), any());
+        // The inspection still gets its own, separate event afterwards.
+        verify(audit, times(1)).record(any(), any());
+    }
+
+    @Test
+    void aRejectedPolicyWritesExactlyOnePolicyAuditEventAndNoInspectionEvent() {
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "strict", null, 1L, 1L, null, true));
+        GatewayCompletionService rejecting = serviceWith(
+                new AlwaysAdmitsPolicyCounter.AlwaysRejectingPolicyCounter());
+
+        assertThatThrownBy(() -> rejecting.complete(inspection(CLEAN)))
+                .isInstanceOf(GatewayUsagePolicyLimitExceededException.class);
+
+        // The refusal is evidenced even though the request went nowhere.
+        verify(audit, times(1)).recordUsagePolicy(eq("actor-1"), any());
+        // And there is no inspection event: inspection never happened.
+        verify(audit, never()).record(any(), any());
+        verify(inspections, never()).inspect(any(), any());
+    }
+
+    @Test
+    void aPolicyAuditFailureFailsClosedAndStopsTheRequestBeforeInspection() {
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        doThrow(new GatewayUsagePolicyAuditException(new RuntimeException("psql-down-9z")))
+                .when(audit).recordUsagePolicy(any(), any());
+
+        // Fail closed: a decision whose evidence cannot be stored is not a
+        // decision the system may act on.
+        assertThatThrownBy(() -> service.complete(inspection(CLEAN)))
+                .isInstanceOf(GatewayUsagePolicyAuditException.class)
+                .hasMessage("Unable to record gateway policy audit event.")
+                .hasMessageNotContaining("psql-down");
+
+        verify(inspections, never()).inspect(any(), any());
+        verify(selector, never()).select(any());
+        verify(selected, never()).complete(any());
+        verify(usage, never()).record(any(), any(), any());
+    }
+
+    @Test
+    void aFailedRejectionAuditReturnsThe500PathRatherThanThe429() {
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "strict", null, 1L, 1L, null, true));
+        doThrow(new GatewayUsagePolicyAuditException(new RuntimeException("psql-down-9z")))
+                .when(audit).recordUsagePolicy(any(), any());
+        GatewayCompletionService rejecting = serviceWith(
+                new AlwaysAdmitsPolicyCounter.AlwaysRejectingPolicyCounter());
+
+        // A refusal whose evidence was not stored must not be reported as if
+        // it had been: the audit failure surfaces, never the 429.
+        assertThatThrownBy(() -> rejecting.complete(inspection(CLEAN)))
+                .isInstanceOf(GatewayUsagePolicyAuditException.class)
+                .isNotInstanceOf(GatewayUsagePolicyLimitExceededException.class);
+    }
+
+    @Test
+    void aGlobalRateLimitRejectionNeverReachesPolicyEnforcementSoItWritesNoPolicyEvent() {
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        AlwaysAdmitsPolicyCounter counter = new AlwaysAdmitsPolicyCounter();
+        GatewayCompletionService globallyLimited = new GatewayCompletionService(
+                actor -> false,
+                new GatewayUsagePolicyEnforcementService(policyResolver, counter),
+                inspections,
+                responseInspections,
+                selector,
+                audit,
+                usage);
+
+        assertThatThrownBy(() -> globallyLimited.complete(inspection(CLEAN)))
+                .isInstanceOf(GatewayRateLimitExceededException.class);
+
+        // The global limiter alone stopped it, so no policy decision existed
+        // to audit and no capacity was spent.
+        verifyNoInteractions(audit);
+        assertThat(counter.requests()).isEmpty();
+    }
+
+    @Test
+    void anInactivePolicyIsNotReachableThroughTheResolverAndRecordsNoPolicyEvent() {
         // The resolver only ever returns enabled policies, so INACTIVE is a
         // guard rather than a live path. What the completion path must do with
         // it is pinned here: it is not a rejection, so the service continues.
-        assertThat(GatewayUsagePolicyEnforcementResult.inactive().state())
+        var inactive = GatewayUsagePolicyEnforcementResult.inactive(java.util.UUID.randomUUID());
+        assertThat(inactive.state())
                 .isEqualTo(GatewayUsagePolicyEnforcementResult.State.INACTIVE);
-        assertThat(GatewayUsagePolicyEnforcementResult.inactive().rejectedWindow()).isNull();
+        assertThat(inactive.rejectedWindow()).isNull();
         // A disabled policy is not ALLOW either — the completion service only
         // branches on REJECTED, so INACTIVE continues without consuming.
-        assertThat(GatewayUsagePolicyEnforcementResult.inactive().isAdmitted()).isFalse();
+        assertThat(inactive.isAdmitted()).isFalse();
+        // Nothing was applied, so there is no policy decision to evidence and
+        // the ledger must not gain an event that would imply one.
+        assertThat(inactive.enforcedWindows()).isEmpty();
+
+        // The audit seam records nothing for it.
+        new GatewayAuditService(mock(com.aegivault.aegivault.audit.AuditLedgerService.class))
+                .recordUsagePolicy("actor-1", inactive);
     }
 
     @Test
