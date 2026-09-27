@@ -780,6 +780,58 @@ the request result. A clean provider response returns as ALLOW with the
   assumption, character-to-token conversion, or response-size heuristic is
   used anywhere; token enforcement requires an explicit
   reservation/accounting design in a later milestone.
+  The runtime enforcement layer over that counter now exists as
+  `GatewayUsagePolicyEnforcementService`. It resolves the actor's effective
+  policy and, for each **configured request limit**, calls
+  `GatewayUsagePolicyCounter.tryConsume(actor, window, limit)` — minute limit
+  against `MINUTE`, day limit against `DAY` — where the atomic counter call
+  *is* the admission decision. It never reads a count and compares in Java
+  first; that read-then-write split is exactly the race the counter exists to
+  close. `GatewayUsagePolicyEvaluator` is deliberately **not** used for
+  admission: it evaluates a persisted, after-the-fact snapshot, so two
+  simultaneous requests would both read the same count and both pass. The
+  evaluator remains the tool for observational, post-hoc policy decisions.
+  All configured request limits must admit the request, evaluated in a fixed,
+  deterministic order (day, then minute), and a null limit is unconstrained
+  and skipped, so a minute-only policy never touches the day counter. The
+  first limit that rejects short-circuits the rest, and a counter failure
+  stops the call immediately.
+  Its result is a `GatewayUsagePolicyEnforcementResult` with four states:
+  `NO_POLICY`, `ALLOW`, `REJECTED`, and `INACTIVE`; a `REJECTED` always names
+  the rejecting window (`MINUTE` or `DAY`), and a `REJECTED` without a window
+  — or a window on a non-rejection — is rejected at construction. `NO_POLICY`
+  is kept distinct from `ALLOW` for the same reason as in the observational
+  decision service, and **no capacity is consumed** in the no-policy,
+  inactive, or ambiguous cases: spending an allowance for a request that no
+  limit governs would silently shrink the actor's real allowance. Ambiguous
+  configuration still propagates `GatewayUsagePolicyAmbiguousException`
+  unchanged rather than being converted into a rejection.
+  **A counter failure is not a rejection.** It propagates
+  `GatewayUsagePolicyEnforcementException` with a fixed safe message, and no
+  result object is produced at all, so "could not check" can never be
+  mistaken for "limit exceeded"; it fails closed.
+  **Multi-limit consumption is deliberately NOT transactional.** With both
+  limits configured, if the first consume succeeds and a later one rejects,
+  the earlier capacity is already spent and is not returned — so a request
+  rejected on the minute limit may still have consumed a unit of the day's
+  allowance. There is no rollback, compensation, or reservation, and none is
+  invented: the counter is an atomic consume, not a transaction, and
+  compensating it would need an atomic multi-key operation the counter
+  contract does not define. Reordering the two limits cannot fix this either,
+  because which limit rejects first depends on runtime counts rather than on
+  the configured values. The inaccuracy is bounded (at most one unit per
+  window per rejected request) and fails in the conservative direction —
+  capacity is over-counted, never under-counted, so a configured limit still
+  cannot be exceeded — and the result's `rejectedWindow` always tells the
+  caller the request was not admitted. Resolving this asymmetry belongs to
+  the later runtime-enforcement milestone.
+  **`tokensPerDay` remains unenforced**: it is never read by the enforcement
+  service, and there is no token reservation, pre-request token check,
+  response token rollback, or character heuristic.
+  **The enforcement service is not wired into live gateway traffic** — it is
+  not a Spring bean, no gateway path calls it, and it therefore has zero
+  effect on real requests. Policies remain unenforced, and rate limiting is
+  still governed solely by `GatewayRateLimiter` configuration.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking

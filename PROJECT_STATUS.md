@@ -448,6 +448,46 @@
      character-to-token conversion, or response-size heuristic was invented,
      and token enforcement needs an explicit reservation/accounting design
      in a later milestone.
+     A runtime request-policy enforcement service now exists
+     (`GatewayUsagePolicyEnforcementService`), applying a resolved policy's
+     request limits through the atomic `GatewayUsagePolicyCounter`: for each
+     configured limit it calls `tryConsume(actor, MINUTE|DAY, limit)`, and
+     that atomic call *is* the admission decision — it never reads a count
+     and compares in Java first. `GatewayUsagePolicyEvaluator` is
+     deliberately not used for admission, because it evaluates a persisted,
+     after-the-fact snapshot in which two simultaneous requests would both
+     read the same count and both pass; it remains the tool for
+     observational, post-hoc policy decisions. All configured request limits
+     must admit, evaluated in a fixed deterministic order (day, then minute),
+     a null limit is unconstrained and skipped, and the first rejection
+     short-circuits the remaining limits. Its immutable
+     `GatewayUsagePolicyEnforcementResult` has four states — `NO_POLICY`,
+     `ALLOW`, `REJECTED`, `INACTIVE` — where a `REJECTED` always names the
+     rejecting window (`MINUTE` or `DAY`), `NO_POLICY` stays distinct from
+     `ALLOW`, and no capacity is consumed in the no-policy, inactive, or
+     ambiguous cases (spending an allowance no limit granted would silently
+     shrink the actor's real allowance). Ambiguous configuration still
+     propagates `GatewayUsagePolicyAmbiguousException` unchanged. A counter
+     failure is **not** a rejection: it propagates
+     `GatewayUsagePolicyEnforcementException` with a fixed safe message and
+     produces no result at all, so "could not check" is never mistaken for
+     "limit exceeded", and it fails closed. **Multi-limit consumption is
+     deliberately NOT transactional**: with both limits configured, an
+     earlier successful consume is not returned if a later limit rejects, so
+     a request rejected on the minute limit may still have spent a unit of
+     the day's allowance. No rollback, compensation, or reservation was
+     invented — the counter is an atomic consume, not a transaction — and
+     reordering the limits cannot fix it because the first rejection depends
+     on runtime counts, not configured values. The inaccuracy is bounded (at
+     most one unit per window per rejected request) and conservative
+     (capacity is over-counted, never under-counted, so a limit still cannot
+     be exceeded). `tokensPerDay` remains unenforced: it is never read, and
+     there is no token reservation, pre-request token check, response token
+     rollback, or character heuristic. **The enforcement service is not wired
+     into live gateway traffic** — it is not a Spring bean and no gateway
+     path calls it, so policies remain unenforced and rate limiting is still
+     governed solely by `GatewayRateLimiter` configuration.
+
 
 
    with a deterministic zero-configuration `MockLlmProvider` for local/test
