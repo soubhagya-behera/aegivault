@@ -54,28 +54,37 @@ public class InMemoryGatewayTokenBudget implements GatewayTokenBudget {
     private final ConcurrentHashMap<BudgetKey, DayBudget> budgets = new ConcurrentHashMap<>();
 
     /**
-     * One actor's budget on one UTC day: the reservations currently held.
+     * One actor's budget on one UTC day: the settled usage so far plus the
+     * reservations still outstanding against it.
      *
-     * <p>Each reservation is kept as its own entry rather than as a bare total
-     * so a later reconciliation step can find the amount held under a given
-     * {@code reservationId} without the caller re-supplying it. The map is
-     * replaced wholesale on every reservation, so it is never mutated in place
+     * <p>The two are tracked separately because they answer different
+     * questions. {@code usedTokens} is settled, irreversible provider usage;
+     * the {@code reservations} map is capacity still held in anticipation of
+     * usage and which reconciliation may yet give back. The capacity check
+     * sums both, so a settled request and an in-flight one both count against
+     * the day, but only the second is reversible.
+     *
+     * <p>Each reservation is kept as its own entry rather than folded into a
+     * bare total so reconciliation can find exactly what a given
+     * {@code reservationId} holds and subtract that amount, instead of trusting
+     * a caller-supplied figure. The map is replaced wholesale on every
+     * reservation and on every reconciliation, so it is never mutated in place
      * and never observed half-updated.
      */
-    private record DayBudget(Map<String, Long> reservations) {
+    private record DayBudget(long usedTokens, Map<String, Long> reservations) {
 
-        private static final DayBudget EMPTY = new DayBudget(Map.of());
+        private static final DayBudget EMPTY = new DayBudget(0L, Map.of());
 
         /**
-         * The total currently held, summed over every outstanding reservation.
+         * Everything the day currently accounts for: settled usage plus every
+         * outstanding reservation.
          *
-         * <p>{@code usedTokens} is deliberately absent from the sum: settled
-         * usage is zero until a reconciliation step exists, and adding a term
-         * that is always zero would only make the boundary look as though it
-         * already accounted for it.
+         * <p>This is the {@code usedTokens + reservedTokens} term the
+         * reservation boundary is specified in, kept as one total so the
+         * capacity comparison reads exactly the documented expression.
          */
-        long totalReserved() {
-            return reservations.values().stream().mapToLong(Long::longValue).sum();
+        long totalAccounted() {
+            return usedTokens + reservations.values().stream().mapToLong(Long::longValue).sum();
         }
     }
 
@@ -112,7 +121,7 @@ public class InMemoryGatewayTokenBudget implements GatewayTokenBudget {
         // still has room and both reserve against it.
         budgets.compute(new BudgetKey(actor, windowStart), (key, existing) -> {
             DayBudget current = existing == null ? DayBudget.EMPTY : existing;
-            if (current.totalReserved() + requestedTokens > limit) {
+            if (current.totalAccounted() + requestedTokens > limit) {
                 // Rejected before any write: a refused reservation costs the
                 // actor nothing, so hammering a spent budget cannot push the
                 // day's held total further over the limit.
@@ -126,11 +135,66 @@ public class InMemoryGatewayTokenBudget implements GatewayTokenBudget {
             Map<String, Long> reservations = new LinkedHashMap<>(current.reservations());
             reservations.put(reservationId, requestedTokens);
             outcome[0] = GatewayTokenBudgetReservation.reserved(reservationId, requestedTokens);
-            return new DayBudget(Map.copyOf(reservations));
+            // Only the reservation map grows: settled usage is untouched by a
+            // new attempt.
+            return new DayBudget(current.usedTokens(), Map.copyOf(reservations));
         });
 
         evictSupersededDays(actor, windowStart);
         return outcome[0];
+    }
+
+    @Override
+    public GatewayTokenBudgetReconciliation reconcile(
+            String actorSubject, Instant windowStart, String reservationId, long actualTokens) {
+        // Everything invalid is rejected before any state is read or written,
+        // exactly as for a reservation: a programming error must never adjust a
+        // budget, consume a reservation, or touch another actor's state.
+        String actor = GatewayTokenBudgetValidation.requireReconcilable(
+                actorSubject, windowStart, reservationId, actualTokens);
+        String id = reservationId.trim();
+        GatewayTokenBudgetReservationStateException[] failure =
+                new GatewayTokenBudgetReservationStateException[1];
+
+        // Lookup, removal, and the usage adjustment all happen inside this one
+        // atomic map operation on the same actor-and-day boundary a reservation
+        // uses. A concurrent reservation is therefore never decided against a
+        // total midway through an adjustment: it sees either the state before
+        // this reconciliation or the fully settled state after it.
+        budgets.compute(new BudgetKey(actor, windowStart), (key, existing) -> {
+            if (existing == null) {
+                // No budget at all for this actor and day, so no such
+                // reservation can exist.
+                failure[0] = new GatewayTokenBudgetReservationStateException();
+                return null;
+            }
+            Long held = existing.reservations().get(id);
+            if (held == null) {
+                // Unknown, already reconciled, or belonging to another actor or
+                // day: all one indistinguishable failure, which is what stops a
+                // caller from learning whether an id exists elsewhere.
+                failure[0] = new GatewayTokenBudgetReservationStateException();
+                return existing;
+            }
+
+            // The reservation is dropped and the actual amount takes its place
+            // as settled usage. `held` is what this reservation actually holds,
+            // never a caller-supplied figure, so the day cannot be credited
+            // with a release it never made.
+            Map<String, Long> reservations = new LinkedHashMap<>(existing.reservations());
+            reservations.remove(id);
+            // Over-reservation is not clamped and not rejected: the provider's
+            // real figure is what the day now accounts for, even when that
+            // pushes the day's total past the limit. Future reservations are
+            // then rejected by the same capacity boundary as always, which is
+            // the intended containment.
+            return new DayBudget(existing.usedTokens() + actualTokens, Map.copyOf(reservations));
+        });
+
+        if (failure[0] != null) {
+            throw failure[0];
+        }
+        return GatewayTokenBudgetReconciliation.reconciled();
     }
 
     /**

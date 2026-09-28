@@ -50,6 +50,16 @@ class InMemoryGatewayTokenBudgetTest {
         return budget.tryReserve(actor, DAY_START, limit, tokens);
     }
 
+    /** Reserves for the default day and returns the id a caller would hold. */
+    private String reserveId(long limit, long tokens) {
+        return reserve(ACTOR, limit, tokens).reservationId();
+    }
+
+    /** Settles a reservation on the default actor and day. */
+    private GatewayTokenBudgetReconciliation settle(String reservationId, long actual) {
+        return budget.reconcile(ACTOR, DAY_START, reservationId, actual);
+    }
+
     @Test
     void aReservationWithinTheLimitSucceeds() {
         GatewayTokenBudgetReservation result = reserve(ACTOR, 1_000L, 400L);
@@ -406,6 +416,212 @@ class InMemoryGatewayTokenBudgetTest {
 
             assertThat(terminated).isTrue();
             assertThat(ids).hasSize(threads);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
+    void aSettledReservationIsReplacedByTheActualUsage() {
+        String id = reserveId(1_000L, 100L);
+
+        GatewayTokenBudgetReconciliation result = settle(id, 80L);
+
+        assertThat(result.isReconciled()).isTrue();
+        // The day now accounts for 80, so exactly 80 of the limit is left: a
+        // 920-token reservation still fits and a 921-token one does not.
+        assertThat(reserve(ACTOR, 1_000L, 920L).isReserved()).isTrue();
+    }
+
+    @Test
+    void anExactSettlementAccountsForTheWholeReservation() {
+        settle(reserveId(1_000L, 100L), 100L);
+
+        // Nothing was released, so the day still carries the full 100.
+        assertThat(reserve(ACTOR, 1_000L, 900L).isReserved()).isTrue();
+        assertThat(reserve(ACTOR, 1_000L, 901L).isReserved()).isFalse();
+    }
+
+    @Test
+    void anUnderUseSettlesBackIntoTheDaysCapacity() {
+        settle(reserveId(1_000L, 100L), 20L);
+
+        // 80 units of over-reservation are released, so the day is left owing
+        // only the 20 the provider really spent.
+        assertThat(reserve(ACTOR, 1_000L, 980L).isReserved()).isTrue();
+        assertThat(reserve(ACTOR, 1_000L, 981L).isReserved()).isFalse();
+    }
+
+    @Test
+    void anOverUseIsRecordedAsTheRealUsageAndNeverClamped() {
+        String id = reserveId(1_000L, 100L);
+
+        // The reconciliation succeeds: the provider really did spend 140, and
+        // pretending it spent 100 would understate the cost.
+        assertThat(settle(id, 140L).isReconciled()).isTrue();
+
+        // The day now owes 140, so only 860 of capacity is left.
+        assertThat(reserve(ACTOR, 1_000L, 860L).isReserved()).isTrue();
+        assertThat(reserve(ACTOR, 1_000L, 861L).isReserved())
+                .as("a request that would push the day past its limit is rejected")
+                .isFalse();
+    }
+
+    @Test
+    void anOverUseCanLeaveTheDayOverspentAndRejectEverythingAfterwards() {
+        settle(reserveId(1_000L, 100L), 1_400L);
+
+        // Actual usage is a post-provider fact: it is recorded as it happened
+        // even when it has already passed the limit, and the day's containment
+        // is expressed by refusing every later reservation.
+        assertThat(reserve(ACTOR, 1_000L, 1L).isReserved()).isFalse();
+        assertThat(reserve(ACTOR, 1_000L, 1L).isReserved()).isFalse();
+    }
+
+    @Test
+    void zeroActualTokensIsAcceptedAndReleasesTheWholeReservation() {
+        String id = reserveId(1_000L, 100L);
+
+        // A provider can legitimately report no tokens at all, so zero is a
+        // real measurement, not a missing one.
+        assertThat(settle(id, 0L).isReconciled()).isTrue();
+        assertThat(reserve(ACTOR, 1_000L, 1_000L).isReserved()).isTrue();
+    }
+
+    @Test
+    void aSettledReservationIsSingleUse() {
+        String id = reserveId(1_000L, 100L);
+        settle(id, 80L);
+
+        // A reservation may be settled exactly once: a repeat, a late retry, or
+        // a duplicated callback must not credit the day a second time.
+        assertThatThrownBy(() -> settle(id, 80L))
+                .isInstanceOf(GatewayTokenBudgetReservationStateException.class);
+        assertThat(reserve(ACTOR, 1_000L, 920L).isReserved())
+                .as("the refused repeat released nothing")
+                .isTrue();
+    }
+
+    @Test
+    void anUnknownReservationIsRejected() {
+        assertThatThrownBy(() -> settle("no-such-reservation", 10L))
+                .isInstanceOf(GatewayTokenBudgetReservationStateException.class);
+    }
+
+    @Test
+    void aReservationCannotBeSettledByAnotherActor() {
+        String id = reserveId(1_000L, 100L);
+
+        // Actor 2 must not be able to settle actor 1's reservation, which would
+        // let it release capacity the day never gave it.
+        assertThatThrownBy(() -> budget.reconcile("actor-2", DAY_START, id, 10L))
+                .isInstanceOf(GatewayTokenBudgetReservationStateException.class);
+        assertThatThrownBy(() -> budget.reconcile("actor-2", DAY_START, id, 0L))
+                .as("even a zero-usage settlement is refused")
+                .isInstanceOf(GatewayTokenBudgetReservationStateException.class);
+    }
+
+    @Test
+    void aReservationCannotBeSettledOnAnotherDay() {
+        String id = reserveId(1_000L, 100L);
+
+        // One day's reservation does not belong to the next day's budget, so a
+        // settlement carried out under the wrong day must fail.
+        assertThatThrownBy(() -> budget.reconcile(ACTOR, NEXT_DAY_START, id, 10L))
+                .isInstanceOf(GatewayTokenBudgetReservationStateException.class);
+    }
+
+    @Test
+    void theReconciliationResultCarriesNoCountsOrCapacity() {
+        // A settlement must not report the day it just adjusted, so the result
+        // type itself cannot: success is the whole of its surface.
+        assertThat(List.of(GatewayTokenBudgetReconciliation.class.getRecordComponents()))
+                .extracting(component -> component.getName())
+                .containsExactly("state");
+    }
+
+    @Test
+    void anInvalidSettlementIsRejectedBeforeAnyStateIsTouched() {
+        String id = reserveId(1_000L, 100L);
+
+        assertThatThrownBy(() -> budget.reconcile(null, DAY_START, id, 10L))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> budget.reconcile("   ", DAY_START, id, 10L))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> budget.reconcile(ACTOR, null, id, 10L))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> budget.reconcile(ACTOR, DAY_START.plusSeconds(1L), id, 10L))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> budget.reconcile(ACTOR, DAY_START, null, 10L))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> budget.reconcile(ACTOR, DAY_START, "   ", 10L))
+                .isInstanceOf(IllegalArgumentException.class);
+        // A negative usage is impossible, and would hand capacity back.
+        assertThatThrownBy(() -> settle(id, -1L))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // Every one of those was refused before any read or write, so the
+        // reservation is untouched and still holds its original amount.
+        assertThat(reserve(ACTOR, 1_000L, 900L).isReserved()).isTrue();
+    }
+
+    @Test
+    void concurrentSettlementsAndReservationsStayConsistent() throws InterruptedException {
+        // Fifty reservations of 10 tokens each against a limit of 1_000, then a
+        // settlement racing further reservations on the same actor and day.
+        int initial = 50;
+        String[] ids = new String[initial];
+        for (int i = 0; i < initial; i++) {
+            ids[i] = reserveId(1_000L, 10L);
+        }
+
+        int threads = 60;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        CountDownLatch ready = new CountDownLatch(threads);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger settledReservations = new AtomicInteger();
+        AtomicInteger duplicateAttempts = new AtomicInteger();
+        try {
+            for (int i = 0; i < threads; i++) {
+                String id = ids[i % initial];
+                long actual = 10L * (1L + (i % 3));
+                pool.submit(() -> {
+                    ready.countDown();
+                    start.await();
+                    try {
+                        budget.reconcile(ACTOR, DAY_START, id, actual);
+                        settledReservations.incrementAndGet();
+                    } catch (GatewayTokenBudgetReservationStateException expected) {
+                        // A repeated settlement of the same id loses the race by
+                        // design; it must not be treated as a corruption.
+                        duplicateAttempts.incrementAndGet();
+                    }
+                    // Every settlement, successful or refused, leaves an honest
+                    // total, so a racing reservation is never admitted against a
+                    // half-adjusted day.
+                    budget.tryReserve(ACTOR, DAY_START, 1_000L, 1L);
+                    return null;
+                });
+            }
+            ready.await();
+            start.countDown();
+            pool.shutdown();
+            assertThat(pool.awaitTermination(60, TimeUnit.SECONDS)).isTrue();
+
+            // Each of the 50 ids was settled at most once, no matter how many
+            // threads raced for it, so the attempts partition cleanly.
+            assertThat(settledReservations.get())
+                    .as("no reservation is ever settled twice")
+                    .isLessThanOrEqualTo(initial);
+            assertThat(settledReservations.get() + duplicateAttempts.get())
+                    .as("every attempt is either settled once or refused")
+                    .isEqualTo(threads);
+
+            // The strongest statement of correctness: whatever the interleaving,
+            // a 1_000-token reservation can no longer fit, because the 50
+            // original reservations each cost at least their 10 tokens.
+            assertThat(budget.tryReserve(ACTOR, DAY_START, 1_000L, 1_000L).isReserved())
+                    .isFalse();
         } finally {
             pool.shutdownNow();
         }

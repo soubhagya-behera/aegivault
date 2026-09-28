@@ -28,6 +28,13 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
  * returns before any write, so a refused attempt costs the actor nothing and a
  * client hammering a spent budget cannot push the day's total further over.
  *
+ * <p><strong>Reconciliation is one script too.</strong> Settling a reservation
+ * against the tokens a provider actually reported locates the reservation,
+ * removes it, and adjusts the day's accounted total inside a single Lua
+ * invocation, never a GET, a Java-side comparison, and then HDEL and HSET as
+ * separate round trips. A failed settlement returns before any write, so it
+ * changes nothing, and a successful one leaves the key's TTL untouched.
+ *
  * <p>Budgets live at
  * {@code aegivault:gateway:token-budget:<windowStart>:<actorSubject>}, a
  * namespace of their own that is distinct from the request-policy counters
@@ -78,10 +85,10 @@ public class RedisGatewayTokenBudget implements GatewayTokenBudget {
      * rejection is guaranteed not to have created a key, applied a TTL, or
      * changed the held total.
      *
-     * <p>Settled usage is deliberately not stored separately from the held
-     * total: with no reconciliation step in existence it is zero, and folding
-     * it into a second field would make a later reconciliation look as though
-     * it already had somewhere to write.
+     * <p>Settled usage is not stored in a field of its own: the {@code total}
+     * field is the whole accounted amount, settled plus held, so the
+     * reconciliation below adjusts it in place instead of maintaining a second
+     * counter.
      *
      * <p>Returns {@code 1} for a reservation and {@code 0} for a rejection.
      */
@@ -101,6 +108,54 @@ public class RedisGatewayTokenBudget implements GatewayTokenBudget {
                     if held == 0 then
                       redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]))
                     end
+
+                    return 1
+                    """,
+                    Long.class);
+
+    /**
+     * The single atomic operation behind a reconciliation: find the
+     * reservation, remove it, and adjust the day's accounted total — all
+     * server-side.
+     *
+     * <p>{@code KEYS[1]} is the one budget key for this actor and day, so a
+     * reservation is only ever reachable through its own actor and day and one
+     * actor cannot settle another's. {@code ARGV[1]} is the reservation id and
+     * {@code ARGV[2]} the tokens the provider actually reported.
+     *
+     * <p>The amount subtracted is read from the reservation's own field, never
+     * supplied by the caller, so a settlement cannot credit the day with a
+     * release the reservation never made.
+     *
+     * <p>An unknown, already-reconciled, or otherwise absent id returns before
+     * any write, so a failed reconciliation changes nothing at all. The
+     * adjustment then replaces the held amount with the real one, which is why
+     * an over-reservation is recorded as actual usage rather than capped.
+     *
+     * <p><strong>No TTL is applied here.</strong> The key is already alive and
+     * already expires at the end of its day; {@code HSET} and {@code HDEL} on
+     * an existing key do not disturb its TTL, and re-applying one would keep a
+     * finished day's accounting alive for no reason. A settlement is therefore
+     * invisible to the key's lifetime, which is what "preserve TTL" means
+     * here.
+     *
+     * <p>Returns {@code 1} for a settled reservation and {@code 0} when no such
+     * outstanding reservation exists.
+     */
+    static final DefaultRedisScript<Long> RECONCILE_SCRIPT =
+            new DefaultRedisScript<>(
+                    """
+                    local field = 'reservation:' .. ARGV[1]
+                    local reserved = redis.call('HGET', KEYS[1], field)
+                    if not reserved then
+                      return 0
+                    end
+
+                    local held = tonumber(redis.call('HGET', KEYS[1], 'total') or '0')
+                    local actual = tonumber(ARGV[2])
+
+                    redis.call('HSET', KEYS[1], 'total', held - tonumber(reserved) + actual)
+                    redis.call('HDEL', KEYS[1], field)
 
                     return 1
                     """,
@@ -166,6 +221,52 @@ public class RedisGatewayTokenBudget implements GatewayTokenBudget {
         }
         // Anything else is an unrecognised result and must not be read as
         // either outcome.
+        throw new GatewayTokenBudgetUnavailableException(
+                new IllegalStateException("Unrecognised token budget script result."));
+    }
+
+    @Override
+    public GatewayTokenBudgetReconciliation reconcile(
+            String actorSubject, Instant windowStart, String reservationId, long actualTokens) {
+        // Validated before Redis is contacted at all, exactly as for a
+        // reservation: an invalid attempt must not cost a round trip, adjust a
+        // budget, or consume a reservation.
+        String actor = GatewayTokenBudgetValidation.requireReconcilable(
+                actorSubject, windowStart, reservationId, actualTokens);
+
+        String key = GatewayTokenBudgetWindow.DAY.keyFor(windowStart, actor);
+        String[] arguments = {reservationId.trim(), String.valueOf(actualTokens)};
+
+        // Exactly one script execution locates, removes, and adjusts. Reading
+        // the reservation, comparing in Java, and then deleting and incrementing
+        // as separate calls would let two instances settle or reserve against
+        // the same total concurrently.
+        final Long outcome;
+        try {
+            outcome = redis.execute(RECONCILE_SCRIPT, List.of(key), (Object[]) arguments);
+        } catch (RuntimeException ex) {
+            throw new GatewayTokenBudgetUnavailableException(ex);
+        }
+        if (outcome == null) {
+            // An empty result means the script did not answer, which is neither
+            // a settlement nor proof that no such reservation exists, so it
+            // fails closed as an infrastructure error rather than as a
+            // reservation-state failure.
+            throw new GatewayTokenBudgetUnavailableException(
+                    new IllegalStateException("Empty token budget script result."));
+        }
+        if (outcome == 1L) {
+            return GatewayTokenBudgetReconciliation.reconciled();
+        }
+        if (outcome == 0L) {
+            // The script found no such outstanding reservation in this actor's
+            // key for this day and returned before any write, so nothing was
+            // adjusted. Unknown, already reconciled, and another actor's or
+            // day's id are all this one indistinguishable failure.
+            throw new GatewayTokenBudgetReservationStateException();
+        }
+        // Anything else is an unrecognised result and must be read as neither
+        // outcome.
         throw new GatewayTokenBudgetUnavailableException(
                 new IllegalStateException("Unrecognised token budget script result."));
     }

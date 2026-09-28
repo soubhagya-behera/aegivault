@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -107,6 +108,56 @@ class RedisGatewayTokenBudgetTest {
         };
     }
 
+    /**
+     * Mirrors the reconciliation script: find the reservation by id and return
+     * before any write when it is absent, otherwise replace the held amount
+     * with the actual one and drop the reservation. The TTL is deliberately not
+     * touched, exactly as the shipped script does not touch it.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Answer<Long> reconcileLuaScript() {
+        return (InvocationOnMock invocation) -> {
+            List<String> keys = List.copyOf((List<String>) invocation.getArgument(1));
+            Object[] all = invocation.getArguments();
+            Object[] scriptArgs = new Object[all.length - 2];
+            System.arraycopy(all, 2, scriptArgs, 0, scriptArgs.length);
+            keysSeen.add(keys);
+            argsSeen.add(scriptArgs);
+
+            String key = keys.get(0);
+            String reservationId = (String) scriptArgs[0];
+            long actual = Long.parseLong((String) scriptArgs[1]);
+            Long reserved = serverReservations.get(key + "#" + reservationId);
+
+            if (reserved == null) {
+                // No write of any kind: the total, the reservation fields, and
+                // the TTL are all left exactly as they were.
+                return 0L;
+            }
+            long held = serverHeld.getOrDefault(key, 0L);
+            serverHeld.put(key, held - reserved + actual);
+            serverReservations.remove(key + "#" + reservationId);
+            return 1L;
+        };
+    }
+
+    /**
+     * Answers either script, so a test can drive reservations and
+     * reconciliations through one mock and still assert the interaction count of
+     * each separately.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private Answer<Long> eitherScript() {
+        Answer<Long> reserve = luaScript();
+        Answer<Long> reconcile = reconcileLuaScript();
+        return (InvocationOnMock invocation) -> {
+            RedisScript<?> script = (RedisScript<?>) invocation.getArgument(0);
+            return RedisGatewayTokenBudget.RECONCILE_SCRIPT.equals(script)
+                    ? reconcile.answer(invocation)
+                    : reserve.answer(invocation);
+        };
+    }
+
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
     void stubRedis() {
@@ -116,8 +167,12 @@ class RedisGatewayTokenBudgetTest {
         serverHeld.clear();
         serverReservations.clear();
         serverTtl.clear();
+        // Both arities are stubbed: production passes four script arguments to a
+        // reservation and two to a reconciliation, plus the key list.
         when(redis.execute(any(RedisScript.class), anyList(), any(), any(), any(), any()))
-                .thenAnswer(luaScript());
+                .thenAnswer(eitherScript());
+        when(redis.execute(any(RedisScript.class), anyList(), any(), any()))
+                .thenAnswer(eitherScript());
     }
 
     private RedisGatewayTokenBudget budget() {
@@ -132,6 +187,20 @@ class RedisGatewayTokenBudgetTest {
     private long heldFor() {
         return serverHeld.getOrDefault(
                 GatewayTokenBudgetWindow.DAY.keyFor(DAY_START, ACTOR), 0L);
+    }
+
+    private GatewayTokenBudgetReconciliation settle(String reservationId, long actual) {
+        return budget().reconcile(ACTOR, DAY_START, reservationId, actual);
+    }
+
+    /** Reserves and returns the id a caller would hold for later settlement. */
+    private String reserveId(long limit, long tokens) {
+        return reserve(ACTOR, limit, tokens).reservationId();
+    }
+
+    /** The server-side total for an arbitrary actor and day. */
+    private long heldFor(String actor, Instant dayStart) {
+        return serverHeld.getOrDefault(GatewayTokenBudgetWindow.DAY.keyFor(dayStart, actor), 0L);
     }
 
     @Test
@@ -462,6 +531,101 @@ class RedisGatewayTokenBudgetTest {
         assertThatThrownBy(() -> new RedisGatewayTokenBudget(redis, null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("clock must not be null");
+    }
+
+    @Test
+    void aReconciliationIsExactlyOneAtomicScriptExecution() {
+        String id = reserveId(1_000L, 400L);
+        // The setup reservation is a separate call, so it is cleared first: the
+        // assertion is about the reconciliation alone.
+        clearInvocations(redis);
+
+        settle(id, 80L);
+
+        // The lookup, the removal, and the adjustment are one indivisible
+        // server-side step: never a read, a Java-side compare, then a delete and
+        // an increment as separate round trips.
+        verify(redis, times(1)).execute(any(RedisScript.class), anyList(), any(), any());
+        verifyNoMoreInteractions(redis);
+    }
+
+    @Test
+    void theLookupAndTheAdjustmentAreInTheSameScript() {
+        settle(reserveId(1_000L, 400L), 80L);
+
+        // Asserted on the shipped Lua, so the atomicity claim is backed by the
+        // script itself and not only by the mock's behaviour.
+        String script = reconcileScriptText();
+        assertThat(script).contains("redis.call('HGET', KEYS[1], field)");
+        int missing = script.indexOf("if not reserved then");
+        assertThat(missing).as("the absence check exists").isPositive();
+        assertThat(script.indexOf("redis.call('HSET'"))
+                .as("every write comes after the absence check")
+                .isGreaterThan(missing);
+        assertThat(script.indexOf("redis.call('HDEL'"))
+                .as("the reservation is removed in the same script")
+                .isGreaterThan(missing);
+        assertThat(script)
+                .as("no TTL is re-applied, so the day's expiry is untouched")
+                .doesNotContain("PEXPIRE", "EXPIRE");
+    }
+
+    @Test
+    void theReservedAmountIsReplacedByTheActualUsage() {
+        settle(reserveId(1_000L, 400L), 80L);
+
+        // The script subtracts what was held and adds what was really spent, so
+        // 320 units of over-reservation are released back to the day.
+        assertThat(heldFor()).isEqualTo(80L);
+    }
+
+    @Test
+    void reconciliationRemovesTheReservationField() {
+        String id = reserveId(1_000L, 400L);
+        String key = GatewayTokenBudgetWindow.DAY.keyFor(DAY_START, ACTOR);
+
+        settle(id, 400L);
+
+        // Reservations are single-use: the field is gone, so a replay can never
+        // settle the same tokens a second time.
+        assertThat(serverReservations).doesNotContainKey(key + "#" + id);
+    }
+
+    @Test
+    void anExactReconciliationLeavesTheTotalUnchanged() {
+        settle(reserveId(1_000L, 400L), 400L);
+
+        assertThat(heldFor()).isEqualTo(400L);
+    }
+
+    @Test
+    void aPartialReleaseIsAccountedExactly() {
+        settle(reserveId(1_000L, 400L), 20L);
+
+        assertThat(heldFor()).isEqualTo(20L);
+    }
+
+    @Test
+    void anOverReservationIsRecordedAsTheFullActualUsage() {
+        settle(reserveId(1_000L, 400L), 540L);
+
+        // Never clamped: the provider really spent 540 tokens, so 540 is what
+        // the day now carries, even though only 400 was held for it.
+        assertThat(heldFor()).isEqualTo(540L);
+    }
+
+    @Test
+    void zeroActualTokensIsAcceptedAndReleasesTheWholeReservation() {
+        settle(reserveId(1_000L, 400L), 0L);
+
+        // A provider can legitimately report no tokens; the day then carries
+        // nothing for that request.
+        assertThat(heldFor()).isZero();
+    }
+
+    /** The Lua text the production class actually ships for a reconciliation. */
+    private String reconcileScriptText() {
+        return RedisGatewayTokenBudget.RECONCILE_SCRIPT.getScriptAsString();
     }
 
     /** The Lua text the production class actually ships. */

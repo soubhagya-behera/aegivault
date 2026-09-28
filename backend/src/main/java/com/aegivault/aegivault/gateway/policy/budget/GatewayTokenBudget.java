@@ -61,12 +61,15 @@ import java.time.Instant;
  * controller, no audit entry, no provider, no policy resolution, and no token
  * estimation.
  *
- * <p><strong>Reconciliation is deliberately not implemented.</strong> The
- * result carries a {@code reservationId} and the {@code reservedTokens} it
- * holds, which is the minimum a later operation needs to move a reservation
- * from "reserved" to "actually used". Settling a reservation against real
- * provider usage, and any release or refund path, belong to a later milestone
- * and do not exist here.
+ * <p><strong>Settling a reservation is the second half of the primitive.</strong>
+ * The result of a successful reservation carries a {@code reservationId} and
+ * the {@code reservedTokens} it holds, which is the minimum a later operation
+ * needs to move a reservation from "reserved" to "actually used".
+ * {@link #reconcile} is that operation: it consumes the reservation and
+ * replaces the held amount with the tokens a provider actually reported, never
+ * clamping an over-reservation to the amount that was held. No release, refund,
+ * or expiry-based reclamation path exists beyond that, and nothing in this
+ * package decides when a provider's usage should be reported.
  */
 public interface GatewayTokenBudget {
 
@@ -102,4 +105,80 @@ public interface GatewayTokenBudget {
      */
     GatewayTokenBudgetReservation tryReserve(
             String actorSubject, Instant windowStart, long limit, long requestedTokens);
+
+    /**
+     * Settles one outstanding reservation against the tokens a provider
+     * actually reported, replacing held capacity with settled usage.
+     *
+     * <p><strong>Why this exists.</strong> A reservation is capacity held in
+     * <em>anticipation</em> of usage, so it is an upper bound that is normally
+     * wrong: a provider usually consumes fewer tokens than were held, and the
+     * unused remainder must go back or the actor is charged for capacity they
+     * never used. Provider usage is only known after the response, which is
+     * exactly when this operation runs.
+     *
+     * <p><strong>Accounting.</strong> The reservation is removed and the day's
+     * accounted total becomes
+     * <pre>
+     *     previousTotal - reservedTokens + actualTokens
+     * </pre>
+     * so reserving 100 and settling 80 leaves 80 accounted, settling 100 leaves
+     * 100, and settling 20 releases 80. The removed reservation is what makes
+     * this safe to run: the amount subtracted is the amount this reservation
+     * actually held, never a caller-supplied figure that could be wrong.
+     *
+     * <p><strong>Actual usage is never clamped to the reservation.</strong> If
+     * a provider reports more than was held, the extra is recorded as real
+     * usage and the reconciliation still succeeds. A request can legitimately
+     * overshoot a reservation — a longer prompt, a cached-miss, a model that
+     * spends more than expected — and silently capping the figure at the
+     * reservation would under-report what the actor was actually charged for.
+     * The consequence is intentional and is a post-provider accounting fact, not
+     * a reservation failure: the day's accounted total may exceed the configured
+     * limit, and <em>every subsequent</em> {@code tryReserve} for that actor and
+     * day is then rejected until the day rolls over. Overspending is therefore
+     * not preventable by a pre-request check alone; it is detected and contained
+     * afterwards. Reporting it any other way would hide it.
+     *
+     * <p><strong>Reservations are single-use.</strong> A successful
+     * reconciliation consumes the reservation, so a replayed settlement fails
+     * like any unknown id and can never double-count the same tokens.
+     *
+     * <p><strong>Reservations are actor-and-day scoped.</strong> An id is
+     * reachable only through its own actor's budget for its own day, so one
+     * actor cannot settle another's reservation even holding the id, and a
+     * yesterday's reservation cannot be settled into today's budget.
+     *
+     * <p><strong>Atomicity is the whole point.</strong> Implementations must
+     * locate the reservation, remove it, and adjust the accounted total as one
+     * indivisible operation, so a concurrent reservation can never be decided
+     * against a total mid-adjustment.
+     *
+     * <p><strong>Not wired into gateway traffic.</strong> No gateway code path
+     * calls this interface, so nothing settles in production and
+     * {@code tokensPerDay} remains unenforced.
+     *
+     * @param actorSubject verified JWT subject, never blank; trimmed exactly
+     *        like the rest of the policy package trims it
+     * @param windowStart the inclusive start of the UTC calendar day the
+     *        reservation was made in, never null and never a partial day
+     * @param reservationId the id returned by the
+     *        {@link GatewayTokenBudgetReservation} being settled, never blank
+     * @param actualTokens the tokens the provider actually reported, never
+     *        negative; zero is a legitimate reported value, and a value above
+     *        the reserved amount is recorded as-is rather than clamped
+     * @return the reconciliation outcome, never null
+     * @throws IllegalArgumentException when the actor is blank, the window
+     *         start is not a UTC day start, the reservation id is blank, or the
+     *         actual amount is negative
+     * @throws NullPointerException when the window start or the reservation id
+     *         is null
+     * @throws GatewayTokenBudgetReservationStateException when no such
+     *         outstanding reservation exists for this actor on this day,
+     *         including an already-reconciled one
+     * @throws GatewayTokenBudgetUnavailableException when the underlying store
+     *         could not answer
+     */
+    GatewayTokenBudgetReconciliation reconcile(
+            String actorSubject, Instant windowStart, String reservationId, long actualTokens);
 }

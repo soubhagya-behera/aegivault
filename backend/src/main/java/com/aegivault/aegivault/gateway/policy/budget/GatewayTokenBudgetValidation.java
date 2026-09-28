@@ -44,6 +44,30 @@ final class GatewayTokenBudgetValidation {
     }
 
     /**
+     * Validates one reconciliation attempt and returns the trimmed actor
+     * subject.
+     *
+     * @param actorSubject verified JWT subject, never blank
+     * @param windowStart inclusive UTC day start, never null and never partial
+     * @param reservationId the id of the reservation being settled, never blank
+     * @param actualTokens the provider-reported amount, never negative and
+     *        explicitly allowed to be zero
+     * @return the trimmed actor subject whose budget is adjusted
+     * @throws IllegalArgumentException when the actor is blank, the day start
+     *         is not midnight UTC, the reservation id is blank, or the actual
+     *         amount is negative
+     * @throws NullPointerException when the day start or reservation id is null
+     */
+    static String requireReconcilable(
+            String actorSubject, Instant windowStart, String reservationId, long actualTokens) {
+        String actor = requireActor(actorSubject);
+        requireDayStart(windowStart);
+        requireReservationId(reservationId);
+        requireActualTokens(actualTokens);
+        return actor;
+    }
+
+    /**
      * @param actorSubject verified JWT subject, never blank
      * @return the trimmed subject
      */
@@ -91,6 +115,33 @@ final class GatewayTokenBudgetValidation {
             // reservation while holding nothing, and a negative amount would
             // hand capacity back on every call.
             throw new IllegalArgumentException("requestedTokens must be positive");
+        }
+    }
+
+    /**
+     * @param reservationId the id of the reservation being settled, never null
+     *        and never blank
+     */
+    static void requireReservationId(String reservationId) {
+        if (reservationId == null) {
+            throw new NullPointerException("reservationId must not be null");
+        }
+        if (reservationId.isBlank()) {
+            // A blank id cannot name a reservation: letting it through would
+            // mean searching for an id no budget ever issued.
+            throw new IllegalArgumentException("reservationId must not be blank");
+        }
+    }
+
+    /**
+     * @param actualTokens the provider-reported amount, never negative
+     */
+    static void requireActualTokens(long actualTokens) {
+        if (actualTokens < 0L) {
+            // Zero is legitimate — a provider really can report no tokens — but
+            // a negative amount is not a measurement, and accepting one would
+            // hand capacity back on every call.
+            throw new IllegalArgumentException("actualTokens must not be negative");
         }
     }
 }

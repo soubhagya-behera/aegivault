@@ -865,11 +865,7 @@ the request result. A clean provider response returns as ALLOW with the
   here estimates it: there is no character-to-token conversion, no response-size
   guess, no max-token assumption, and no model-specific formula anywhere in the
   package. Deciding what a future request should reserve is a separate,
-  unanswered question. Reconciliation is likewise only a contract, not a flow: a
-  reservation id and the amount it holds are the minimum a later operation needs
-  to settle a reservation against real provider usage, and no settle, release, or
-  refund path exists yet — which is also why `usedTokens` is still zero
-  everywhere.
+  unanswered question.
   Two implementations sit behind the abstraction. `InMemoryGatewayTokenBudget`
   is process-local and gets atomicity from a **single
   `ConcurrentHashMap.compute` per attempt** keyed by actor *and* day, with the
@@ -900,6 +896,56 @@ the request result. A clean provider response returns as ALLOW with the
   state is read or written — a blank actor, a null or non-midnight-UTC window
   start, a non-positive limit, and a non-positive requested amount are all
   programming errors, not budget outcomes.
+  **Reservations can now be reconciled against actual provider usage**, via
+  `reconcile(actorSubject, windowStart, reservationId, actualTokens)`. A
+  reservation is held capacity, not a measurement, so settling it moves the day
+  from one to the other exactly as
+  `newAccountedTotal = existingAccountedTotal - reservedTokens + actualTokens`:
+  the reservation is **removed** from the day's reservation set and the
+  provider's real figure takes its place as settled usage, so `reserved 100,
+  actual 80` leaves the day owing 80 and `reserved 100, actual 20` releases 80
+  back into the day's capacity. The amount subtracted is always what *that
+  reservation* holds, read from the budget rather than supplied by the caller,
+  so a caller cannot credit the day with a release it never made.
+  **Actual usage is never clamped to the reservation.** Provider usage is a
+  post-provider accounting fact: if `reserved 100, actual 140`, the
+  reconciliation **succeeds** and the day records 140, because recording 100
+  would understate what the provider really cost. When that pushes the day's
+  total past the configured limit, the day is simply left overspent and
+  **every subsequent reservation is rejected** by the same capacity boundary as
+  always — the over-use is neither silently absorbed nor treated as a failure.
+  `actualTokens == 0` is **accepted**, not rejected: a provider can legitimately
+  report no tokens, so zero is a real measurement, whereas a negative amount is
+  impossible and would hand capacity back on every call.
+  **Reservations are single-use, and a reservation id names exactly one
+  reservation within one actor's day.** A successful reconciliation consumes
+  the reservation, so reconciling the same id again fails exactly like an
+  unknown id, and a duplicated or retried callback can never settle the same
+  tokens twice. An unknown, already-settled, or cross-actor/cross-day id is one
+  indistinguishable `GatewayTokenBudgetReservationStateException`, which is what
+  prevents one actor from settling another's reservation and prevents a caller
+  from probing whether an id exists somewhere else. That exception is
+  deliberately distinct from `GatewayTokenBudgetUnavailableException`: a bad or
+  absent reservation is a caller-state failure, while an unreachable or
+  unusable store is an infrastructure outage, and collapsing the two would make
+  an outage look like ordinary traffic. Its result is the minimal
+  `GatewayTokenBudgetReconciliation`, whose entire surface is the single `state`
+  of `RECONCILED` — no total, no remaining capacity, no limit, no actor, no day,
+  no Redis key, and no internal reservation state, so a settled amount can never
+  be read back out as a capacity oracle. Reconciliation keeps the same atomicity
+  guarantees: `IN_MEMORY` performs the lookup, the removal, and the usage
+  adjustment inside the **same single per-actor-and-day
+  `ConcurrentHashMap.compute`** a reservation uses — never a second compute for
+  one settlement — so a racing reservation sees either the state before the
+  settlement or the fully settled state after it, and `REDIS` does the whole
+  thing in **one Lua execution** that locates the reservation, returns before
+  any write when it is absent, and otherwise removes the field and adjusts the
+  total, deliberately not touching the TTL so the day's own expiry is
+  preserved. It is never a GET, a Java-side compare, and then an HDEL/INCR.
+  **This is still infrastructure only.** No gateway path calls `reconcile`, no
+  completion service or enforcement service references it, and nothing reserves
+  before a provider call or settles after one, so `tokensPerDay` remains
+  entirely unenforced and no provider request is ever rejected on token grounds.
   **This primitive is not wired into gateway traffic.** No gateway path calls
   it, no completion service or enforcement service references it, and it is not
   a Spring bean, so `tokensPerDay` remains entirely unenforced and live
