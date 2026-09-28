@@ -60,6 +60,25 @@ public final class AuditEventData {
     /** Resource type recorded on every gateway usage policy event. */
     public static final String GATEWAY_USAGE_POLICY_RESOURCE = "GATEWAY_USAGE_POLICY";
 
+    /**
+     * Event recorded after a gateway usage policy definition is created.
+     *
+     * <p>Deliberately distinct from
+     * {@link #GATEWAY_USAGE_POLICY_ALLOWED} /
+     * {@link #GATEWAY_USAGE_POLICY_REJECTED}: those are runtime enforcement
+     * decisions about one request, these record a change to the policy
+     * definition itself. A policy that no request ever consults still has a
+     * lifecycle, and reusing an enforcement event type would make "a
+     * definition was created" indistinguishable from "a quota check passed".
+     */
+    public static final String GATEWAY_USAGE_POLICY_CREATED = "GATEWAY_USAGE_POLICY_CREATED";
+
+    /** Event recorded after a gateway usage policy definition is updated. */
+    public static final String GATEWAY_USAGE_POLICY_UPDATED = "GATEWAY_USAGE_POLICY_UPDATED";
+
+    /** Event recorded after a gateway usage policy definition is deleted. */
+    public static final String GATEWAY_USAGE_POLICY_DELETED = "GATEWAY_USAGE_POLICY_DELETED";
+
     private AuditEventData() {
     }
 
@@ -142,6 +161,26 @@ public final class AuditEventData {
         Objects.requireNonNull(decision, "decision must not be null");
         Objects.requireNonNull(rejectedWindow, "rejectedWindow must not be null");
         return "{\"decision\":\"" + escape(decision) + "\",\"rejectedWindow\":\"" + escape(rejectedWindow) + "\"}";
+    }
+
+    /**
+     * Metadata for a gateway usage policy lifecycle change.
+     *
+     * <p>Intentionally the smallest document that still proves the change
+     * happened: one closed-vocabulary action code. The ledger must evidence
+     * <em>that</em> a policy changed, not copy the policy, so the label,
+     * description, request/token limits, enabled state, owner subject, and
+     * the raw request body are all deliberately absent — they are already
+     * recoverable from the policy row itself, and copying them would widen
+     * the blast radius of the ledger for no audit value. The actor is never
+     * repeated here either: the ledger stores it as its own column.
+     *
+     * @param action the closed-vocabulary action code
+     * @return {@code {"action":"..."}}, fixed field order, one field only
+     */
+    public static String gatewayUsagePolicyLifecycle(String action) {
+        Objects.requireNonNull(action, "action must not be null");
+        return "{\"action\":\"" + escape(action) + "\"}";
     }
 
     private static String codes(List<String> codes) {

@@ -892,6 +892,38 @@ the request result. A clean provider response returns as ALLOW with the
   enforcement**: `tokensPerDay` is still unenforced, and a policy declaring
   only `tokensPerDay` is admitted without consuming request capacity (and is
   recorded with an empty `enforcedWindows`).
+  **Policy definition changes are auditable too, under their own event
+  types.** A lifecycle mutation and a runtime enforcement decision are
+  different facts, so the ledger records `GATEWAY_USAGE_POLICY_CREATED`,
+  `GATEWAY_USAGE_POLICY_UPDATED`, and `GATEWAY_USAGE_POLICY_DELETED` for
+  changes to the policy row and never reuses
+  `GATEWAY_USAGE_POLICY_ALLOWED` / `GATEWAY_USAGE_POLICY_REJECTED`, which
+  describe a quota decision about one request. All of them share the resource
+  type `GATEWAY_USAGE_POLICY` and the policy UUID as the resource id, so a
+  single policy's whole history can be followed by id. The actor is the
+  verified JWT subject, stored in the ledger's own column and never repeated
+  into the event data. The metadata is **intentionally minimal** and
+  deterministic — one closed-vocabulary field, `{"action":"CREATED"}` /
+  `{"action":"UPDATED"}` / `{"action":"DELETED"}` — because the ledger must
+  prove that the policy changed, not copy it: no label, description,
+  request/token limits, enabled state, `ownerSubject`, raw request body,
+  Redis key, counter, usage data, prompt/response content, PII, or secret
+  ever enters an event.
+  The append happens strictly **after** the mutation is durable (the service
+  transaction has committed), so a rejected create or a foreign/missing
+  update or delete appends nothing at all — there is never an event for an
+  operation that ultimately failed. If the append then fails, the endpoint
+  fails closed as HTTP 500 `Unable to record gateway policy audit event.`
+  (no SQL detail, hash, actor, policy id, or exception text). That is
+  **fail-closed but not compensating**: the mutation that already committed is
+  deliberately *not* rolled back, and a deleted policy is never recreated to
+  make its audit entry succeed — there is no compensation transaction. The
+  honest consequence is a real failure window: a committed mutation may exist
+  with no ledger entry, and the 500 is how that gap is reported. Runtime
+  policy-enforcement auditing (`GATEWAY_USAGE_POLICY_ALLOWED` /
+  `GATEWAY_USAGE_POLICY_REJECTED`) and inspection auditing
+  (`AI_GATEWAY_INSPECTION_ALLOWED` / `AI_GATEWAY_INSPECTION_BLOCKED`) are
+  unchanged by any of this.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking

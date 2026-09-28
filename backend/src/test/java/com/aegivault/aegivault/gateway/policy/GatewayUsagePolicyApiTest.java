@@ -10,9 +10,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.aegivault.aegivault.audit.AuditEventData;
+import com.aegivault.aegivault.audit.AuditLedgerEntry;
+import com.aegivault.aegivault.audit.AuditLedgerEntryRepository;
 import com.aegivault.aegivault.auth.RegisterRequest;
 import com.aegivault.aegivault.identity.UserRepository;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -46,6 +50,23 @@ class GatewayUsagePolicyApiTest {
 
     @Autowired
     private UserRepository users;
+
+    @Autowired
+    private AuditLedgerEntryRepository ledger;
+
+    /** Real lifecycle entries about one policy, in the order the ledger stored them. */
+    private List<AuditLedgerEntry> lifecycleEntriesFor(UUID policyId, String eventType) {
+        return ledger.findAll().stream()
+                .filter(entry -> eventType.equals(entry.getEventType()))
+                .filter(entry -> policyId.equals(entry.getResourceId()))
+                .toList();
+    }
+
+    private long lifecycleEntryCount(String eventType) {
+        return ledger.findAll().stream()
+                .filter(entry -> eventType.equals(entry.getEventType()))
+                .count();
+    }
 
     private static String email() {
         return "gateway-usage-policy-" + UUID.randomUUID() + "@example.com";
@@ -379,5 +400,135 @@ class GatewayUsagePolicyApiTest {
         mvc.perform(get("/api/gateway/policies").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(2));
+    }
+
+    @Test
+    void creatingAPolicyAppendsExactlyOneCreatedEventToTheRealLedger() throws Exception {
+        String userEmail = email();
+        String token = register(userEmail);
+        String actor = actorFor(userEmail);
+
+        String id = create(token, "audited-create");
+
+        List<AuditLedgerEntry> entries =
+                lifecycleEntriesFor(UUID.fromString(id), AuditEventData.GATEWAY_USAGE_POLICY_CREATED);
+        assertThat(entries).hasSize(1);
+        AuditLedgerEntry entry = entries.get(0);
+        assertThat(entry.getEventData()).isEqualTo("{\"action\":\"CREATED\"}");
+        assertThat(entry.getResourceType()).isEqualTo("GATEWAY_USAGE_POLICY");
+        assertThat(entry.getResourceId()).isEqualTo(UUID.fromString(id));
+        // The actor lives in the ledger's own column and nowhere else.
+        assertThat(entry.getActorSubject()).isEqualTo(actor);
+        assertThat(entry.getEventData()).doesNotContain(actor);
+    }
+
+    @Test
+    void updatingAPolicyAppendsExactlyOneUpdatedEvent() throws Exception {
+        String token = register(email());
+        String id = create(token, "before");
+
+        mvc.perform(put("/api/gateway/policies/" + id)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("after")))
+                .andExpect(status().isOk());
+
+        var created =
+                lifecycleEntriesFor(UUID.fromString(id), AuditEventData.GATEWAY_USAGE_POLICY_CREATED);
+        var updated =
+                lifecycleEntriesFor(UUID.fromString(id), AuditEventData.GATEWAY_USAGE_POLICY_UPDATED);
+        assertThat(created).hasSize(1);
+        assertThat(updated).hasSize(1);
+        assertThat(updated.get(0).getEventData()).isEqualTo("{\"action\":\"UPDATED\"}");
+    }
+
+    @Test
+    void deletingAPolicyAppendsExactlyOneDeletedEvent() throws Exception {
+        String token = register(email());
+        String id = create(token, "doomed");
+
+        mvc.perform(delete("/api/gateway/policies/" + id).header("Authorization", "Bearer " + token))
+                .andExpect(status().isNoContent());
+
+        var deleted =
+                lifecycleEntriesFor(UUID.fromString(id), AuditEventData.GATEWAY_USAGE_POLICY_DELETED);
+        assertThat(deleted).hasSize(1);
+        assertThat(deleted.get(0).getEventData()).isEqualTo("{\"action\":\"DELETED\"}");
+        assertThat(deleted.get(0).getResourceId()).isEqualTo(UUID.fromString(id));
+    }
+
+    @Test
+    void aRejectedPolicyWriteAppendsNoLifecycleEvent() throws Exception {
+        String token = register(email());
+        long createdBefore = lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_CREATED);
+
+        mvc.perform(post("/api/gateway/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"constrains-nothing\"}"))
+                .andExpect(status().isBadRequest());
+
+        // The mutation never happened, so nothing is claimed to have happened.
+        assertThat(lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_CREATED))
+                .isEqualTo(createdBefore);
+    }
+
+    @Test
+    void aForeignOrMissingPolicyWriteAppendsNoLifecycleEvent() throws Exception {
+        String firstToken = register(email());
+        String secondToken = register(email());
+        String id = create(firstToken, "private");
+        long updatedBefore = lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_UPDATED);
+        long deletedBefore = lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_DELETED);
+
+        mvc.perform(put("/api/gateway/policies/" + id)
+                        .header("Authorization", "Bearer " + secondToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("hijacked")))
+                .andExpect(status().isNotFound());
+        mvc.perform(delete("/api/gateway/policies/" + id)
+                        .header("Authorization", "Bearer " + secondToken))
+                .andExpect(status().isNotFound());
+        mvc.perform(put("/api/gateway/policies/" + UUID.randomUUID())
+                        .header("Authorization", "Bearer " + secondToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("ghost")))
+                .andExpect(status().isNotFound());
+        mvc.perform(delete("/api/gateway/policies/" + UUID.randomUUID())
+                        .header("Authorization", "Bearer " + secondToken))
+                .andExpect(status().isNotFound());
+
+        // Foreign and missing are indistinguishable, and neither is audited:
+        // no change occurred, so there is no change to evidence.
+        assertThat(lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_UPDATED))
+                .isEqualTo(updatedBefore);
+        assertThat(lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_DELETED))
+                .isEqualTo(deletedBefore);
+    }
+
+    @Test
+    void lifecycleEntriesCopyNoPolicyContentIntoTheLedger() throws Exception {
+        String token = register(email());
+        String id = create(token, "confidential-label");
+
+        mvc.perform(put("/api/gateway/policies/" + id)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("confidential-label")))
+                .andExpect(status().isOk());
+
+        for (AuditLedgerEntry entry : lifecycleEntriesFor(
+                UUID.fromString(id), AuditEventData.GATEWAY_USAGE_POLICY_UPDATED)) {
+            // The ledger proves the policy changed; it is not a second copy of
+            // the policy, and it holds no request body, counter, or content.
+            assertThat(entry.getEventData())
+                    .isEqualTo("{\"action\":\"UPDATED\"}")
+                    .doesNotContain("confidential-label")
+                    .doesNotContain("monthly cap")
+                    .doesNotContain("1000000")
+                    .doesNotContain("enabled")
+                    .doesNotContain("ownerSubject")
+                    .doesNotContain("policy-counter");
+        }
     }
 }

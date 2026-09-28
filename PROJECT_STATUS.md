@@ -548,6 +548,33 @@
      service, never on the policy repository, the counter, a counter
      implementation, Redis, or the evaluator. Existing global rate limiting and
      existing inspection audit behavior are otherwise unchanged.
+     **Gateway usage policy lifecycle mutations are now auditable, under
+     their own event types**: `GATEWAY_USAGE_POLICY_CREATED` /
+     `GATEWAY_USAGE_POLICY_UPDATED` / `GATEWAY_USAGE_POLICY_DELETED` for changes
+     to the policy row, deliberately separate from the runtime enforcement
+     events `GATEWAY_USAGE_POLICY_ALLOWED` / `GATEWAY_USAGE_POLICY_REJECTED`
+     (a quota decision about one request) — a definition change is not an
+     enforcement decision and never reuses its name. All of them share resource
+     type `GATEWAY_USAGE_POLICY` and the policy UUID as the resource id, and
+     the actor is the authenticated JWT subject, stored in the ledger's own
+     column and never repeated into the event data. The metadata is
+     **intentionally minimal** and deterministic — one closed-vocabulary
+     field, `{"action":"CREATED"}` / `{"action":"UPDATED"}` /
+     `{"action":"DELETED"}` — because the ledger must prove that the policy
+     changed, not copy it: no policy name, description, request/token limits,
+     enabled state, `ownerSubject`, raw request body, Redis key, counter,
+     usage data, prompt/response content, PII, or secret. Each event is
+     appended only **after** the corresponding mutation is durable and only on
+     success, so a validation failure or a foreign/missing policy appends
+     nothing. An append failure is **fail-closed** as HTTP 500
+     `Unable to record gateway policy audit event.` with no SQL detail, hash,
+     actor, policy id, or exception text — and it is fail-closed **without
+     rolling the mutation back**: no compensation transaction exists, a deleted
+     policy is never recreated to make its event succeed, and the honest
+     consequence is a real failure window in which a committed mutation exists
+     with no ledger entry. `AI_GATEWAY_INSPECTION_ALLOWED` /
+     `AI_GATEWAY_INSPECTION_BLOCKED` and the runtime policy-enforcement events
+     are unchanged.
 
 
 

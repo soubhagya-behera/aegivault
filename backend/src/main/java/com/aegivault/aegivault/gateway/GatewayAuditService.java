@@ -8,6 +8,7 @@ import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementResul
 import com.aegivault.aegivault.pii.PiiType;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -31,6 +32,15 @@ import org.springframework.stereotype.Service;
  * {@link #recordUsagePolicy(String, GatewayUsagePolicyEnforcementResult)}
  * under their own event types and resource type, because a quota decision and
  * a security inspection are different decisions about the same request.
+ *
+ * <p>Policy <em>definition</em> changes are recorded separately again, by
+ * {@link #recordPolicyCreated}, {@link #recordPolicyUpdated}, and
+ * {@link #recordPolicyDeleted}. Those are lifecycle events about the policy
+ * row, never enforcement decisions about a request, so they never reuse
+ * {@link AuditEventData#GATEWAY_USAGE_POLICY_ALLOWED} or
+ * {@link AuditEventData#GATEWAY_USAGE_POLICY_REJECTED}. They share only the
+ * resource type, so every entry about a policy — however caused — points at
+ * the same policy UUID.
  */
 @Service
 @RequiredArgsConstructor
@@ -95,6 +105,71 @@ public class GatewayAuditService {
         } catch (RuntimeException ex) {
             throw new GatewayUsagePolicyAuditException(ex);
         }
+    }
+
+    /**
+     * Records one gateway usage policy <em>lifecycle</em> change. Exactly one
+     * entry per applied create, update, or delete, written only after the
+     * mutation has already succeeded.
+     *
+     * <p><strong>Callers must invoke this after the mutation is durable.</strong>
+     * This is not a transaction participant: the append is its own
+     * transaction, so a failure here does not and cannot undo the mutation
+     * that already committed. The consequence is stated honestly rather than
+     * papered over — a mutation whose event could not be appended leaves a
+     * durable change with no ledger entry, and the caller surfaces that as a
+     * fail-closed 500. There is deliberately no compensation transaction: a
+     * delete is never undone to make its audit event succeed.
+     *
+     * <p>The metadata is a single closed-vocabulary action code, because the
+     * ledger must prove that the policy changed, not copy the policy. Never
+     * the policy name, description, request or token limits, enabled state,
+     * owner subject, raw request body, Redis key, counter, usage data,
+     * prompt/response content, PII, or secret.
+     *
+     * @param eventType one of {@link AuditEventData#GATEWAY_USAGE_POLICY_CREATED},
+     *        {@link AuditEventData#GATEWAY_USAGE_POLICY_UPDATED}, or
+     *        {@link AuditEventData#GATEWAY_USAGE_POLICY_DELETED}, never null
+     * @param action the matching closed-vocabulary action code, never null
+     * @param actorSubject the authenticated JWT subject, never null; stored by
+     *        the ledger itself and never repeated into the event data
+     * @param policyId the mutated policy UUID, never null
+     * @throws GatewayUsagePolicyAuditException when the append fails
+     */
+    public void recordPolicyLifecycle(
+            String eventType, String action, String actorSubject, UUID policyId) {
+        Objects.requireNonNull(eventType, "eventType must not be null");
+        Objects.requireNonNull(action, "action must not be null");
+        Objects.requireNonNull(actorSubject, "actorSubject must not be null");
+        Objects.requireNonNull(policyId, "policyId must not be null");
+        try {
+            audit.append(
+                    eventType,
+                    actorSubject,
+                    AuditEventData.GATEWAY_USAGE_POLICY_RESOURCE,
+                    policyId,
+                    AuditEventData.gatewayUsagePolicyLifecycle(action));
+        } catch (RuntimeException ex) {
+            throw new GatewayUsagePolicyAuditException(ex);
+        }
+    }
+
+    /** Records that a gateway usage policy definition was created. */
+    public void recordPolicyCreated(String actorSubject, UUID policyId) {
+        recordPolicyLifecycle(
+                AuditEventData.GATEWAY_USAGE_POLICY_CREATED, "CREATED", actorSubject, policyId);
+    }
+
+    /** Records that a gateway usage policy definition was updated. */
+    public void recordPolicyUpdated(String actorSubject, UUID policyId) {
+        recordPolicyLifecycle(
+                AuditEventData.GATEWAY_USAGE_POLICY_UPDATED, "UPDATED", actorSubject, policyId);
+    }
+
+    /** Records that a gateway usage policy definition was deleted. */
+    public void recordPolicyDeleted(String actorSubject, UUID policyId) {
+        recordPolicyLifecycle(
+                AuditEventData.GATEWAY_USAGE_POLICY_DELETED, "DELETED", actorSubject, policyId);
     }
 
     /**
