@@ -946,6 +946,32 @@ the request result. A clean provider response returns as ALLOW with the
   completion service or enforcement service references it, and nothing reserves
   before a provider call or settles after one, so `tokensPerDay` remains
   entirely unenforced and no provider request is ever rejected on token grounds.
+  **The input to a future reservation is now defined, and is deliberately
+  caller-supplied.** `GatewayTokenBudgetReservationRequest` is a one-field
+  immutable record carrying the **requested reservation amount**: the number of
+  tokens a caller explicitly asks the budget to hold, and nothing else. It adds
+  no second input such as a prompt length, model name, or output cap, so there
+  is no way to express an implicit amount through it. The amount is validated
+  once, at construction: it must be present and strictly positive, with zero and
+  negative figures refused as contradictions rather than small reservations, and
+  an absent amount rejected distinctly from a zero one. It is **not** actual
+  provider usage — that is still obtained only after a provider response and is
+  already accounted for by `reconcile` — and it is **not** an estimate, an
+  inferred token count, a response size, a character count, or a byte count.
+  Nothing derives it: there is no tokenizer, no character- or byte-to-token
+  conversion, no model-specific formula, no pricing or billing table, no
+  max-token assumption, and no heuristic or fallback anywhere. This is a
+  standing decision rather than a gap — a fabricated token count is a number the
+  system cannot stand behind, and a silently wrong one would make the budget
+  itself untrustworthy, so the amount stays explicit and the question of what a
+  real request should reserve remains open until it can be answered honestly.
+  The type is a **standalone contract**: it is not a parameter of
+  `GatewayTokenBudget`, no implementation accepts it, and no other production
+  type in the package references it, so it is not yet a call path and performs
+  no I/O. It adds no decision or enforcement state — no `ALLOW`/`REJECTED`
+  budget response, no HTTP status, and no token policy outcome — because
+  choosing what a request reserves and deciding what a rejection means are
+  decisions for the enforcement layer, not for this input.
   **This primitive is not wired into gateway traffic.** No gateway path calls
   it, no completion service or enforcement service references it, and it is not
   a Spring bean, so `tokensPerDay` remains entirely unenforced and live

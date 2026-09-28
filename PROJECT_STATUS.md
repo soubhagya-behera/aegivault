@@ -711,6 +711,29 @@
   service, provider path, or audit code references this package, nothing
   reserves before a provider call or settles after one, no request is ever
   rejected on token grounds, and release/refund is still not implemented.
+  The **input to a future reservation** is now defined as a standalone
+  contract, `GatewayTokenBudgetReservationRequest`: a one-field immutable
+  record carrying the **requested reservation amount** — the number of tokens
+  a caller explicitly asks the budget to hold, and nothing else, with no
+  second input such as a prompt length, model name, or output cap. The amount
+  must be present and strictly positive; zero and negative figures are
+  refused as contradictions rather than small reservations, and an absent
+  amount is rejected distinctly from a zero one. It is **not** actual
+  provider usage (still obtained only after a provider response, and already
+  accounted for by `reconcile`), and it is **not** an estimate, an inferred
+  token count, a response size, a character count, or a byte count. **The
+  system intentionally does not estimate or infer this amount**: there is no
+  tokenizer, no character- or byte-to-token conversion, no model-specific
+  formula, no pricing table, no max-token assumption, and no heuristic or
+  fallback — a fabricated count is a number the system cannot stand behind,
+  and a silently wrong one would make the budget itself untrustworthy. The
+  type is not wired to anything: it is not a parameter of
+  `GatewayTokenBudget`, no implementation accepts it, and no other production
+  type in the package references it, so it is not yet a call path. No
+  decision or enforcement state was added with it — no `ALLOW`/`REJECTED`
+  budget response, no HTTP status, and no token policy outcome — since
+  choosing what a request reserves and deciding what a rejection means belong
+  to the enforcement layer. `tokensPerDay` remains unenforced.
 
 ## Next planned step
 
