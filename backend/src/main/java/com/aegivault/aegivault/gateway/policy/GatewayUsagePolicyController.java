@@ -47,6 +47,14 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * committed: a rejected request (validation, or a foreign/missing id) appends
  * nothing, and an append failure is a fail-closed 500 that reports the
  * missing evidence without undoing the change that already committed.
+ *
+ * <p><strong>One read-only history endpoint.</strong>
+ * {@code GET /api/gateway/policies/{policyId}/audit} returns the caller's own
+ * audit history for one policy — the newest 100 gateway usage policy entries,
+ * event type, resource id, safe event data, and timestamp — and nothing
+ * else. It reads the ledger, never the policy row, so a deleted policy still
+ * has its history; it never writes, and it exposes no chain hash, sequence
+ * number, or actor subject.
  */
 @RestController
 @RequestMapping("/api/gateway/policies")
@@ -56,6 +64,8 @@ public class GatewayUsagePolicyController {
     private final GatewayUsagePolicyService policies;
 
     private final GatewayAuditService audit;
+
+    private final GatewayUsagePolicyAuditQueryService history;
 
     /**
      * Creates one policy; {@code Location} points at the matching GET.
@@ -131,6 +141,24 @@ public class GatewayUsagePolicyController {
     public void delete(@AuthenticationPrincipal Jwt jwt, @PathVariable UUID policyId) {
         policies.delete(jwt.getSubject(), policyId);
         audit.recordPolicyDeleted(jwt.getSubject(), policyId);
+    }
+
+    /**
+     * Returns the authenticated owner's audit history for one policy: at most
+     * the 100 newest gateway usage policy entries, newest first.
+     *
+     * <p>Strictly read-only. The actor comes only from the verified JWT
+     * subject and is applied in the query alongside the resource id, so one
+     * actor can never read another's history. The policy row is never read,
+     * which is why a deleted policy still answers with its history and why
+     * an unknown or foreign id is simply an empty 200 rather than a
+     * 404 that would confirm whether the policy exists.
+     */
+    @GetMapping("/{policyId}/audit")
+    public GatewayUsagePolicyAuditHistoryResponse auditHistory(
+            @AuthenticationPrincipal Jwt jwt, @PathVariable UUID policyId) {
+        return GatewayUsagePolicyAuditHistoryResponse.of(
+                history.historyFor(jwt.getSubject(), policyId));
     }
 
     @ExceptionHandler(GatewayUsagePolicyNotFoundException.class)

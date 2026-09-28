@@ -531,4 +531,157 @@ class GatewayUsagePolicyApiTest {
                     .doesNotContain("policy-counter");
         }
     }
+
+    @Test
+    void theOwnerCanReadTheirPolicyAuditHistoryOverHttp() throws Exception {
+        String userEmail = email();
+        String token = register(userEmail);
+        String actor = actorFor(userEmail);
+        String id = create(token, "history-subject");
+
+        mvc.perform(put("/api/gateway/policies/" + id)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createBody("history-subject")))
+                .andExpect(status().isOk());
+
+        MvcResult result = mvc.perform(get("/api/gateway/policies/" + id + "/audit")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode entries = objectMapper.readTree(result.getResponse().getContentAsString()).get("entries");
+        assertThat(entries).isNotNull();
+        assertThat(entries).hasSize(2);
+        // Newest first, and only this owner's policy events.
+        assertThat(entries.get(0).get("eventType").asText())
+                .isEqualTo(AuditEventData.GATEWAY_USAGE_POLICY_UPDATED);
+        assertThat(entries.get(0).get("eventData").asText()).isEqualTo("{\"action\":\"UPDATED\"}");
+        assertThat(entries.get(1).get("eventType").asText())
+                .isEqualTo(AuditEventData.GATEWAY_USAGE_POLICY_CREATED);
+        assertThat(entries.get(0).get("resourceId").asText()).isEqualTo(id);
+        assertThat(entries.get(0).get("createdAt").asText()).isNotBlank();
+        // Exactly the four safe fields: no hashes, no sequence number, no actor.
+        assertThat(new ArrayList<>(entries.get(0).propertyNames()))
+                .containsExactlyInAnyOrder("eventType", "resourceId", "eventData", "createdAt");
+        assertThat(result.getResponse().getContentAsString())
+                .doesNotContain(actor)
+                .doesNotContain("entryHash")
+                .doesNotContain("previousHash")
+                .doesNotContain("sequenceNumber");
+    }
+
+    @Test
+    void aDeletedPolicyStillHasAnAuditableHistory() throws Exception {
+        String token = register(email());
+        String id = create(token, "history-then-deleted");
+
+        mvc.perform(delete("/api/gateway/policies/" + id).header("Authorization", "Bearer " + token))
+                .andExpect(status().isNoContent());
+
+        // The policy row is gone, and the ledger still answers.
+        mvc.perform(get("/api/gateway/policies/" + id).header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/gateway/policies/" + id + "/audit")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.entries[0].eventType")
+                        .value(AuditEventData.GATEWAY_USAGE_POLICY_DELETED));
+    }
+
+    @Test
+    void anotherActorsPolicyHistoryIsEmpty() throws Exception {
+        String firstToken = register(email());
+        String secondToken = register(email());
+        String id = create(firstToken, "history-private");
+
+        // An empty 200 rather than a 404, so the response never confirms that
+        // someone else's policy exists.
+        mvc.perform(get("/api/gateway/policies/" + id + "/audit")
+                        .header("Authorization", "Bearer " + secondToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.entries").isEmpty());
+    }
+
+    @Test
+    void anUnknownPolicyHistoryIsEmpty() throws Exception {
+        String token = register(email());
+
+        mvc.perform(get("/api/gateway/policies/" + UUID.randomUUID() + "/audit")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.entries").isEmpty());
+    }
+
+    @Test
+    void thePolicyHistoryEndpointRequiresAuthentication() throws Exception {
+        mvc.perform(get("/api/gateway/policies/" + UUID.randomUUID() + "/audit"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void thePolicyHistoryIgnoresAnyClientSuppliedActor() throws Exception {
+        String userEmail = email();
+        String token = register(userEmail);
+        String actor = actorFor(userEmail);
+        String otherToken = register(email());
+        String id = create(token, "history-actor-scope");
+
+        // A spoofed actorSubject cannot widen the read: the JWT subject wins,
+        // so the caller still sees only their own history.
+        mvc.perform(get("/api/gateway/policies/" + id + "/audit")
+                        .header("Authorization", "Bearer " + otherToken)
+                        .param("actorSubject", actor))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.entries").isEmpty());
+    }
+
+    @Test
+    void thePolicyHistoryExcludesUnrelatedAndInspectionEvents() throws Exception {
+        String token = register(email());
+        String id = create(token, "history-filtered");
+
+        // An inspected completion against the same policy writes an
+        // inspection event too; it must not appear in the policy history.
+        mvc.perform(post("/api/gateway/complete")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"local-test-model\",\"content\":\"summarize revenue.\"}"))
+                .andExpect(status().isOk());
+
+        MvcResult result = mvc.perform(get("/api/gateway/policies/" + id + "/audit")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String body = result.getResponse().getContentAsString();
+        assertThat(body)
+                .doesNotContain(AuditEventData.GATEWAY_INSPECTION_ALLOWED)
+                .doesNotContain(AuditEventData.GATEWAY_INSPECTION_BLOCKED)
+                .doesNotContain("SANITIZATION_RUN");
+        for (JsonNode entry : objectMapper.readTree(body).get("entries")) {
+            assertThat(entry.get("eventType").asText()).startsWith("GATEWAY_USAGE_POLICY_");
+        }
+    }
+
+    @Test
+    void thePolicyHistoryReadIsReadOnly() throws Exception {
+        String token = register(email());
+        String id = create(token, "history-read-only");
+        long createdBefore = lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_CREATED);
+        long updatedBefore = lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_UPDATED);
+
+        mvc.perform(get("/api/gateway/policies/" + id + "/audit")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/gateway/policies/" + id + "/audit")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk());
+
+        // Reading history appends nothing: the ledger is not written to.
+        assertThat(lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_CREATED))
+                .isEqualTo(createdBefore);
+        assertThat(lifecycleEntryCount(AuditEventData.GATEWAY_USAGE_POLICY_UPDATED))
+                .isEqualTo(updatedBefore);
+    }
 }

@@ -574,7 +574,29 @@
      consequence is a real failure window in which a committed mutation exists
      with no ledger entry. `AI_GATEWAY_INSPECTION_ALLOWED` /
      `AI_GATEWAY_INSPECTION_BLOCKED` and the runtime policy-enforcement events
-     are unchanged.
+     are unchanged. **Policy audit history is now queryable by the
+     authenticated owner** via `GET /api/gateway/policies/{policyId}/audit`:
+     the caller's own history for one policy, `{"entries":[{eventType,
+     resourceId, eventData, createdAt}]}`, newest first and **bounded to 100
+     entries** (the bound is applied in the database query, never by trimming
+     in Java; there is no pagination). The read is owner-scoped by JWT subject
+     in the same query as the resource id — never by resource id alone — so
+     there is no cross-user reporting and no ADMIN bypass. **History works
+     even after the policy is deleted**, because the query reads the ledger
+     and never the policy table: the ledger is the historical record. A
+     foreign or unknown policy id is an empty `200` rather than a `404`, so
+     the endpoint cannot be used to probe for someone else's policy. Only
+     policy-specific events are returned — the three lifecycle types and the
+     two runtime enforcement types — and inspection and unrelated events are
+     excluded by the query itself. `eventData` comes back verbatim, never
+     enriched with a policy name, description, limit, enabled state, owner,
+     usage, counter, Redis key, prompt, provider response, PII, or secret,
+     and historical policy state is never reconstructed from current CRUD
+     data; no chain hash, sequence number, actor subject, or internal id is
+     exposed. The query is strictly read-only, the ledger stays append-only,
+     and **cryptographic verification remains a separate concern** —
+     `GET /api/audit/verify` is unchanged. No token-budget or enforcement
+     behavior is added: `tokensPerDay` remains unenforced.
 
 
 

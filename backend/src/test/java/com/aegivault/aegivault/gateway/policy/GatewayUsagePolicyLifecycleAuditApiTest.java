@@ -3,6 +3,7 @@ package com.aegivault.aegivault.gateway.policy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -14,15 +15,18 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.aegivault.aegivault.audit.AuditEventData;
+import com.aegivault.aegivault.audit.AuditLedgerEntryRepository;
 import com.aegivault.aegivault.audit.AuditLedgerService;
 import com.aegivault.aegivault.gateway.GatewayAuditService;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -71,10 +75,25 @@ class GatewayUsagePolicyLifecycleAuditApiTest {
     void setup() {
         policies = mock(GatewayUsagePolicyService.class);
         ledger = mock(AuditLedgerService.class);
+        // The read-only history dependency is the real query service over the
+        // same mocked ledger, so mutations and reads are both exercised here
+        // without a Spring context or a database.
         mvc = MockMvcBuilders
-                .standaloneSetup(new GatewayUsagePolicyController(policies, new GatewayAuditService(ledger)))
+                .standaloneSetup(new GatewayUsagePolicyController(
+                        policies,
+                        new GatewayAuditService(ledger),
+                        new GatewayUsagePolicyAuditQueryService(ledgerRepository())))
                 .setCustomArgumentResolvers(authenticatedJwt())
                 .build();
+    }
+
+    /** The repository seam behind the real query service. */
+    private AuditLedgerEntryRepository ledgerRepository() {
+        AuditLedgerEntryRepository repository = mock(AuditLedgerEntryRepository.class);
+        when(repository.findTop100ByResourceTypeAndResourceIdAndActorSubjectAndEventTypeInOrderByCreatedAtDescSequenceNumberDesc(
+                        anyString(), any(), anyString(), anyList()))
+                .thenReturn(List.of());
+        return repository;
     }
 
     /** Standalone stand-in for the JWT authentication principal (no security filter chain here). */

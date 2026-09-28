@@ -924,6 +924,37 @@ the request result. A clean provider response returns as ALLOW with the
   `GATEWAY_USAGE_POLICY_REJECTED`) and inspection auditing
   (`AI_GATEWAY_INSPECTION_ALLOWED` / `AI_GATEWAY_INSPECTION_BLOCKED`) are
   unchanged by any of this.
+  **Policy audit history is now queryable by the authenticated owner.**
+  `GET /api/gateway/policies/{policyId}/audit` returns the caller's own
+  history for one policy as `{"entries":[{"eventType","resourceId",
+  "eventData","createdAt"}]}`, at most the newest **100** entries, newest
+  first (`createdAt` descending, then `sequenceNumber` descending). One
+  derived repository query does the whole job — filter on resource type,
+  resource id, **and** the JWT actor subject, restrict the event types, order
+  deterministically, and apply the 100-entry bound database-side so an
+  unbounded history is never loaded into Java. The actor filter is mandatory
+  because the resource id comes from the URL: there is no by-resource-id-only
+  read, no ADMIN bypass, and no cross-user reporting.
+  **History works even after the policy is deleted**, because the query reads
+  only the ledger and never the policy table — the ledger, not the policy
+  row, is the historical record. A foreign or unknown policy id is an empty
+  `200`, not a `404`, so the endpoint cannot be used to probe whether
+  someone else's policy exists.
+  Only policy-specific events come back: the three lifecycle types and the
+  two runtime enforcement types. Inspection events
+  (`AI_GATEWAY_INSPECTION_ALLOWED` / `_BLOCKED`) and every unrelated event
+  are excluded by the query itself. `eventData` is returned **verbatim** as
+  the policy audit events wrote it — the layer never enriches a record with a
+  policy name, description, limit, enabled state, owner, current usage,
+  counter, Redis key, prompt, provider response, PII, or secret, and never
+  reconstructs historical policy state from current CRUD data.
+  Each entry exposes only those four safe fields: the chain `sequenceNumber`,
+  `previousHash`, `entryHash`, the `actorSubject`, and internal database
+  identifiers are all withheld. **Cryptographic verification remains a
+  separate concern** — `GET /api/audit/verify` is unchanged, and this
+  endpoint is a scoped read projection, not a verifier. There is no
+  pagination, and this is still **not token-budget enforcement**:
+  `tokensPerDay` remains unenforced and no enforcement behavior changed.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
