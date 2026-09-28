@@ -33,7 +33,7 @@ class GatewayUsagePolicyRepositoryTest {
     private EntityManager entities;
 
     private static GatewayUsagePolicy policy(String owner, String name) {
-        return new GatewayUsagePolicy(owner, name, null, 60L, null, null, true);
+        return new GatewayUsagePolicy(owner, name, null, 60L, null, null, null, true);
     }
 
     private GatewayUsagePolicy stored(String owner, String name) {
@@ -53,8 +53,7 @@ class GatewayUsagePolicyRepositoryTest {
 
     @Test
     void migratesMapsAndRoundTripsAPolicy() {
-        UUID id = policies.saveAndFlush(new GatewayUsagePolicy(
-                        "owner-1", "team-default", "monthly cap", 60L, 10000L, 500000L, true))
+        UUID id = policies.saveAndFlush(new GatewayUsagePolicy("owner-1", "team-default", "monthly cap", 60L, 10000L, 500000L, 1L, true))
                 .getId();
         entities.clear();
 
@@ -66,9 +65,210 @@ class GatewayUsagePolicyRepositoryTest {
         assertThat(found.getRequestsPerMinute()).isEqualTo(60L);
         assertThat(found.getRequestsPerDay()).isEqualTo(10000L);
         assertThat(found.getTokensPerDay()).isEqualTo(500000L);
+        assertThat(found.getReservationTokensPerRequest()).isEqualTo(1L);
         assertThat(found.isEnabled()).isTrue();
         assertThat(found.getCreatedAt()).isNotNull();
         assertThat(found.getUpdatedAt()).isNotNull();
+    }
+
+    @Test
+    void aPositiveReservationAmountRoundTrips() {
+        UUID id = policies
+                .saveAndFlush(new GatewayUsagePolicy(
+                        "owner-1", "capped", null, null, null, 100000L, 4000L, true))
+                .getId();
+        entities.clear();
+
+        GatewayUsagePolicy found = policies.findById(id).orElseThrow();
+
+        assertThat(found.getTokensPerDay()).isEqualTo(100000L);
+        // The amount the owner configured comes back exactly, never a default
+        // and never a value derived from the limit.
+        assertThat(found.getReservationTokensPerRequest()).isEqualTo(4000L);
+    }
+
+    @Test
+    void anAbsentReservationStaysNullForANonTokenPolicy() {
+        UUID id = policies.saveAndFlush(policy("owner-1", "minute-only")).getId();
+        entities.clear();
+
+        // A policy that declares no daily token limit has nothing to reserve,
+        // so the column is genuinely NULL rather than defaulted to zero.
+        assertThat(policies.findById(id).orElseThrow().getReservationTokensPerRequest())
+                .isNull();
+    }
+
+    @Test
+    void aReservationSurvivesAnInPlaceUpdate() {
+        GatewayUsagePolicy stored = stored("owner-1", "capped");
+        stored.update("after", null, null, null, 100000L, 250L, true);
+        policies.saveAndFlush(stored);
+        pause();
+        entities.clear();
+
+        GatewayUsagePolicy found = policies.findById(stored.getId()).orElseThrow();
+
+        assertThat(found.getTokensPerDay()).isEqualTo(100000L);
+        assertThat(found.getReservationTokensPerRequest()).isEqualTo(250L);
+    }
+
+    @Test
+    void updatingToNoTokenLimitClearsTheReservation() {
+        GatewayUsagePolicy stored = policies.saveAndFlush(new GatewayUsagePolicy(
+                "owner-1", "capped", null, null, null, 100000L, 250L, true));
+        pause();
+        stored.update("request-only", null, 60L, null, null, null, true);
+        policies.saveAndFlush(stored);
+        pause();
+        entities.clear();
+
+        GatewayUsagePolicy found = policies.findById(stored.getId()).orElseThrow();
+
+        assertThat(found.getTokensPerDay()).isNull();
+        assertThat(found.getReservationTokensPerRequest()).isNull();
+    }
+
+    @Test
+    void aTokenLimitWithoutAReservationIsRejected() {
+        // The whole point of the field: a daily token limit with no
+        // pre-request amount would leave future enforcement unable to reserve
+        // anything, so such a policy is never stored.
+        assertThatThrownBy(() -> new GatewayUsagePolicy(
+                        "owner-1", "tokens-only", null, null, null, 1000L, null, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest is required when tokensPerDay is present");
+    }
+
+    @Test
+    void aReservationGreaterThanTheDayLimitIsRejected() {
+        assertThatThrownBy(() -> new GatewayUsagePolicy(
+                        "owner-1", "over", null, null, null, 1000L, 1001L, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest must not exceed tokensPerDay");
+    }
+
+    @Test
+    void aReservationEqualToTheDayLimitIsAccepted() {
+        // The boundary is inclusive: holding the whole day for one request is
+        // unsatisfiable in practice but not a contradiction, so it is not
+        // rejected and is never silently lowered.
+        assertThat(new GatewayUsagePolicy(
+                                "owner-1", "whole-day", null, null, null, 1000L, 1000L, true)
+                        .getReservationTokensPerRequest())
+                .isEqualTo(1000L);
+    }
+
+    @Test
+    void aNonPositiveReservationIsRejected() {
+        assertThatThrownBy(() -> new GatewayUsagePolicy(
+                        "owner-1", "zero", null, null, null, 1000L, 0L, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest must be positive when present");
+        assertThatThrownBy(() -> new GatewayUsagePolicy(
+                        "owner-1", "negative", null, 60L, null, null, -1L, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest must be positive when present");
+    }
+
+    @Test
+    void aReservationWithoutATokenLimitIsAccepted() {
+        // A policy that constrains tokens not at all may still declare a
+        // reservation; the value is kept rather than silently discarded.
+        assertThat(new GatewayUsagePolicy(
+                                "owner-1", "requests", null, 60L, null, null, 500L, true)
+                        .getReservationTokensPerRequest())
+                .isEqualTo(500L);
+    }
+
+    @Test
+    void updateAppliesTheSameCrossFieldRules() {
+        GatewayUsagePolicy stored = stored("owner-1", "capped");
+
+        assertThatThrownBy(() -> stored.update("x", null, null, null, 1000L, null, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest is required when tokensPerDay is present");
+        assertThatThrownBy(() -> stored.update("x", null, null, null, 1000L, 2000L, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest must not exceed tokensPerDay");
+
+        // A rejected update mutates nothing, exactly as before.
+        assertThat(stored.getTokensPerDay()).isNull();
+        assertThat(stored.getReservationTokensPerRequest()).isNull();
+        assertThat(stored.getName()).isEqualTo("capped");
+    }
+
+    @Test
+    void theDatabaseRejectsAReservationGreaterThanTheDayLimit() {
+        // The cross-field rule is enforced by PostgreSQL as well as the
+        // aggregate, so a row written by anything other than the entity still
+        // cannot hold an unsatisfiable pair.
+        assertThatThrownBy(() -> entities
+                        .createNativeQuery("""
+                                INSERT INTO gateway_usage_policies (
+                                    owner_subject, name, requests_per_minute, tokens_per_day,
+                                    reservation_tokens_per_request, enabled)
+                                VALUES ('owner-1', 'raw', 60, 1000, 1001, TRUE)
+                                """)
+                        .executeUpdate())
+                .hasMessageContaining("chk_usage_policy_reservation_within_tokens_per_day");
+    }
+
+    @Test
+    void theDatabaseRejectsANonPositiveReservation() {
+        assertThatThrownBy(() -> entities
+                        .createNativeQuery("""
+                                INSERT INTO gateway_usage_policies (
+                                    owner_subject, name, tokens_per_day,
+                                    reservation_tokens_per_request, enabled)
+                                VALUES ('owner-1', 'raw-zero', 1000, 0, TRUE)
+                                """)
+                        .executeUpdate())
+                .hasMessageContaining("chk_usage_policy_reservation_tokens_per_request_positive");
+    }
+
+    @Test
+    void theDatabaseRejectsATokenLimitWithoutAReservation() {
+        assertThatThrownBy(() -> entities
+                        .createNativeQuery("""
+                                INSERT INTO gateway_usage_policies (
+                                    owner_subject, name, tokens_per_day, enabled)
+                                VALUES ('owner-1', 'raw-unreserved', 1000, TRUE)
+                                """)
+                        .executeUpdate())
+                .hasMessageContaining("chk_usage_policy_reservation_requires_tokens_per_day");
+    }
+
+    @Test
+    void theDatabaseAcceptsANonTokenPolicyWithNoReservation() {
+        // Existing policies, whose tokens_per_day is NULL, remain valid rows:
+        // the migration adds a nullable column and backfills nothing.
+        entities.createNativeQuery("""
+                INSERT INTO gateway_usage_policies (owner_subject, name, requests_per_minute, enabled)
+                VALUES ('owner-1', 'legacy-request-only', 60, TRUE)
+                """).executeUpdate();
+        pause();
+        entities.clear();
+
+        assertThat(policies.findByOwnerSubjectOrderByCreatedAtDescIdDesc("owner-1"))
+                .anySatisfy(found -> {
+                    assertThat(found.getName()).isEqualTo("legacy-request-only");
+                    assertThat(found.getTokensPerDay()).isNull();
+                    assertThat(found.getReservationTokensPerRequest()).isNull();
+                });
+    }
+
+    @Test
+    void ownerIsolationIsUnchangedByTheNewColumn() {
+        String owner = "owner-" + UUID.randomUUID();
+        policies.saveAndFlush(new GatewayUsagePolicy(
+                owner, "mine", null, null, null, 100000L, 4000L, true));
+        pause();
+        UUID id = policies.findByOwnerSubjectOrderByCreatedAtDescIdDesc(owner).get(0).getId();
+        entities.clear();
+
+        // A foreign owner still sees an empty lookup, so the new column cannot
+        // become a cross-owner side channel.
+        assertThat(policies.findByIdAndOwnerSubject(id, "someone-else")).isEmpty();
     }
 
     @Test
@@ -86,7 +286,7 @@ class GatewayUsagePolicyRepositoryTest {
     @Test
     void disabledPolicyPersists() {
         UUID id = policies
-                .saveAndFlush(new GatewayUsagePolicy("owner-1", "paused", null, null, 500L, null, false))
+                .saveAndFlush(new GatewayUsagePolicy("owner-1", "paused", null, null, 500L, null, null, false))
                 .getId();
         entities.clear();
 
@@ -111,26 +311,26 @@ class GatewayUsagePolicyRepositoryTest {
     void overlongLabelsAreRejected() {
         assertThatThrownBy(() -> policy("owner-1", "n".repeat(256)))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "ok", "d".repeat(1025), 1L, null, null, true))
+        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "ok", "d".repeat(1025), 1L, null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void nonPositiveLimitsAreRejected() {
-        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "zero", null, 0L, null, null, true))
+        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "zero", null, 0L, null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("requestsPerMinute must be positive when present");
-        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "negative", null, null, -1L, null, true))
+        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "negative", null, null, -1L, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("requestsPerDay must be positive when present");
-        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "zero-tokens", null, null, null, 0L, true))
+        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "zero-tokens", null, null, null, 0L, 1L, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("tokensPerDay must be positive when present");
     }
 
     @Test
     void policyWithNoLimitIsRejected() {
-        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "empty", null, null, null, null, true))
+        assertThatThrownBy(() -> new GatewayUsagePolicy("owner-1", "empty", null, null, null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("policy must define at least one limit");
     }
@@ -176,7 +376,7 @@ class GatewayUsagePolicyRepositoryTest {
     @Test
     void updatePersistsInPlace() {
         GatewayUsagePolicy stored = stored("owner-1", "before");
-        stored.update("after", "changed", null, 500L, null, false);
+        stored.update("after", "changed", null, 500L, null, null, false);
         UUID id = policies.saveAndFlush(stored).getId();
         entities.clear();
 
@@ -205,7 +405,7 @@ class GatewayUsagePolicyRepositoryTest {
         entities.clear();
 
         GatewayUsagePolicy reloaded = policies.findById(stored.getId()).orElseThrow();
-        assertThatThrownBy(() -> reloaded.update("nope", null, null, null, null, true))
+        assertThatThrownBy(() -> reloaded.update("nope", null, null, null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class);
         entities.clear();
 
@@ -274,7 +474,7 @@ class GatewayUsagePolicyRepositoryTest {
     @Test
     void enabledPoliciesAreFoundForTheirOwner() {
         String owner = isolatedOwner();
-        policies.saveAndFlush(new GatewayUsagePolicy(owner, "on", null, 60L, null, null, true));
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "on", null, 60L, null, null, null, true));
         pause();
         entities.clear();
 
@@ -289,7 +489,7 @@ class GatewayUsagePolicyRepositoryTest {
     @Test
     void disabledPoliciesAreExcludedFromTheEnabledLookup() {
         String owner = isolatedOwner();
-        policies.saveAndFlush(new GatewayUsagePolicy(owner, "off", null, 60L, null, null, false));
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "off", null, 60L, null, null, null, false));
         pause();
         entities.clear();
 
@@ -301,9 +501,9 @@ class GatewayUsagePolicyRepositoryTest {
     @Test
     void onlyEnabledPoliciesAreReturnedWhenBothKindsExist() {
         String owner = isolatedOwner();
-        policies.saveAndFlush(new GatewayUsagePolicy(owner, "off", null, 60L, null, null, false));
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "off", null, 60L, null, null, null, false));
         pause();
-        policies.saveAndFlush(new GatewayUsagePolicy(owner, "on", null, 30L, null, null, true));
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "on", null, 30L, null, null, null, true));
         pause();
         entities.clear();
 
@@ -315,9 +515,9 @@ class GatewayUsagePolicyRepositoryTest {
     @Test
     void multipleEnabledPoliciesAreReturnedNewestFirstDeterministically() {
         String owner = isolatedOwner();
-        policies.saveAndFlush(new GatewayUsagePolicy(owner, "first", null, 1L, null, null, true));
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "first", null, 1L, null, null, null, true));
         pause();
-        policies.saveAndFlush(new GatewayUsagePolicy(owner, "second", null, 2L, null, null, true));
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "second", null, 2L, null, null, null, true));
         pause();
         entities.clear();
 
@@ -341,9 +541,9 @@ class GatewayUsagePolicyRepositoryTest {
     @Test
     void enabledLookupIsOwnerScoped() {
         String owner = isolatedOwner();
-        policies.saveAndFlush(new GatewayUsagePolicy(owner, "mine-on", null, 60L, null, null, true));
+        policies.saveAndFlush(new GatewayUsagePolicy(owner, "mine-on", null, 60L, null, null, null, true));
         pause();
-        policies.saveAndFlush(new GatewayUsagePolicy("other-owner", "theirs-on", null, 60L, null, null, true));
+        policies.saveAndFlush(new GatewayUsagePolicy("other-owner", "theirs-on", null, 60L, null, null, null, true));
         pause();
         entities.clear();
 

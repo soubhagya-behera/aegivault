@@ -24,7 +24,7 @@ class GatewayUsagePolicyResolverTest {
     private final GatewayUsagePolicyResolver resolver = new GatewayUsagePolicyResolver(repository);
 
     private static GatewayUsagePolicy policy(String owner, String name, boolean enabled) {
-        return new GatewayUsagePolicy(owner, name, null, 60L, null, null, enabled);
+        return new GatewayUsagePolicy(owner, name, null, 60L, null, null, null, enabled);
     }
 
     @Test

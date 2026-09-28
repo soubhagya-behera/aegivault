@@ -131,7 +131,7 @@ class GatewayCompletionPolicyEnforcementTest {
     @Test
     void anAllowedPolicyWritesExactlyOnePolicyAuditEventBeforeInspection() {
         AlwaysAdmitsPolicyCounter counter = new AlwaysAdmitsPolicyCounter();
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, null, true));
 
         serviceWith(counter).complete(inspection(CLEAN));
 
@@ -146,7 +146,7 @@ class GatewayCompletionPolicyEnforcementTest {
 
     @Test
     void aRejectedPolicyWritesExactlyOnePolicyAuditEventAndNoInspectionEvent() {
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "strict", null, 1L, 1L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "strict", null, 1L, 1L, null, null, true));
         GatewayCompletionService rejecting = serviceWith(
                 new AlwaysAdmitsPolicyCounter.AlwaysRejectingPolicyCounter());
 
@@ -162,7 +162,7 @@ class GatewayCompletionPolicyEnforcementTest {
 
     @Test
     void aPolicyAuditFailureFailsClosedAndStopsTheRequestBeforeInspection() {
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, null, true));
         doThrow(new GatewayUsagePolicyAuditException(new RuntimeException("psql-down-9z")))
                 .when(audit).recordUsagePolicy(any(), any());
 
@@ -181,7 +181,7 @@ class GatewayCompletionPolicyEnforcementTest {
 
     @Test
     void aFailedRejectionAuditReturnsThe500PathRatherThanThe429() {
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "strict", null, 1L, 1L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "strict", null, 1L, 1L, null, null, true));
         doThrow(new GatewayUsagePolicyAuditException(new RuntimeException("psql-down-9z")))
                 .when(audit).recordUsagePolicy(any(), any());
         GatewayCompletionService rejecting = serviceWith(
@@ -196,7 +196,7 @@ class GatewayCompletionPolicyEnforcementTest {
 
     @Test
     void aGlobalRateLimitRejectionNeverReachesPolicyEnforcementSoItWritesNoPolicyEvent() {
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, null, true));
         AlwaysAdmitsPolicyCounter counter = new AlwaysAdmitsPolicyCounter();
         GatewayCompletionService globallyLimited = new GatewayCompletionService(
                 actor -> false,
@@ -240,7 +240,7 @@ class GatewayCompletionPolicyEnforcementTest {
     @Test
     void anAllowedPolicyStillCompletesNormallyThroughTheProviderPath() {
         AlwaysAdmitsPolicyCounter counter = new AlwaysAdmitsPolicyCounter();
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, null, true));
 
         var response = serviceWith(counter).complete(inspection(CLEAN));
 
@@ -258,7 +258,7 @@ class GatewayCompletionPolicyEnforcementTest {
 
     @Test
     void aRejectedPolicyStopsTheRequestBeforeAnythingElseHappens() {
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "strict", null, 1L, 1L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "strict", null, 1L, 1L, null, null, true));
         // The counter refuses, standing in for an already-spent limit.
         GatewayCompletionService rejecting = serviceWith(
                 new AlwaysAdmitsPolicyCounter.AlwaysRejectingPolicyCounter());
@@ -282,7 +282,7 @@ class GatewayCompletionPolicyEnforcementTest {
         // tokensPerDay is not enforced: there is no truthful token number
         // before the provider runs, so no request limit applies and nothing is
         // consumed, estimated, or reserved.
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "tokens-only", null, null, null, 5_000L, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "tokens-only", null, null, null, 5_000L, 1L, true));
         AlwaysAdmitsPolicyCounter counter = new AlwaysAdmitsPolicyCounter();
 
         var response = serviceWith(counter).complete(inspection(CLEAN));
@@ -296,7 +296,7 @@ class GatewayCompletionPolicyEnforcementTest {
 
     @Test
     void anUnavailablePolicyCounterFailsClosedWithoutTouchingTheProviderPath() {
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, null, true));
         GatewayCompletionService unavailable = serviceWith(
                 new AlwaysAdmitsPolicyCounter.UnavailablePolicyCounter());
 
@@ -337,7 +337,7 @@ class GatewayCompletionPolicyEnforcementTest {
     void theGlobalRateLimiterStillRunsFirstAndStopsPolicyEnforcementEntirely() {
         // Order proof: a global rejection happens before the policy check, so
         // no policy counter is consulted and no policy capacity is spent.
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, null, true));
         AlwaysAdmitsPolicyCounter counter = new AlwaysAdmitsPolicyCounter();
         GatewayCompletionService globallyLimited = new GatewayCompletionService(
                 actor -> false,
@@ -368,7 +368,7 @@ class GatewayCompletionPolicyEnforcementTest {
         GatewayRateLimiter spy = mock(GatewayRateLimiter.class);
         when(spy.tryAcquire(any())).thenReturn(true);
         AlwaysAdmitsPolicyCounter counter = new AlwaysAdmitsPolicyCounter();
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, null, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, null, null, null, true));
         GatewayCompletionService ordered = new GatewayCompletionService(
                 spy,
                 new GatewayUsagePolicyEnforcementService(policyResolver, counter),
@@ -392,7 +392,7 @@ class GatewayCompletionPolicyEnforcementTest {
     void aSecurityBlockUnderAnAllowedPolicyIsStillABlockWithNoProviderCall() {
         // Existing security behavior is unchanged when a policy admits: BLOCK is
         // still data, not an error status, and the provider is never reached.
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, null, true));
         when(inspections.inspect(any(), any()))
                 .thenReturn(new SecurityInspectionResult(
                         SecurityVerdict.BLOCK, Set.of(BlockReason.PII_DETECTED), Set.of()));
@@ -411,7 +411,7 @@ class GatewayCompletionPolicyEnforcementTest {
     void aBlockedProviderResponseUnderAnAllowedPolicyStillRecordsUsage() {
         // The other existing path is unchanged too: a response that inspection
         // blocks is still recorded, because the provider was really called.
-        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, true));
+        resolvedPolicy(new GatewayUsagePolicy("actor-1", "allowed", null, 60L, 1000L, null, null, true));
         when(responseInspections.inspect(any(), any()))
                 .thenReturn(new ProviderResponseInspectionResult(
                         SecurityVerdict.BLOCK, Set.of(BlockReason.PII_DETECTED), Set.of()));

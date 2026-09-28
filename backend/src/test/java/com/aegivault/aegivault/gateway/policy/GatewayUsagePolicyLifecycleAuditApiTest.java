@@ -122,14 +122,14 @@ class GatewayUsagePolicyLifecycleAuditApiTest {
     private static GatewayUsagePolicyResponse stored(String name) {
         Instant now = Instant.now();
         return new GatewayUsagePolicyResponse(
-                POLICY_ID, name, "secret cap", 60L, 10000L, 1000000L, true, now, now);
+                POLICY_ID, name, "secret cap", 60L, 10000L, 1000000L, 4000L, true, now, now);
     }
 
     private void policyExists() {
-        when(policies.create(eq(ACTOR), anyString(), any(), any(), any(), any(), anyBoolean()))
+        when(policies.create(eq(ACTOR), anyString(), any(), any(), any(), any(), any(), anyBoolean()))
                 .thenReturn(stored("audited-policy"));
         when(policies.update(
-                        eq(ACTOR), eq(POLICY_ID), anyString(), any(), any(), any(), any(), anyBoolean()))
+                        eq(ACTOR), eq(POLICY_ID), anyString(), any(), any(), any(), any(), any(), anyBoolean()))
                 .thenReturn(stored("audited-policy"));
     }
 
@@ -231,7 +231,7 @@ class GatewayUsagePolicyLifecycleAuditApiTest {
 
     @Test
     void aValidationFailureWritesNoLifecycleEvent() throws Exception {
-        when(policies.create(eq(ACTOR), anyString(), any(), any(), any(), any(), anyBoolean()))
+        when(policies.create(eq(ACTOR), anyString(), any(), any(), any(), any(), any(), anyBoolean()))
                 .thenThrow(new IllegalArgumentException("policy must define at least one limit"));
 
         mvc.perform(post("/api/gateway/policies")
@@ -246,7 +246,7 @@ class GatewayUsagePolicyLifecycleAuditApiTest {
     @Test
     void aForeignOrMissingUpdateWritesNoLifecycleEvent() throws Exception {
         when(policies.update(
-                        eq(ACTOR), eq(POLICY_ID), anyString(), any(), any(), any(), any(), anyBoolean()))
+                        eq(ACTOR), eq(POLICY_ID), anyString(), any(), any(), any(), any(), any(), anyBoolean()))
                 .thenThrow(new GatewayUsagePolicyNotFoundException());
 
         mvc.perform(put("/api/gateway/policies/" + POLICY_ID)
@@ -278,7 +278,7 @@ class GatewayUsagePolicyLifecycleAuditApiTest {
         // Durability ordering: the policy is persisted first, its evidence
         // second. Never an event for an operation that ultimately failed.
         InOrder order = inOrder(policies, ledger);
-        order.verify(policies).create(eq(ACTOR), anyString(), any(), any(), any(), any(), anyBoolean());
+        order.verify(policies).create(eq(ACTOR), anyString(), any(), any(), any(), any(), any(), anyBoolean());
         order.verify(ledger).append(anyString(), anyString(), any(), any(), anyString());
     }
 
@@ -338,7 +338,7 @@ class GatewayUsagePolicyLifecycleAuditApiTest {
 
         // The delete already committed. No compensation transaction exists:
         // the policy is never re-created to make its audit entry succeed.
-        verify(policies, never()).create(any(), any(), any(), any(), any(), any(), anyBoolean());
+        verify(policies, never()).create(any(), any(), any(), any(), any(), any(), any(), anyBoolean());
         verify(policies, times(1)).delete(ACTOR, POLICY_ID);
     }
 }

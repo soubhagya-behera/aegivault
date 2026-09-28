@@ -213,7 +213,7 @@ class GatewayUsagePolicyUsageSnapshotProviderTest {
 
         GatewayUsagePolicyUsageSnapshot snapshot = provider.snapshotFor("actor-1", NOW);
         GatewayUsagePolicy policy =
-                new GatewayUsagePolicy("actor-1", "strict", null, 5L, null, 500L, true);
+                new GatewayUsagePolicy("actor-1", "strict", null, 5L, null, 500L, 1L, true);
 
         // The provider and evaluator compose without any glue object.
         var decision = GatewayUsagePolicyEvaluator.evaluate(policy, snapshot);

@@ -32,8 +32,22 @@ import lombok.NoArgsConstructor;
  * are deliberately no pricing, currency, or cost fields — a policy
  * expresses request and token quantities only.
  *
+ * <p><strong>Per-request token reservation is configuration, not client
+ * input.</strong> {@code reservationTokensPerRequest} is the maximum number of
+ * tokens reserved for one request before provider invocation when
+ * {@code tokensPerDay} is set. It exists because a daily token limit cannot be
+ * enforced honestly without it: actual provider usage is known only after the
+ * provider responds, so something must be held up front, and if that amount
+ * came from the client a caller could always declare a trivially small one and
+ * spend a day without ever being refused. It is <em>not</em> actual usage, not
+ * an estimate or tokenizer result, and not a response-size guess — real usage
+ * is reconciled against this reservation after the response. Requiring it
+ * whenever {@code tokensPerDay} is present means a daily token policy can never
+ * exist without a deterministic pre-request amount.
+ *
  * <p>Mapped 1:1 to the Flyway-managed {@code gateway_usage_policies} table
- * (V10); Hibernate never modifies the schema ({@code ddl-auto=validate}).
+ * (V10, with this column added in V11); Hibernate never modifies the schema
+ * ({@code ddl-auto=validate}).
  */
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
@@ -70,6 +84,9 @@ public class GatewayUsagePolicy {
     @Column(name = "tokens_per_day")
     private Long tokensPerDay;
 
+    @Column(name = "reservation_tokens_per_request")
+    private Long reservationTokensPerRequest;
+
     @Column(name = "enabled", nullable = false)
     private boolean enabled;
 
@@ -102,6 +119,7 @@ public class GatewayUsagePolicy {
             Long requestsPerMinute,
             Long requestsPerDay,
             Long tokensPerDay,
+            Long reservationTokensPerRequest,
             boolean enabled) {
         this.ownerSubject = requireText(ownerSubject, "ownerSubject", OWNER_MAX);
         this.name = requireText(name, "name", NAME_MAX);
@@ -109,6 +127,8 @@ public class GatewayUsagePolicy {
         this.requestsPerMinute = requirePositive(requestsPerMinute, "requestsPerMinute");
         this.requestsPerDay = requirePositive(requestsPerDay, "requestsPerDay");
         this.tokensPerDay = requirePositive(tokensPerDay, "tokensPerDay");
+        this.reservationTokensPerRequest =
+                requireReservation(reservationTokensPerRequest, this.tokensPerDay);
         if (requestsPerMinute == null && requestsPerDay == null && tokensPerDay == null) {
             throw new IllegalArgumentException("policy must define at least one limit");
         }
@@ -139,12 +159,14 @@ public class GatewayUsagePolicy {
             Long requestsPerMinute,
             Long requestsPerDay,
             Long tokensPerDay,
+            Long reservationTokensPerRequest,
             boolean enabled) {
         String validName = requireText(name, "name", NAME_MAX);
         String validDescription = normalizeDescription(description);
         Long validPerMinute = requirePositive(requestsPerMinute, "requestsPerMinute");
         Long validPerDay = requirePositive(requestsPerDay, "requestsPerDay");
         Long validTokensPerDay = requirePositive(tokensPerDay, "tokensPerDay");
+        Long validReservation = requireReservation(reservationTokensPerRequest, validTokensPerDay);
         if (validPerMinute == null && validPerDay == null && validTokensPerDay == null) {
             throw new IllegalArgumentException("policy must define at least one limit");
         }
@@ -153,6 +175,7 @@ public class GatewayUsagePolicy {
         this.requestsPerMinute = validPerMinute;
         this.requestsPerDay = validPerDay;
         this.tokensPerDay = validTokensPerDay;
+        this.reservationTokensPerRequest = validReservation;
         this.enabled = enabled;
         this.updatedAt = Instant.now();
     }
@@ -185,6 +208,46 @@ public class GatewayUsagePolicy {
             throw new IllegalArgumentException(field + " must be positive when present");
         }
         return value;
+    }
+
+    /**
+     * Validates the per-request reservation amount against the day's token
+     * limit. The three cross-field rules live here so the constructor and
+     * {@code update} cannot drift apart, and so they hold for any caller rather
+     * than only for the one that happened to validate first.
+     *
+     * @param reservationTokensPerRequest the declared amount, may be null
+     * @param tokensPerDay the validated daily token limit, may be null
+     * @return the reservation amount, unchanged
+     */
+    private static Long requireReservation(Long reservationTokensPerRequest, Long tokensPerDay) {
+        if (reservationTokensPerRequest != null) {
+            requirePositive(reservationTokensPerRequest, "reservationTokensPerRequest");
+        }
+        if (tokensPerDay == null) {
+            // No daily token limit means the policy constrains tokens at all
+            // not at this level, so an absent reservation is correct rather
+            // than incomplete. A present one is still allowed and is kept: it
+            // is a harmless declaration and never silently discarded.
+            return reservationTokensPerRequest;
+        }
+        if (reservationTokensPerRequest == null) {
+            // A daily token limit with no pre-request amount would leave future
+            // enforcement unable to reserve anything before the provider call,
+            // which is precisely the number a caller could then choose to
+            // understate. Refusing to store such a policy makes the gap
+            // explicit at configuration time instead of at enforcement time.
+            throw new IllegalArgumentException(
+                    "reservationTokensPerRequest is required when tokensPerDay is present");
+        }
+        if (reservationTokensPerRequest > tokensPerDay) {
+            // Holding more for a single request than the whole day allows can
+            // never be satisfied. Rejected rather than clamped: silently
+            // lowering it would persist a number the owner never chose.
+            throw new IllegalArgumentException(
+                    "reservationTokensPerRequest must not exceed tokensPerDay");
+        }
+        return reservationTokensPerRequest;
     }
 
     @PrePersist

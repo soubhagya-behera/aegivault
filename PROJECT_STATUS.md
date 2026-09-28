@@ -734,6 +734,28 @@
   budget response, no HTTP status, and no token policy outcome — since
   choosing what a request reserves and deciding what a rejection means belong
   to the enforcement layer. `tokensPerDay` remains unenforced.
+  A **`reservationTokensPerRequest`** field was added to
+  `GatewayUsagePolicy` (column `reservation_tokens_per_request`, migration
+  V11, nullable, no default, nothing backfilled). It is the maximum tokens
+  reserved for one request before provider invocation, and it is a
+  **policy-controlled configuration value, not a client input** — without it
+  a future `tokensPerDay` enforcement would have to trust a caller-supplied
+  amount, and a caller could always declare 1 token and never be refused.
+  Cross-field validation, enforced by both the aggregate and PostgreSQL
+  CHECKs: a present amount must be strictly positive, must never exceed
+  `tokensPerDay`, and **is required whenever `tokensPerDay` is present**, so a
+  daily token policy cannot exist without a deterministic pre-request amount.
+  No `tokensPerDay` means the amount may be null (and may also be declared);
+  values are never silently clamped. Existing policies with a null
+  `tokensPerDay` keep working unchanged, and the "requires reservation"
+  constraint is added `NOT VALID` so pre-existing token rows are grandfathered
+  rather than fabricated or blocked. The field is accepted and returned on
+  the existing create/update/read endpoints, with no new endpoint, no change
+  to owner scoping, resolver, or evaluator, and no addition to lifecycle
+  audit event data. **No token estimation or prediction was added**: the
+  amount is configuration, not a computed figure, and actual provider token
+  usage is still obtained only after the provider response and reconciled
+  against the reservation then. `tokensPerDay` is still NOT enforced.
 
 ## Next planned step
 

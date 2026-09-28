@@ -83,6 +83,7 @@ public class GatewayUsagePolicyController {
                 request.requestsPerMinute(),
                 request.requestsPerDay(),
                 request.tokensPerDay(),
+                request.reservationTokensPerRequest(),
                 request.enabledOrDefault());
         // After the mutation, before the response: durable change, then its
         // evidence, then the client hears about it.
@@ -122,6 +123,7 @@ public class GatewayUsagePolicyController {
                 request.requestsPerMinute(),
                 request.requestsPerDay(),
                 request.tokensPerDay(),
+                request.reservationTokensPerRequest(),
                 request.enabledOrDefault());
         // Reached only after the update committed, so a rejected or foreign
         // update leaves no UPDATED entry behind.

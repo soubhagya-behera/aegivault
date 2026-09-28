@@ -36,7 +36,7 @@ class GatewayUsagePolicyDecisionServiceTest {
             new GatewayUsagePolicyDecisionService(resolver, snapshots);
 
     private static GatewayUsagePolicy policy(String owner, Long perMinute, Long perDay, Long tokens, boolean enabled) {
-        return new GatewayUsagePolicy(owner, "policy", null, perMinute, perDay, tokens, enabled);
+        return new GatewayUsagePolicy(owner, "policy", null, perMinute, perDay, tokens, 1L, enabled);
     }
 
     private void resolved(GatewayUsagePolicy policy) {

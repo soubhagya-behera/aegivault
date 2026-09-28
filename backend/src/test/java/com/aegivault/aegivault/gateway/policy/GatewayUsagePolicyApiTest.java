@@ -93,7 +93,8 @@ class GatewayUsagePolicyApiTest {
                   "description": "monthly cap",
                   "requestsPerMinute": 60,
                   "requestsPerDay": 10000,
-                  "tokensPerDay": 1000000
+                  "tokensPerDay": 1000000,
+                  "reservationTokensPerRequest": 4000
                 }
                 """.formatted(name);
     }
@@ -122,6 +123,7 @@ class GatewayUsagePolicyApiTest {
                 .andExpect(jsonPath("$.requestsPerMinute").value(60))
                 .andExpect(jsonPath("$.requestsPerDay").value(10000))
                 .andExpect(jsonPath("$.tokensPerDay").value(1000000))
+                .andExpect(jsonPath("$.reservationTokensPerRequest").value(4000))
                 .andExpect(jsonPath("$.enabled").value(true))
                 .andExpect(jsonPath("$.createdAt").exists())
                 .andExpect(jsonPath("$.updatedAt").exists())
@@ -191,6 +193,7 @@ class GatewayUsagePolicyApiTest {
                                   "name": "after",
                                   "description": "changed",
                                   "tokensPerDay": 500,
+                                  "reservationTokensPerRequest": 250,
                                   "enabled": false
                                 }
                                 """))
@@ -200,6 +203,7 @@ class GatewayUsagePolicyApiTest {
                 .andExpect(jsonPath("$.description").value("changed"))
                 .andExpect(jsonPath("$.requestsPerMinute").doesNotExist())
                 .andExpect(jsonPath("$.tokensPerDay").value(500))
+                .andExpect(jsonPath("$.reservationTokensPerRequest").value(250))
                 .andExpect(jsonPath("$.enabled").value(false));
 
         // Same id, one row, and the change is durable.
@@ -350,6 +354,102 @@ class GatewayUsagePolicyApiTest {
     }
 
     @Test
+    void aTokenLimitWithoutAReservationAmountIsRejected() throws Exception {
+        String token = register(email());
+
+        // The reservation amount is policy configuration, so a daily token
+        // limit cannot be declared without one.
+        mvc.perform(post("/api/gateway/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"tokens-only\",\"tokensPerDay\":1000}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void aReservationGreaterThanTheTokenLimitIsRejected() throws Exception {
+        String token = register(email());
+
+        // Rejected rather than clamped: the stored value must always be one
+        // the owner actually chose.
+        mvc.perform(post("/api/gateway/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"over","tokensPerDay":1000,"reservationTokensPerRequest":1001}
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void aReservationEqualToTheTokenLimitIsAccepted() throws Exception {
+        String token = register(email());
+
+        mvc.perform(post("/api/gateway/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"whole-day","tokensPerDay":1000,"reservationTokensPerRequest":1000}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.tokensPerDay").value(1000))
+                .andExpect(jsonPath("$.reservationTokensPerRequest").value(1000));
+    }
+
+    @Test
+    void aNonPositiveReservationAmountIsRejected() throws Exception {
+        String token = register(email());
+
+        // Caught by the @Positive bound before the aggregate is reached.
+        mvc.perform(post("/api/gateway/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"zero","tokensPerDay":1000,"reservationTokensPerRequest":0}
+                                """))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/gateway/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"negative","tokensPerDay":1000,"reservationTokensPerRequest":-5}
+                                """))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void aReservationWithoutATokenLimitIsAccepted() throws Exception {
+        String token = register(email());
+
+        mvc.perform(post("/api/gateway/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"requests","requestsPerMinute":60,"reservationTokensPerRequest":500}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.tokensPerDay").doesNotExist())
+                .andExpect(jsonPath("$.reservationTokensPerRequest").value(500));
+    }
+
+    @Test
+    void requestOnlyPoliciesAreUnaffectedByTheNewField() throws Exception {
+        String token = register(email());
+
+        // A pre-existing non-token policy still creates and reads back exactly
+        // as it did before this field existed.
+        mvc.perform(post("/api/gateway/policies")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"legacy\",\"requestsPerMinute\":60,\"requestsPerDay\":100}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.requestsPerMinute").value(60))
+                .andExpect(jsonPath("$.requestsPerDay").value(100))
+                .andExpect(jsonPath("$.tokensPerDay").doesNotExist())
+                .andExpect(jsonPath("$.reservationTokensPerRequest").doesNotExist());
+    }
+
+    @Test
     void responseNeverContainsTheOwnerSubject() throws Exception {
         String userEmail = email();
         String token = register(userEmail);
@@ -367,7 +467,7 @@ class GatewayUsagePolicyApiTest {
         assertThat(new ArrayList<>(node.propertyNames()))
                 .containsExactlyInAnyOrder(
                         "id", "name", "description", "requestsPerMinute", "requestsPerDay",
-                        "tokensPerDay", "enabled", "createdAt", "updatedAt");
+                        "tokensPerDay", "reservationTokensPerRequest", "enabled", "createdAt", "updatedAt");
     }
 
     @Test

@@ -17,15 +17,15 @@ import org.junit.jupiter.api.Test;
 class GatewayUsagePolicyEvaluatorTest {
 
     private static GatewayUsagePolicy minuteOnly(Long limit) {
-        return new GatewayUsagePolicy("actor-1", "minute", null, limit, null, null, true);
+        return new GatewayUsagePolicy("actor-1", "minute", null, limit, null, null, null, true);
     }
 
     private static GatewayUsagePolicy dayOnly(Long limit) {
-        return new GatewayUsagePolicy("actor-1", "day", null, null, limit, null, true);
+        return new GatewayUsagePolicy("actor-1", "day", null, null, limit, null, null, true);
     }
 
     private static GatewayUsagePolicy tokensOnly(Long limit) {
-        return new GatewayUsagePolicy("actor-1", "tokens", null, null, null, limit, true);
+        return new GatewayUsagePolicy("actor-1", "tokens", null, null, null, limit, 1L, true);
     }
 
     private static GatewayUsagePolicyUsageSnapshot requests(long minute, long day) {
@@ -124,7 +124,7 @@ class GatewayUsagePolicyEvaluatorTest {
 
     @Test
     void multipleLimitsWithNoViolationAllow() {
-        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, true);
+        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, 1L, true);
 
         var decision = GatewayUsagePolicyEvaluator.evaluate(policy, withTokens(9L, 99L, 999L));
 
@@ -134,7 +134,7 @@ class GatewayUsagePolicyEvaluatorTest {
 
     @Test
     void multipleLimitsWithOneViolationReportExactlyThatOne() {
-        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, true);
+        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, 1L, true);
 
         var decision = GatewayUsagePolicyEvaluator.evaluate(policy, withTokens(11L, 99L, 999L));
 
@@ -146,7 +146,7 @@ class GatewayUsagePolicyEvaluatorTest {
     void multipleViolationsAreAllReportedInDeclarationOrder() {
         // Every configured limit is examined, and the result is a stable list
         // rather than anything order-dependent.
-        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, true);
+        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, 1L, true);
 
         var decision = GatewayUsagePolicyEvaluator.evaluate(policy, withTokens(11L, 101L, 1001L));
 
@@ -159,7 +159,7 @@ class GatewayUsagePolicyEvaluatorTest {
 
     @Test
     void violationOrderIsStableAcrossRuns() {
-        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, true);
+        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, 1L, true);
         GatewayUsagePolicyUsageSnapshot snapshot = withTokens(11L, 101L, 1001L);
 
         var first = GatewayUsagePolicyEvaluator.evaluate(policy, snapshot);
@@ -176,7 +176,7 @@ class GatewayUsagePolicyEvaluatorTest {
     void aDefiniteRequestViolationOutranksUnknownTokens() {
         // The request limit is definitively broken, so the decision is
         // LIMIT_EXCEEDED — but the token uncertainty is not lost.
-        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, true);
+        GatewayUsagePolicy policy = new GatewayUsagePolicy("actor-1", "all", null, 10L, 100L, 1000L, 1L, true);
 
         var decision = GatewayUsagePolicyEvaluator.evaluate(policy, requests(11L, 50L));
 
@@ -214,7 +214,7 @@ class GatewayUsagePolicyEvaluatorTest {
 
     @Test
     void disabledPolicyIsInactiveAndNotSilentlyAllowed() {
-        GatewayUsagePolicy disabled = new GatewayUsagePolicy("actor-1", "off", null, 1L, 1L, 1L, false);
+        GatewayUsagePolicy disabled = new GatewayUsagePolicy("actor-1", "off", null, 1L, 1L, 1L, 1L, false);
 
         // Wildly over every limit, yet a disabled policy is not evaluated.
         var decision = GatewayUsagePolicyEvaluator.evaluate(disabled, withTokens(500L, 500L, 500L));
@@ -227,7 +227,7 @@ class GatewayUsagePolicyEvaluatorTest {
 
     @Test
     void disabledPolicyIsInactiveEvenWithinLimits() {
-        GatewayUsagePolicy disabled = new GatewayUsagePolicy("actor-1", "off", null, 10L, null, null, false);
+        GatewayUsagePolicy disabled = new GatewayUsagePolicy("actor-1", "off", null, 10L, null, null, null, false);
 
         var decision = GatewayUsagePolicyEvaluator.evaluate(disabled, requests(0L, 0L));
 

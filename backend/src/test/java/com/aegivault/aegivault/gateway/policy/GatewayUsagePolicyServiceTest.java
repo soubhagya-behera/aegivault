@@ -30,7 +30,7 @@ class GatewayUsagePolicyServiceTest {
     private final GatewayUsagePolicyService service = new GatewayUsagePolicyService(repository);
 
     private static GatewayUsagePolicy policy(String owner, String name) {
-        return new GatewayUsagePolicy(owner, name, null, 60L, null, null, true);
+        return new GatewayUsagePolicy(owner, name, null, 60L, null, null, null, true);
     }
 
     @Test
@@ -38,23 +38,76 @@ class GatewayUsagePolicyServiceTest {
         when(repository.saveAndFlush(any(GatewayUsagePolicy.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
 
-        var created = service.create("owner-1", "team", "desc", 60L, 100L, 1000L, true);
+        var created = service.create("owner-1", "team", "desc", 60L, 100L, 1000L, 200L, true);
 
         assertThat(created.name()).isEqualTo("team");
         assertThat(created.description()).isEqualTo("desc");
         assertThat(created.requestsPerMinute()).isEqualTo(60L);
         assertThat(created.requestsPerDay()).isEqualTo(100L);
         assertThat(created.tokensPerDay()).isEqualTo(1000L);
+        // The configured amount is returned unchanged, never re-derived.
+        assertThat(created.reservationTokensPerRequest()).isEqualTo(200L);
         assertThat(created.enabled()).isTrue();
         verify(repository).saveAndFlush(any(GatewayUsagePolicy.class));
     }
 
     @Test
+    void createRejectsATokenLimitWithNoReservation() {
+        assertThatThrownBy(() -> service.create("owner-1", "n", null, null, null, 1000L, null, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest is required when tokensPerDay is present");
+        verifyNoMoreInteractions(repository);
+    }
+
+    @Test
+    void createRejectsAReservationGreaterThanTheTokenLimit() {
+        assertThatThrownBy(() -> service.create("owner-1", "n", null, null, null, 1000L, 1001L, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest must not exceed tokensPerDay");
+        verifyNoMoreInteractions(repository);
+    }
+
+    @Test
+    void createAcceptsAReservationEqualToTheTokenLimit() {
+        when(repository.saveAndFlush(any(GatewayUsagePolicy.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        var created = service.create("owner-1", "n", null, null, null, 1000L, 1000L, true);
+
+        // The inclusive boundary is valid and is never silently clamped down.
+        assertThat(created.reservationTokensPerRequest()).isEqualTo(1000L);
+    }
+
+    @Test
+    void createAcceptsAReservationWithNoTokenLimit() {
+        when(repository.saveAndFlush(any(GatewayUsagePolicy.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        var created = service.create("owner-1", "n", null, 60L, null, null, 500L, true);
+
+        assertThat(created.tokensPerDay()).isNull();
+        assertThat(created.reservationTokensPerRequest()).isEqualTo(500L);
+    }
+
+    @Test
+    void createLeavesRequestOnlyPoliciesUnaffected() {
+        when(repository.saveAndFlush(any(GatewayUsagePolicy.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        var created = service.create("owner-1", "n", null, 60L, 100L, null, null, true);
+
+        assertThat(created.requestsPerMinute()).isEqualTo(60L);
+        assertThat(created.requestsPerDay()).isEqualTo(100L);
+        assertThat(created.tokensPerDay()).isNull();
+        assertThat(created.reservationTokensPerRequest()).isNull();
+    }
+
+    @Test
     void createRejectsABlankOwner() {
-        assertThatThrownBy(() -> service.create(null, "n", null, 1L, null, null, true))
+        assertThatThrownBy(() -> service.create(null, "n", null, 1L, null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("ownerSubject must not be blank");
-        assertThatThrownBy(() -> service.create("   ", "n", null, 1L, null, null, true))
+        assertThatThrownBy(() -> service.create("   ", "n", null, 1L, null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("ownerSubject must not be blank");
         verifyNoMoreInteractions(repository);
@@ -123,7 +176,7 @@ class GatewayUsagePolicyServiceTest {
         when(repository.findByIdAndOwnerSubject(id, "owner-1")).thenReturn(Optional.of(existing));
         when(repository.saveAndFlush(existing)).thenReturn(existing);
 
-        var updated = service.update("owner-1", id, "after", "changed", null, 500L, null, false);
+        var updated = service.update("owner-1", id, "after", "changed", null, 500L, null, null, false);
 
         assertThat(updated.id()).isEqualTo(existing.getId());
         assertThat(updated.name()).isEqualTo("after");
@@ -134,8 +187,62 @@ class GatewayUsagePolicyServiceTest {
     }
 
     @Test
+    void updateRejectsATokenLimitWithNoReservation() {
+        UUID id = UUID.randomUUID();
+        GatewayUsagePolicy existing = policy("owner-1", "before");
+        when(repository.findByIdAndOwnerSubject(id, "owner-1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.update("owner-1", id, "after", null, null, null, 1000L, null, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest is required when tokensPerDay is present");
+        verify(repository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updateRejectsAReservationGreaterThanTheTokenLimit() {
+        UUID id = UUID.randomUUID();
+        GatewayUsagePolicy existing = policy("owner-1", "before");
+        when(repository.findByIdAndOwnerSubject(id, "owner-1")).thenReturn(Optional.of(existing));
+
+        assertThatThrownBy(() -> service.update("owner-1", id, "after", null, null, null, 1000L, 1001L, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("reservationTokensPerRequest must not exceed tokensPerDay");
+        verify(repository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updateStoresTheNewReservationAmount() {
+        UUID id = UUID.randomUUID();
+        GatewayUsagePolicy existing = policy("owner-1", "before");
+        when(repository.findByIdAndOwnerSubject(id, "owner-1")).thenReturn(Optional.of(existing));
+        when(repository.saveAndFlush(existing)).thenReturn(existing);
+
+        var updated = service.update("owner-1", id, "after", null, null, null, 1000L, 250L, true);
+
+        assertThat(updated.tokensPerDay()).isEqualTo(1000L);
+        assertThat(updated.reservationTokensPerRequest()).isEqualTo(250L);
+    }
+
+    @Test
+    void updateToARequestOnlyPolicyLeavesBothTokenFieldsNull() {
+        UUID id = UUID.randomUUID();
+        GatewayUsagePolicy existing = policy("owner-1", "before");
+        when(repository.findByIdAndOwnerSubject(id, "owner-1")).thenReturn(Optional.of(existing));
+        when(repository.saveAndFlush(existing)).thenReturn(existing);
+
+        // An unrelated request/day limit keeps working exactly as before, with
+        // no token field needed.
+        var updated = service.update("owner-1", id, "after", null, 60L, 100L, null, null, true);
+
+        assertThat(updated.requestsPerMinute()).isEqualTo(60L);
+        assertThat(updated.requestsPerDay()).isEqualTo(100L);
+        assertThat(updated.tokensPerDay()).isNull();
+        assertThat(updated.reservationTokensPerRequest()).isNull();
+    }
+
+    @Test
     void updateRejectsABlankOwner() {
-        assertThatThrownBy(() -> service.update("  ", UUID.randomUUID(), "n", null, 1L, null, null, true))
+        assertThatThrownBy(() -> service.update("  ", UUID.randomUUID(), "n", null, 1L, null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("ownerSubject must not be blank");
         verifyNoMoreInteractions(repository);
@@ -146,7 +253,7 @@ class GatewayUsagePolicyServiceTest {
         UUID id = UUID.randomUUID();
         when(repository.findByIdAndOwnerSubject(id, "owner-2")).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.update("owner-2", id, "hijack", null, 1L, null, null, true))
+        assertThatThrownBy(() -> service.update("owner-2", id, "hijack", null, 1L, null, null, null, true))
                 .isInstanceOf(GatewayUsagePolicyNotFoundException.class);
         verify(repository, never()).saveAndFlush(any());
     }
@@ -213,7 +320,7 @@ class GatewayUsagePolicyServiceTest {
 
         assertThat(keys).containsExactlyInAnyOrder(
                 "id", "name", "description", "requestsPerMinute", "requestsPerDay",
-                "tokensPerDay", "enabled", "createdAt", "updatedAt");
+                "tokensPerDay", "reservationTokensPerRequest", "enabled", "createdAt", "updatedAt");
         assertThat(keys).doesNotContain("ownerSubject");
         assertThat(java.util.stream.Stream.of(GatewayUsagePolicyResponse.class.getRecordComponents())
                         .filter(component -> component.getType().equals(Instant.class))

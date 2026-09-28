@@ -152,7 +152,7 @@ class GatewayUsagePolicyEnforcementApiTest {
     @Test
     void aTokenOnlyPolicyDoesNotLimitTheActor() throws Exception {
         String token = register();
-        createPolicy(token, "{\"name\":\"tokens-only\",\"tokensPerDay\":1000,\"enabled\":true}");
+        createPolicy(token, "{\"name\":\"tokens-only\",\"tokensPerDay\":1000,\"reservationTokensPerRequest\":100,\"enabled\":true}");
 
         // tokensPerDay is not enforced: there is no truthful token number
         // before the provider runs, so the request is simply not limited.
@@ -278,7 +278,7 @@ class GatewayUsagePolicyEnforcementApiTest {
     @Test
     void aTokenOnlyPolicyIsRecordedButEnforcesNoRequestLimit() throws Exception {
         String token = register();
-        createPolicy(token, "{\"name\":\"tokens-only\",\"tokensPerDay\":1000,\"enabled\":true}");
+        createPolicy(token, "{\"name\":\"tokens-only\",\"tokensPerDay\":1000,\"reservationTokensPerRequest\":100,\"enabled\":true}");
         long before = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED).size();
 
         assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);

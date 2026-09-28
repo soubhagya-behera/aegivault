@@ -32,15 +32,27 @@ import jakarta.validation.constraints.Size;
  *   "requestsPerMinute": 60,
  *   "requestsPerDay": 10000,
  *   "tokensPerDay": 1000000,
+ *   "reservationTokensPerRequest": 4000,
  *   "enabled": true
  * }
  * </pre>
+ *
+ * <p>{@code reservationTokensPerRequest} is the policy owner's configured
+ * pre-request reservation amount, never a per-call client choice. It must be
+ * strictly positive when present, must not exceed {@code tokensPerDay}, and is
+ * required whenever {@code tokensPerDay} is present — so a daily token policy
+ * cannot be declared without it. The Bean Validation bounds catch a
+ * non-positive amount, and {@link GatewayUsagePolicy} enforces the same
+ * cross-field rules for any caller.
  *
  * @param name human label, never blank, at most 255 characters
  * @param description optional free text, null or at most 1024 characters
  * @param requestsPerMinute declared requests per minute, null or positive
  * @param requestsPerDay declared requests per day, null or positive
  * @param tokensPerDay declared tokens per day, null or positive
+ * @param reservationTokensPerRequest maximum tokens reserved for one request
+ *        before provider invocation, null or positive; required with
+ *        {@code tokensPerDay} and never greater than it
  * @param enabled whether the definition is switched on; absent means true
  */
 public record GatewayUsagePolicyRequest(
@@ -49,6 +61,7 @@ public record GatewayUsagePolicyRequest(
         @Positive Long requestsPerMinute,
         @Positive Long requestsPerDay,
         @Positive Long tokensPerDay,
+        @Positive Long reservationTokensPerRequest,
         Boolean enabled) {
 
     /** Enabled defaults to true when the caller omits it. */

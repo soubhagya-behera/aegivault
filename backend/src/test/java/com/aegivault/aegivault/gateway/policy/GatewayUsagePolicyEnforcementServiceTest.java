@@ -75,7 +75,7 @@ class GatewayUsagePolicyEnforcementServiceTest {
     }
 
     private static GatewayUsagePolicy policy(Long perMinute, Long perDay, boolean enabled) {
-        return new GatewayUsagePolicy("actor-1", "policy", null, perMinute, perDay, null, enabled);
+        return new GatewayUsagePolicy("actor-1", "policy", null, perMinute, perDay, null, null, enabled);
     }
 
     @Test
@@ -111,7 +111,7 @@ class GatewayUsagePolicyEnforcementServiceTest {
     void aTokenOnlyPolicyMakesNoCounterCall() {
         // tokensPerDay is not enforced, and a policy that declares nothing
         // else gives the service no request limit to consume.
-        resolved(new GatewayUsagePolicy("actor-1", "tokens-only", null, null, null, 5_000L, true));
+        resolved(new GatewayUsagePolicy("actor-1", "tokens-only", null, null, null, 5_000L, 1L, true));
 
         var result = service.enforce("actor-1", NOW);
 

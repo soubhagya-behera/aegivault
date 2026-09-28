@@ -37,6 +37,9 @@ public class GatewayUsagePolicyService {
      * @param requestsPerMinute declared requests per minute, null or positive
      * @param requestsPerDay declared requests per day, null or positive
      * @param tokensPerDay declared tokens per day, null or positive
+     * @param reservationTokensPerRequest maximum tokens reserved for one
+     *        request before provider invocation, null or positive; required
+     *        with {@code tokensPerDay} and never greater than it
      * @param enabled whether the definition is switched on
      * @return the persisted view
      * @throws IllegalArgumentException when the aggregate rejects its input
@@ -49,10 +52,18 @@ public class GatewayUsagePolicyService {
             Long requestsPerMinute,
             Long requestsPerDay,
             Long tokensPerDay,
+            Long reservationTokensPerRequest,
             boolean enabled) {
         String owner = requireOwner(ownerSubject);
         GatewayUsagePolicy policy = new GatewayUsagePolicy(
-                owner, name, description, requestsPerMinute, requestsPerDay, tokensPerDay, enabled);
+                owner,
+                name,
+                description,
+                requestsPerMinute,
+                requestsPerDay,
+                tokensPerDay,
+                reservationTokensPerRequest,
+                enabled);
         return GatewayUsagePolicyResponse.from(policies.saveAndFlush(policy));
     }
 
@@ -100,11 +111,19 @@ public class GatewayUsagePolicyService {
             Long requestsPerMinute,
             Long requestsPerDay,
             Long tokensPerDay,
+            Long reservationTokensPerRequest,
             boolean enabled) {
         String owner = requireOwner(ownerSubject);
         Objects.requireNonNull(policyId, "policyId must not be null");
         GatewayUsagePolicy policy = owned(policyId, owner);
-        policy.update(name, description, requestsPerMinute, requestsPerDay, tokensPerDay, enabled);
+        policy.update(
+                name,
+                description,
+                requestsPerMinute,
+                requestsPerDay,
+                tokensPerDay,
+                reservationTokensPerRequest,
+                enabled);
         return GatewayUsagePolicyResponse.from(policies.saveAndFlush(policy));
     }
 

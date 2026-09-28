@@ -19,6 +19,9 @@ import java.util.UUID;
  * @param requestsPerMinute declared requests per minute, null when unset
  * @param requestsPerDay declared requests per day, null when unset
  * @param tokensPerDay declared tokens per day, null when unset
+ * @param reservationTokensPerRequest maximum tokens reserved for one request
+ *        before provider invocation, null when unset; configuration only, and
+ *        not yet consulted by any gateway code path
  * @param enabled whether the definition is switched on (not yet consulted
  *        by any gateway code path)
  * @param createdAt creation instant (UTC)
@@ -31,6 +34,7 @@ public record GatewayUsagePolicyResponse(
         Long requestsPerMinute,
         Long requestsPerDay,
         Long tokensPerDay,
+        Long reservationTokensPerRequest,
         boolean enabled,
         Instant createdAt,
         Instant updatedAt) {
@@ -43,6 +47,7 @@ public record GatewayUsagePolicyResponse(
                 policy.getRequestsPerMinute(),
                 policy.getRequestsPerDay(),
                 policy.getTokensPerDay(),
+                policy.getReservationTokensPerRequest(),
                 policy.isEnabled(),
                 policy.getCreatedAt(),
                 policy.getUpdatedAt());

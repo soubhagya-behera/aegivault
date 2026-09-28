@@ -972,6 +972,35 @@ the request result. A clean provider response returns as ALLOW with the
   budget response, no HTTP status, and no token policy outcome — because
   choosing what a request reserves and deciding what a rejection means are
   decisions for the enforcement layer, not for this input.
+  **The reservation amount is now policy-controlled configuration, not client
+  input.** `GatewayUsagePolicy` gained `reservationTokensPerRequest` (persisted
+  as `reservation_tokens_per_request` by migration V11), the maximum number of
+  tokens held for **one request** before provider invocation when
+  `tokensPerDay` is set. It exists because a daily token limit cannot be
+  enforced honestly without it: actual provider usage is known only after the
+  provider responds, so capacity must be claimed up front, and if that amount
+  came from the client a caller could always declare a trivially small
+  reservation and spend a day without ever being refused. Making it a property
+  of the policy means the amount is chosen by the owner once, in configuration,
+  rather than per call by an untrusted party. Three cross-field rules hold, in
+  the aggregate and in PostgreSQL CHECKs alike: a present amount is always
+  strictly positive, it never exceeds `tokensPerDay`, and **it is required
+  whenever `tokensPerDay` is present** — so a daily token policy cannot exist
+  without a deterministic pre-request amount. A policy with no `tokensPerDay`
+  may leave it null, and may also declare one; either is valid, and nothing is
+  ever silently clamped. Existing rows are preserved: the column is added
+  nullable with no default and nothing is backfilled, and the one constraint
+  that could have conflicted with pre-existing data is added `NOT VALID` so
+  history is grandfathered rather than fabricated or blocked. The field is
+  exposed on the existing create/update and read endpoints and appears in the
+  response; **no endpoint, resolver, or evaluator behaviour changed**, owner
+  scoping is untouched, and lifecycle audit metadata stays exactly as minimal
+  as before — the numeric value is not added to `CREATED`/`UPDATED` event data.
+  **It is still not enforced**: no gateway code path reads the column, nothing
+  reserves before a provider call, `tokensPerDay` remains unenforced, and **no
+  token estimation or prediction is performed** anywhere — the amount is
+  configuration, not a computed figure, and real provider usage is still
+  obtained only after the provider response and reconciled then.
   **This primitive is not wired into gateway traffic.** No gateway path calls
   it, no completion service or enforcement service references it, and it is not
   a Spring bean, so `tokensPerDay` remains entirely unenforced and live
