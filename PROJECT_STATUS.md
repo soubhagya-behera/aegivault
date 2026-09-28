@@ -650,6 +650,39 @@
 * Redis is used only for the optional gateway rate limiter; no other
   Redis implementation exists.
 * No frontend exists yet.
+* Atomic daily **token-budget reservation** infrastructure
+  (`GatewayTokenBudget`, `gateway.policy.budget` package), as a primitive
+  only. It is separate from request-rate enforcement: it holds tokens, while
+  `GatewayUsagePolicyCounter` counts requests and `GatewayRateLimiter` limits
+  request rate, and it shares no state, key, or window arithmetic with either.
+  The single operation
+  `tryReserve(actorSubject, windowStart, limit, requestedTokens)` atomically
+  decides and performs one reservation for one actor on one UTC day, succeeding
+  exactly when `usedTokens + reservedTokens + requestedTokens <= limit` and
+  adding the full amount or nothing at all; a rejected attempt consumes no
+  capacity, so hammering a spent budget cannot push the day's total further
+  over. The result is an immutable `GatewayTokenBudgetReservation` with only
+  `RESERVED` / `REJECTED`, a `reservationId`, and the `reservedTokens` it
+  holds — the minimum contract a later reconciliation needs — and exposes no
+  current total, remaining tokens, limit, key, or actor, so a rejection cannot
+  reveal how much budget is left. Both implementations are concurrency-safe and
+  actor/day scoped: `InMemoryGatewayTokenBudget` uses one atomic
+  `ConcurrentHashMap.compute` per attempt (never two), and
+  `RedisGatewayTokenBudget` uses one Lua execution per reservation (read,
+  compare, and write server-side — never GET/compare/INCR as separate
+  application operations), with budgets at the new namespace
+  `aegivault:gateway:token-budget:<windowStart>:<actorSubject>`, distinct from
+  the unchanged policy-counter and rate-limit namespaces, and a TTL covering
+  the rest of the UTC day plus a clock-skew grace. Redis failures, empty
+  results, and unrecognised results all fail closed as
+  `GatewayTokenBudgetUnavailableException` with a fixed safe message; invalid
+  input is rejected before any state is touched. **The requested amount is
+  supplied explicitly by a future caller and no token estimation exists
+  anywhere** — no character conversion, response-size guess, max-token
+  assumption, or model formula. **Nothing is wired into the gateway path and
+  `tokensPerDay` is still not enforced**: no completion service, enforcement
+  service, provider path, or audit code references this package, and
+  reconciliation, release, and refund are not implemented.
 
 ## Next planned step
 

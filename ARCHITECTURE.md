@@ -840,8 +840,70 @@ the request result. A clean provider response returns as ALLOW with the
   its existing `NO_POLICY` / `ALLOW` / `REJECTED` / `INACTIVE` states, with
   ambiguity propagation and fail-closed behaviour unchanged.
   **`tokensPerDay` remains unenforced**: it is never read by the enforcement
-  service, and there is no token reservation, pre-request token check,
-  response token rollback, or character heuristic.
+  service, and there is no token reservation in the request path, no
+  pre-request token check, no response token rollback, and no character
+  heuristic.
+  **The token-budget reservation primitive now exists, as infrastructure
+  only.** `GatewayTokenBudget` is a separate abstraction from
+  `GatewayUsagePolicyCounter` and from the global rate limiter: it answers "does
+  this actor have room in its daily *token* budget", not "may this actor make
+  this request". Its single operation is
+  `tryReserve(actorSubject, windowStart, limit, requestedTokens)`, which
+  atomically decides whether the reservation fits and performs it. For one
+  actor's UTC day the attempt succeeds exactly when
+  `usedTokens + reservedTokens + requestedTokens <= limit`; a success adds
+  `requestedTokens` to the held total and a failure adds **nothing**, so a
+  rejected attempt consumes no capacity and hammering a spent budget cannot
+  push the day's total further over. Adoption is all-or-nothing — the full
+  amount is held, never part of it. The result is an immutable
+  `GatewayTokenBudgetReservation` with exactly two states, `RESERVED` and
+  `REJECTED`: it carries only the state, the `reservationId`, and the
+  `reservedTokens` that one reservation holds, and deliberately exposes no
+  current total, no remaining tokens, no limit, no window, no Redis key, and no
+  actor subject, so a rejection cannot tell a caller how much budget is left.
+  **The requested amount is supplied by the caller and is not usage.** Nothing
+  here estimates it: there is no character-to-token conversion, no response-size
+  guess, no max-token assumption, and no model-specific formula anywhere in the
+  package. Deciding what a future request should reserve is a separate,
+  unanswered question. Reconciliation is likewise only a contract, not a flow: a
+  reservation id and the amount it holds are the minimum a later operation needs
+  to settle a reservation against real provider usage, and no settle, release, or
+  refund path exists yet — which is also why `usedTokens` is still zero
+  everywhere.
+  Two implementations sit behind the abstraction. `InMemoryGatewayTokenBudget`
+  is process-local and gets atomicity from a **single
+  `ConcurrentHashMap.compute` per attempt** keyed by actor *and* day, with the
+  read, the capacity check, and the reservation all inside that one map
+  operation — never two computes for one attempt — and shares no state, no map,
+  and no window arithmetic with the request counter or the rate limiter.
+  `RedisGatewayTokenBudget` is intended for multi-instance enforcement and
+  performs **one Lua execution per reservation**: the read, the comparison, and
+  the writes all happen server-side, and the comparison returns before any
+  write, so a rejection creates no key and no TTL. It is never a GET, a
+  Java-side compare, and an INCR. Budgets live at
+  `aegivault:gateway:token-budget:<windowStart>:<actorSubject>` (for example
+  `aegivault:gateway:token-budget:1773532800:actor-1`), a **new namespace that
+  is distinct from the request-policy counters
+  (`aegivault:gateway:policy-counter:<window>:<windowStart>:<actorSubject>`)
+  and the global rate limiter (`aegivault:gateway:rate-limit:<actorSubject>`)**,
+  so the two gateway mechanisms can never corrupt each other's state; each
+  existing namespace is unchanged. The day is the same fixed UTC calendar day
+  the request counter already uses, derived identically, so a new day is a new
+  key rather than a reset, and the key's TTL covers the rest of that day plus a
+  one-second clock-skew grace so Redis expires it with no cleanup job. The
+  Redis budget **fails closed**: any Redis failure, or an empty or
+  unrecognised script result, raises `GatewayTokenBudgetUnavailableException`
+  with a fixed safe message and never reserves, leaking no host, key, actor,
+  token count, or underlying exception text. An outage is deliberately not
+  reported as a rejection: "the budget is spoken for" and "the budget is
+  unknown" must not read as the same answer. Invalid input is refused before any
+  state is read or written — a blank actor, a null or non-midnight-UTC window
+  start, a non-positive limit, and a non-positive requested amount are all
+  programming errors, not budget outcomes.
+  **This primitive is not wired into gateway traffic.** No gateway path calls
+  it, no completion service or enforcement service references it, and it is not
+  a Spring bean, so `tokensPerDay` remains entirely unenforced and live
+  `tokensPerDay` enforcement is still pending a later milestone.
   **Usage-policy request limits are now enforced on live gateway completions.**
   `GatewayCompletionService` calls the enforcement service for the
   JWT-derived actor, in a fixed order: the global `GatewayRateLimiter` runs
@@ -979,6 +1041,92 @@ the request result. A clean provider response returns as ALLOW with the
   generic 500 without leaking Redis details instead of bypassing the
   limit. No production-scale distributed guarantees are claimed beyond
   this single atomic counter.
+
+### Token-budget reservation primitive (infrastructure only)
+
+`tokensPerDay` is still **not enforced**, and the primitive that will make it
+safe to enforce now exists as `GatewayTokenBudget` in
+`gateway.policy.budget`. It is **infrastructure only**: it is not a Spring bean,
+nothing in the gateway completion path, the rate limiter, the request-policy
+counter, provider selection, or the audit ledger calls it, and no live request
+is admitted or rejected by a token amount. It exists because actual provider
+token usage is known only *after* a provider response, so a pre-request
+"read the current total, compare, then admit" is unsafe under concurrency — two
+requests arriving together would both read the same total and both conclude
+there is room. The primitive therefore reserves explicitly instead of
+measuring.
+
+Its single operation is `tryReserve(actorSubject, windowStart, limit,
+requestedTokens)`, which atomically decides whether `usedTokens +
+reservedTokens + requestedTokens <= limit` holds for that actor's current UTC
+day, and either reserves the whole requested amount or nothing. Adoption is
+all-or-nothing: a partial amount is never reserved, and a rejected attempt adds
+nothing, so hammering a spent budget cannot push the day's total further over.
+**`requestedTokens` is supplied by the caller and is never inferred here** —
+there is no character-to-token estimation, response-size heuristic,
+model-specific token formula, or max-token guess anywhere in this package,
+because a fabricated token number would enforce a limit against fiction. How a
+future gateway request arrives at a reservation amount is a separate decision
+this milestone deliberately does not make.
+
+The result is a small immutable `GatewayTokenBudgetReservation` with exactly
+two states, `RESERVED` and `REJECTED`. A successful result carries only the
+`reservationId` and `reservedTokens` — the **minimum** contract a later
+reconciliation step needs to settle a reservation against real provider usage.
+It deliberately exposes no current token count, no remaining or available
+tokens, no limit, no window, no Redis key, no actor subject, and no storage
+detail, so a rejection cannot tell a caller how much budget is left. Settling,
+releasing, and refunding a reservation are **not** implemented; settled usage
+(`usedTokens`) is currently always zero because no reconciliation step exists
+yet, and nothing pretends to have already accounted for it.
+
+The window is a single fixed UTC calendar day, `dayStart <= usage <
+nextDayStart`, using the same semantics as the request-policy counter's `DAY`
+window and never a rolling 24 hours or the JVM default zone. A non-midnight
+UTC `windowStart` is rejected before any state is touched, because a partial-day
+start names no real UTC day and would silently split one day's budget in two.
+
+Two implementations sit behind the abstraction, both concurrency-safe. The
+default process-local `InMemoryGatewayTokenBudget` gets its atomicity from a
+**single per-actor-per-day state boundary**: one
+`ConcurrentHashMap.compute` covers the read, the capacity comparison, and the
+reservation, with no check-then-act gap and no second compute per attempt, so
+simultaneous reservations can never overshoot the limit. `RedisGatewayTokenBudget`
+is intended for multi-instance enforcement and performs **one Lua invocation per
+reservation** — the read, the comparison, the total write, the per-reservation
+field, and the TTL are all server-side in that single script, never a separate
+`GET` → Java comparison → `INCR`. The atomicity claims are asserted on the
+shipped Lua text itself, not only on test doubles.
+
+Redis budgets live at
+`aegivault:gateway:token-budget:<windowStart>:<actorSubject>`, for example
+`aegivault:gateway:token-budget:1773532800:actor-1`, where `windowStart` is the
+day-start epoch second. This is a **new namespace of its own** and is not shared
+with the request-policy counters
+(`aegivault:gateway:policy-counter:<window>:<windowStart>:<actorSubject>`) or the
+global rate limiter (`aegivault:gateway:rate-limit:<actorSubject>`), both of
+which are unchanged: the three guard different quantities of different things,
+and sharing a key would let one silently corrupt another. Each day is one Redis
+hash — a `total` field plus one `reservation:<id>` field per outstanding
+reservation, so a later reconciliation can find what a given id reserved exactly
+as the in-memory budget can — carrying a TTL that covers the rest of its day
+plus a one-second clock-skew grace, so Redis expires it with no cleanup job and
+a new day is a new key rather than a reset of an old one.
+
+Redis failure **fails closed** as `GatewayTokenBudgetUnavailableException` with
+the fixed message `Unable to reserve gateway token budget.`, leaking no Redis
+host, port, key, actor, token count, limit, or underlying exception text (the
+cause is kept for server logs only). An empty or unrecognised script result
+fails closed the same way rather than being read as either outcome, because
+"could not determine the budget" is not "the budget is spent" and is certainly
+not "there is room". Blank actor subjects, null or non-midnight day starts,
+non-positive limits, and non-positive requested amounts are all rejected before
+any state is read or written and before any round trip is spent. No HTTP status
+is chosen, because there is no controller or gateway integration yet.
+
+**Live `tokensPerDay` enforcement remains pending**: this primitive does not
+reject or block any request, and no token-usage audit event, dashboard, refund,
+or post-provider reconciliation exists.
 
 ## High-level request/data flows (planned)
 
