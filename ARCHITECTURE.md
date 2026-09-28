@@ -1034,6 +1034,42 @@ the request result. A clean provider response returns as ALLOW with the
   step that will follow the provider response — and **the coordinator is not
   wired into gateway traffic**, so `tokensPerDay` is still unenforced and no
   live integration has been made.
+  **A post-reservation settlement coordinator now exists, still unwired.**
+  `GatewayTokenBudgetSettlementService.settle(actorSubject, reservedAt,
+  reservationId, settlement)` decides what happens to a hold once the provider
+  phase is over, mapping three accounting truths onto three explicit states.
+  **Known provider usage is reconciled exactly**: the reservation is replaced by
+  the provider's own reported total, used as reported and never capped back to
+  the reservation, so an over-spend stays accounted. **A provider invocation
+  failure releases the reservation at zero** (`RELEASED`) — no response means
+  nothing was generated or consumed, so holding the capacity would shrink the
+  actor's day for a call that never reached a provider. **A response whose token
+  count is unknown yields `UNKNOWN_USAGE` and the reservation is deliberately
+  left held**, to expire with its own UTC day key. That last choice is the
+  conservative one and is a real trade-off: the actor may *temporarily* have
+  less capacity available than they otherwise would, but the system never books
+  spend that may not have happened and never books a fabricated figure. It is
+  not treated as zero, because a provider response may well have cost tokens
+  and releasing would under-account; and it is not estimated, because no
+  honest basis for a number exists. No separate hold-forever mechanism is
+  added — the hold simply rides out the TTL it already had. **A response
+  rejected by security inspection is settled exactly like any other response**:
+  the provider produced it and may have spent tokens, so known usage reconciles
+  and unknown usage stays held, while the existing security BLOCK result is
+  unchanged. A provider *failure* and a provider-response *block* are
+  therefore never conflated — the difference is whether a response exists at
+  all. The window is the same fixed UTC calendar day, derived from the caller's
+  own instant and never from `Instant.now()`, so a late settlement still lands
+  on the day its hold belongs to. A failed reconciliation raises
+  `GatewayTokenBudgetSettlementException` — fixed message, no Redis, key,
+  reservation, actor, or exception text — rather than reporting a settlement
+  that did not happen, and is never retried, because a failed reconciliation
+  leaves server state unknown and a retry could settle the same tokens twice;
+  a `GatewayTokenBudgetReservationStateException` propagates unchanged rather
+  than being swallowed as unknown usage. The service reserves nothing, reads no
+  provider content, and applies **no token estimation whatsoever**; it depends
+  only on `GatewayTokenBudget` and carries no Spring annotation, so no gateway
+  path calls it and `tokensPerDay` is still unenforced.
   **This primitive is not wired into gateway traffic.** No gateway path calls
   it, no completion service or enforcement service references it, and it is not
   a Spring bean, so `tokensPerDay` remains entirely unenforced and live

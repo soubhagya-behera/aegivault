@@ -788,6 +788,36 @@
   performed here**; the reservation id is simply handed on for the later
   runtime step that follows the provider response. `tokensPerDay` is still NOT
   enforced and live gateway integration remains pending.
+  A **post-reservation settlement coordinator** now exists as
+  `GatewayTokenBudgetSettlementService.settle(actorSubject, reservedAt,
+  reservationId, settlement)`, with no live caller and no Spring annotation. It
+  maps three accounting truths onto three states: **known provider usage is
+  reconciled exactly** (`RECONCILED`) using the provider's own total, never
+  capped back to the reservation; a **provider invocation failure releases the
+  reservation at zero** (`RELEASED`), since no response means nothing was
+  generated or consumed; and a **response with an unknown token count leaves the
+  reservation held** (`UNKNOWN_USAGE`) until its own UTC day key expires. That
+  conservative choice is a genuine trade-off — the actor may temporarily have
+  less capacity available than they otherwise would, but the system never
+  books spend that may not have happened and never books a fabricated figure.
+  Unknown usage is deliberately not treated as zero (a response may have cost
+  tokens, and releasing would under-account) and is never estimated (no honest
+  basis for a number exists); no separate hold-forever mechanism is added, the
+  hold simply rides out the TTL it already had. A **response blocked by
+  security inspection is settled exactly like any other response** — known
+  usage reconciles, unknown usage stays held, and the existing security BLOCK
+  result is unchanged — so a provider *failure* and a provider-response *block*
+  are never conflated; the only difference is whether a response exists. The
+  window is the same fixed UTC calendar day, derived from the caller's own
+  instant and never from `Instant.now()`. A failed reconciliation raises
+  `GatewayTokenBudgetSettlementException` with a fixed generic message rather
+  than reporting a settlement that did not happen, and is never retried, since
+  a failed reconciliation leaves server state unknown; a
+  `GatewayTokenBudgetReservationStateException` propagates unchanged instead of
+  being swallowed as unknown usage. The service reserves nothing, reads no
+  provider content, and adds **no token estimation** of any kind; it depends
+  only on `GatewayTokenBudget`. `tokensPerDay` remains unenforced and no live
+  token-budget integration exists yet.
 
 ## Next planned step
 
