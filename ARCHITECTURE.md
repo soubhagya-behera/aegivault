@@ -1001,6 +1001,39 @@ the request result. A clean provider response returns as ALLOW with the
   token estimation or prediction is performed** anywhere — the amount is
   configuration, not a computed figure, and real provider usage is still
   obtained only after the provider response and reconciled then.
+  **A token-budget enforcement coordinator now exists, still unwired.**
+  `GatewayTokenBudgetEnforcementService.reserve(actorSubject, now)` resolves
+  the actor's effective policy and, when that policy declares a daily token
+  limit, reserves capacity in **one atomic `tryReserve` call** using exactly
+  the policy's own `reservationTokensPerRequest` — the configured amount, passed
+  through unchanged, with **no token estimation performed anywhere**: no
+  character or prompt-length conversion, no response-size guess, no model name,
+  and no max-token heuristic. The reservation amount therefore comes from
+  trusted configuration rather than from anything the caller supplies per
+  request. The window is the **current fixed UTC calendar day**, derived from
+  the caller-supplied instant with the same arithmetic the request counter
+  uses, never a rolling 24 hours and never the JVM default zone. Its immutable
+  result has five explicit states — `NO_POLICY`, `INACTIVE`, `NO_TOKEN_POLICY`,
+  `RESERVED`, and `REJECTED` (with the closed reason
+  `TOKEN_BUDGET_EXCEEDED`) — because "no token rule applies" and "the token
+  rule refused you" must never read as the same answer. Only a `RESERVED`
+  result carries the `reservationId` and `reservedTokens` needed later for
+  reconciliation; no actor subject, limit, remaining budget, current usage, key,
+  or storage detail is exposed. The three non-reserving states **never contact
+  the budget at all**, so no capacity is spent where no limit ever granted it,
+  and an ambiguous policy propagates
+  `GatewayUsagePolicyAmbiguousException` unchanged. **Failure is not
+  rejection**: `GatewayTokenBudgetUnavailableException` is translated into
+  `GatewayTokenBudgetEnforcementException` — deliberately a distinct type from
+  the request-limit `GatewayUsagePolicyEnforcementException`, so a caller can
+  tell which control could not be evaluated — and never becomes a `REJECTED`.
+  The coordinator depends only on `GatewayUsagePolicyResolver` and
+  `GatewayTokenBudget`: no completion service, counter, rate limiter, provider,
+  repository, controller, or audit ledger. **Reconciliation is not performed
+  here** — the reservation id is simply carried forward for the later runtime
+  step that will follow the provider response — and **the coordinator is not
+  wired into gateway traffic**, so `tokensPerDay` is still unenforced and no
+  live integration has been made.
   **This primitive is not wired into gateway traffic.** No gateway path calls
   it, no completion service or enforcement service references it, and it is not
   a Spring bean, so `tokensPerDay` remains entirely unenforced and live

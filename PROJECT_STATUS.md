@@ -756,6 +756,38 @@
   amount is configuration, not a computed figure, and actual provider token
   usage is still obtained only after the provider response and reconciled
   against the reservation then. `tokensPerDay` is still NOT enforced.
+  A **token-budget enforcement coordinator** now exists as
+  `GatewayTokenBudgetEnforcementService.reserve(actorSubject, now)`, still
+  with no live caller. It resolves the actor's effective policy and, when the
+  policy declares `tokensPerDay`, makes **one atomic `tryReserve` call** using
+  exactly the policy-controlled `reservationTokensPerRequest` — the configured
+  amount passed through unchanged, with **no token estimation performed**: no
+  character or prompt-length conversion, no response-size guess, no model name,
+  and no max-token heuristic. The reservation amount therefore comes from
+  trusted configuration rather than per-request client input. The window is the
+  **current fixed UTC calendar day**, derived from the caller-supplied instant
+  with the same arithmetic the request counter uses, never a rolling 24 hours
+  and never the JVM default zone. Its immutable
+  `GatewayTokenBudgetEnforcementResult` has five explicit states: `NO_POLICY`,
+  `INACTIVE`, `NO_TOKEN_POLICY`, `RESERVED`, and `REJECTED` with the closed
+  reason `TOKEN_BUDGET_EXCEEDED` — "no token rule applies" is deliberately kept
+  distinct from "the token rule refused you". Only `RESERVED` carries the
+  `reservationId` and `reservedTokens` a later reconciliation step will need;
+  no actor subject, limit, remaining budget, current usage, Redis key, or
+  storage detail is exposed. The three non-reserving states never contact
+  `GatewayTokenBudget` at all, so no capacity is spent where no limit granted
+  it, and an ambiguous policy propagates
+  `GatewayUsagePolicyAmbiguousException` unchanged. **Failure is not
+  rejection**: `GatewayTokenBudgetUnavailableException` becomes
+  `GatewayTokenBudgetEnforcementException`, deliberately a distinct type from
+  the request-limit `GatewayUsagePolicyEnforcementException` so a caller can
+  tell which control could not be evaluated, and it never becomes a
+  `REJECTED`. Dependencies are limited to `GatewayUsagePolicyResolver` and
+  `GatewayTokenBudget` — no completion service, counter, rate limiter,
+  provider, repository, controller, or audit ledger. **Reconciliation is not
+  performed here**; the reservation id is simply handed on for the later
+  runtime step that follows the provider response. `tokensPerDay` is still NOT
+  enforced and live gateway integration remains pending.
 
 ## Next planned step
 
