@@ -66,6 +66,8 @@ class GatewayCompletionPolicyEnforcementTest {
 
     private GatewayRateLimiter rateLimiter;
 
+    private InertTokenBudget tokenBudget;
+
     private GatewayCompletionService service;
 
     @BeforeEach
@@ -77,6 +79,7 @@ class GatewayCompletionPolicyEnforcementTest {
         audit = mock(GatewayAuditService.class);
         usage = mock(GatewayUsageRecorder.class);
         policyResolver = mock(GatewayUsagePolicyResolver.class);
+        tokenBudget = new InertTokenBudget(policyResolver);
         rateLimiter = actor -> true;
 
         when(selector.select(any())).thenReturn(selected);
@@ -106,6 +109,8 @@ class GatewayCompletionPolicyEnforcementTest {
         return new GatewayCompletionService(
                 rateLimiter,
                 new GatewayUsagePolicyEnforcementService(policyResolver, counter),
+                tokenBudget.enforcement(),
+                tokenBudget.settlement(),
                 inspections,
                 responseInspections,
                 selector,
@@ -201,6 +206,8 @@ class GatewayCompletionPolicyEnforcementTest {
         GatewayCompletionService globallyLimited = new GatewayCompletionService(
                 actor -> false,
                 new GatewayUsagePolicyEnforcementService(policyResolver, counter),
+                tokenBudget.enforcement(),
+                tokenBudget.settlement(),
                 inspections,
                 responseInspections,
                 selector,
@@ -342,6 +349,8 @@ class GatewayCompletionPolicyEnforcementTest {
         GatewayCompletionService globallyLimited = new GatewayCompletionService(
                 actor -> false,
                 new GatewayUsagePolicyEnforcementService(policyResolver, counter),
+                tokenBudget.enforcement(),
+                tokenBudget.settlement(),
                 inspections,
                 responseInspections,
                 selector,
@@ -372,6 +381,8 @@ class GatewayCompletionPolicyEnforcementTest {
         GatewayCompletionService ordered = new GatewayCompletionService(
                 spy,
                 new GatewayUsagePolicyEnforcementService(policyResolver, counter),
+                tokenBudget.enforcement(),
+                tokenBudget.settlement(),
                 inspections,
                 responseInspections,
                 selector,

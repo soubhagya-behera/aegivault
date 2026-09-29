@@ -2,6 +2,10 @@ package com.aegivault.aegivault.gateway;
 
 import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementResult;
 import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementService;
+import com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetEnforcementResult;
+import com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetEnforcementService;
+import com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetSettlement;
+import com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetSettlementService;
 import com.aegivault.aegivault.gateway.provider.LlmProvider;
 import com.aegivault.aegivault.gateway.provider.LlmProviderSelector;
 import com.aegivault.aegivault.gateway.provider.LlmRequest;
@@ -9,6 +13,7 @@ import com.aegivault.aegivault.gateway.provider.LlmResponse;
 import com.aegivault.aegivault.gateway.usage.GatewayUsageOutcome;
 import com.aegivault.aegivault.gateway.usage.GatewayUsageRecorder;
 import java.time.Instant;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -54,10 +59,48 @@ import org.springframework.stereotype.Service;
  * inspection, audit, provider selection, or provider invocation happen, so
  * either rejection leaves no inspection audit entry and no usage record.
  *
- * <p><strong>Request limits, not token budgets.</strong> Only
- * {@code requestsPerMinute} and {@code requestsPerDay} are enforced here.
- * {@code tokensPerDay} is not: token usage is known only after a provider
- * response, whereas admission happens before provider invocation.
+ * <p><strong>Token budgets are reservation and accounting, never
+ * prediction.</strong> {@code tokensPerDay} is enforced here, but by
+ * <em>reserving</em> a slice of the actor's day before the provider runs and
+ * <em>settling</em> that hold afterwards — never by estimating what the request
+ * will cost. The reserved amount is the policy's own
+ * {@code reservationTokensPerRequest}, used unchanged; nothing here converts
+ * characters to tokens, measures the prompt, guesses a response size, reads a
+ * model name, or applies a max-token heuristic, and no token count is ever
+ * invented when a provider reports none.
+ *
+ * <p><strong>Reservation sits between provider selection and provider
+ * invocation.</strong> After both admission controls, request inspection, its
+ * audit entry, and provider selection have all succeeded — and only then — the
+ * actor's configured daily token capacity is reserved in one atomic attempt
+ * through {@link GatewayTokenBudgetEnforcementService}. That position is
+ * deliberate: a request blocked by request inspection, or a request whose
+ * provider could not be selected, never reserves anything, so the actor's day
+ * is not charged for work that could not happen. {@code NO_POLICY},
+ * {@code INACTIVE}, and {@code NO_TOKEN_POLICY} all continue with nothing
+ * reserved and nothing consulted. A {@code REJECTED} decision fails as
+ * {@link GatewayTokenBudgetLimitExceededException} before the provider is
+ * invoked, so it creates no usage record and no provider-response audit event,
+ * and it exposes nothing about usage, remaining budget, the limit, the reserved
+ * amount, or the reservation id. A budget that could not answer is not a
+ * rejection: it propagates as
+ * {@link com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetEnforcementException}
+ * and is never turned into a 429.
+ *
+ * <p><strong>Settlement closes the hold before the response is
+ * finalized.</strong> Once a provider response exists it is settled through
+ * {@link GatewayTokenBudgetSettlementService} before anything else looks at it:
+ * a known provider total is reconciled exactly as reported, a response with no
+ * reported total leaves the reservation held until its own UTC day expires
+ * (never released to zero, never estimated), and a provider that produced
+ * nothing settles at zero so the day is not shrunk by a call that never reached
+ * a provider. A security BLOCK and an oversized response both settle exactly
+ * like any other response, because in both cases the provider really did produce
+ * one. A settlement that could not be finalised propagates as
+ * {@link com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetSettlementException}
+ * and fails the request closed: no provider content, no security BLOCK body, and
+ * no normal completion is returned while the day's accounting is unknown, and
+ * nothing is retried.
  *
  * <p>A provider failure — including a provider-selection failure —
  * surfaces as {@link GatewayProviderException}
@@ -96,6 +139,22 @@ public class GatewayCompletionService {
     private final GatewayRateLimiter rateLimiter;
 
     private final GatewayUsagePolicyEnforcementService policyEnforcement;
+
+    /**
+     * The token half of policy enforcement: reserves the actor's configured
+     * daily token capacity immediately before provider invocation. Kept as the
+     * coordinator abstraction, never the {@code GatewayTokenBudget}, Redis, the
+     * policy resolver, or a policy repository, so a change to how a budget is
+     * stored can never reach this class.
+     */
+    private final GatewayTokenBudgetEnforcementService tokenBudgetEnforcement;
+
+    /**
+     * The counterpart that settles a reservation once the provider phase is
+     * over. Deliberately a separate collaborator from the one that reserves,
+     * because they run at different times and answer different questions.
+     */
+    private final GatewayTokenBudgetSettlementService tokenBudgetSettlement;
 
     private final SecurityInspectionService inspections;
 
@@ -151,6 +210,134 @@ public class GatewayCompletionService {
     }
 
     /**
+     * One outstanding token hold, or {@link Optional#empty()} when no token
+     * rule applied to this request.
+     *
+     * <p>The reservation instant is carried alongside the id because the
+     * settlement derives the same UTC day from it: passing the very instant the
+     * reservation was taken at is what keeps a late settlement on the day the
+     * hold belongs to, even across UTC midnight. Nothing else is kept — not the
+     * reserved amount, not the limit, not any budget state — so a hold can
+     * never carry information outward.
+     *
+     * @param reservedAt the instant the reservation was taken at, never null
+     * @param reservationId the id the hold is recorded under, never blank
+     */
+    private record TokenReservation(Instant reservedAt, String reservationId) {}
+
+    /**
+     * Reserves the actor's configured slice of their daily token budget, after
+     * both admission controls, request inspection, its audit entry, and
+     * provider selection have all succeeded, and immediately before the
+     * provider is invoked.
+     *
+     * <p>{@code NO_POLICY}, {@code INACTIVE}, and {@code NO_TOKEN_POLICY} all
+     * return empty: there is no allowance to spend, and spending one would
+     * silently shrink an allowance no limit ever granted. {@code RESERVED}
+     * returns the hold. {@code REJECTED} throws, so no provider runs, no usage
+     * is recorded, no provider-response audit entry is written, and nothing
+     * about the budget's state escapes.
+     *
+     * <p>Ambiguous configuration and an unavailable budget propagate unchanged:
+     * both are failures to decide rather than rejections, so neither becomes a
+     * 429 here, and neither is audited because no decision was made.
+     *
+     * @param inspection the request being completed, never null
+     * @param reservedAt the instant the reservation is taken at, never null
+     * @return the hold, or empty when no token limit applies
+     */
+    private Optional<TokenReservation> reserveTokens(
+            GatewayInspectionRequest inspection, Instant reservedAt) {
+        GatewayTokenBudgetEnforcementResult decision =
+                tokenBudgetEnforcement.reserve(inspection.actorSubject(), reservedAt);
+        switch (decision.state()) {
+            case NO_POLICY, INACTIVE, NO_TOKEN_POLICY -> {
+                // Nothing was applied, so nothing is reserved and there is no
+                // token decision to evidence. The inspection audit above and
+                // the provider path below are unaffected.
+                return Optional.empty();
+            }
+            case RESERVED -> {
+                // Only the id is carried forward, exactly the minimum a later
+                // settlement needs; the provider request itself is untouched.
+                return Optional.of(new TokenReservation(reservedAt, decision.reservationId()));
+            }
+            case REJECTED -> {
+                // The budget's state is deliberately not surfaced: the message
+                // names the control, never the actor's counts, limit, reserved
+                // amount, or reservation id.
+                throw new GatewayTokenBudgetLimitExceededException();
+            }
+            default -> throw new IllegalStateException("Unhandled token-budget decision state.");
+        }
+    }
+
+    /**
+     * Settles a hold against what the provider phase actually produced.
+     *
+     * <p>Nothing happens when no hold was taken, so a request that reserved
+     * nothing costs nothing. A {@link
+     * com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetSettlementException}
+     * propagates: the day could not be finalised, and reporting the response
+     * anyway would claim an accounting state the system cannot stand behind.
+     *
+     * @param inspection the request being completed, never null
+     * @param reservation the hold, or empty when none was taken
+     * @param settlement what the provider phase produced, never null
+     */
+    private void settleTokens(
+            GatewayInspectionRequest inspection,
+            Optional<TokenReservation> reservation,
+            GatewayTokenBudgetSettlement settlement) {
+        reservation.ifPresent(hold -> tokenBudgetSettlement.settle(
+                inspection.actorSubject(), hold.reservedAt(), hold.reservationId(), settlement));
+    }
+
+    /**
+     * The settlement for a provider response that exists: the provider's own
+     * reported total when it gave one, and unknown usage when it did not.
+     *
+     * <p>Unknown usage is never turned into zero and never estimated. The
+     * settlement service leaves such a hold standing until its day expires,
+     * which is the conservative direction.
+     *
+     * @param response a provider response that already exists, never null
+     * @return the settlement describing it, never null
+     */
+    private static GatewayTokenBudgetSettlement settlementFor(LlmResponse response) {
+        Long totalTokens = response.usage().totalTokens();
+        return totalTokens == null
+                ? GatewayTokenBudgetSettlement.unknownUsage()
+                : GatewayTokenBudgetSettlement.withUsage(totalTokens);
+    }
+
+    /**
+     * Settles a hold for a provider call that produced no response at all, and
+     * fails closed if it cannot.
+     *
+     * <p>The hold is given back in full because nothing was generated and
+     * nothing was consumed. If the release itself fails, the settlement failure
+     * propagates and the original provider error is kept as a suppressed
+     * exception for server logs: the day's accounting is unknown, so the request
+     * must not be reported as an ordinary provider failure.
+     *
+     * @param inspection the request being completed, never null
+     * @param reservation the hold to release, or empty when none was taken
+     * @param providerFailure the failure being reported, never null
+     */
+    private void releaseUnproducedAttempt(
+            GatewayInspectionRequest inspection,
+            Optional<TokenReservation> reservation,
+            RuntimeException providerFailure) {
+        try {
+            settleTokens(inspection, reservation, GatewayTokenBudgetSettlement.noResponse());
+        } catch (RuntimeException settlementFailure) {
+            settlementFailure.addSuppressed(providerFailure);
+            throw settlementFailure;
+        }
+    }
+
+    /**
      * Inspects one request and completes it when allowed.
      *
      * @param inspection inspection input with server-generated id and
@@ -170,13 +357,32 @@ public class GatewayCompletionService {
         if (requestDecision.verdict() == SecurityVerdict.BLOCK) {
             return GatewayCompleteResponse.blocked(requestDecision);
         }
-        final LlmResponse completion;
+        final LlmProvider selected;
         try {
-            LlmProvider selected = selector.select(inspection.model());
-            completion = selected.complete(new LlmRequest(inspection.model(), inspection.content()));
+            selected = selector.select(inspection.model());
         } catch (RuntimeException ex) {
+            // Selection fails before any reservation exists, so there is
+            // nothing to settle and the actor's day is untouched.
             throw new GatewayProviderException("Unable to complete gateway request.", ex);
         }
+        // One instant drives both halves of the token budget, so a reservation
+        // and its later settlement always describe the same UTC day.
+        Instant reservedAt = Instant.now();
+        Optional<TokenReservation> reservation = reserveTokens(inspection, reservedAt);
+        final LlmResponse completion;
+        try {
+            completion = selected.complete(new LlmRequest(inspection.model(), inspection.content()));
+        } catch (RuntimeException ex) {
+            // A call that produced nothing must give its capacity back, and a
+            // failure to do so must not be reported as a provider failure.
+            releaseUnproducedAttempt(inspection, reservation, ex);
+            throw new GatewayProviderException("Unable to complete gateway request.", ex);
+        }
+        // A response exists from here on, so the hold is settled before the
+        // response is size-checked, inspected, recorded, or returned — which is
+        // also why a security BLOCK and an oversized response are accounted
+        // for exactly like a delivered one.
+        settleTokens(inspection, reservation, settlementFor(completion));
         if (completion.content().length() > MAX_PROVIDER_RESPONSE_LENGTH) {
             throw new GatewayProviderException(
                     "Unable to complete gateway request.",

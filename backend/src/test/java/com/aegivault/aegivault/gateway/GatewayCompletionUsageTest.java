@@ -66,8 +66,23 @@ class GatewayCompletionUsageTest {
             new com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementService(
                     policyResolver, new AlwaysAdmitsPolicyCounter());
 
+    /**
+     * The real token-budget coordinators over one shared in-memory budget:
+     * inert here because the actor has no enabled policy, so usage-recording
+     * behavior is exercised unchanged.
+     */
+    private final InertTokenBudget tokenBudget = new InertTokenBudget(policyResolver);
+
     private final GatewayCompletionService service = new GatewayCompletionService(
-            actor -> true, policyEnforcement, inspections, responseInspections, selector, audit, usage);
+            actor -> true,
+policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspections,
+responseInspections,
+selector,
+audit,
+usage);
 
     private static GatewayInspectionRequest inspection(String content) {
         return new GatewayInspectionRequest(UUID.randomUUID(), "analyst", "test-model", content);
@@ -220,7 +235,15 @@ class GatewayCompletionUsageTest {
     @Test
     void rateLimitedRequestRecordsNoUsage() {
         GatewayCompletionService limitedService = new GatewayCompletionService(
-                actor -> false, policyEnforcement, inspections, responseInspections, selector, audit, usage);
+                actor -> false,
+policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspections,
+responseInspections,
+selector,
+audit,
+usage);
 
         assertThatThrownBy(() -> limitedService.complete(inspection("Summarize quarterly revenue trends.")))
                 .isInstanceOf(GatewayRateLimitExceededException.class);

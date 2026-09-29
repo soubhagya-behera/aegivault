@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.gateway.policy.budget;
 
+import com.aegivault.aegivault.gateway.GatewayCompletionService;
 import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicy;
 import java.time.Instant;
 
@@ -52,10 +53,13 @@ import java.time.Instant;
  * indivisible operation. Separate read-then-write steps are not an acceptable
  * approximation: they are exactly the race this abstraction exists to close.
  *
- * <p><strong>Not wired into gateway traffic.</strong> No gateway code path calls
- * this interface, so it has zero effect on real requests and {@code
- * tokensPerDay} remains unenforced. It is infrastructure for a later
- * milestone.
+ * <p><strong>Wired into gateway traffic, behind two
+ * coordinators.</strong> {@link GatewayCompletionService} never calls this
+ * interface directly: it calls
+ * {@link GatewayTokenBudgetEnforcementService} to reserve and
+ * {@link GatewayTokenBudgetSettlementService} to settle, and those are the only
+ * callers. The completion service therefore depends on the coordinators and
+ * never on the primitive, its implementations, or Redis.
  *
  * <p><strong>What must not leak into this type.</strong> No HTTP status, no
  * controller, no audit entry, no provider, no policy resolution, and no token
@@ -154,9 +158,11 @@ public interface GatewayTokenBudget {
      * indivisible operation, so a concurrent reservation can never be decided
      * against a total mid-adjustment.
      *
-     * <p><strong>Not wired into gateway traffic.</strong> No gateway code path
-     * calls this interface, so nothing settles in production and
-     * {@code tokensPerDay} remains unenforced.
+     * <p><strong>Wired into gateway traffic, behind two
+     * coordinators.</strong> Exactly one caller reaches this interface for a
+     * settlement: {@link GatewayTokenBudgetSettlementService}, itself called
+     * from {@link GatewayCompletionService} after the provider phase ends. The
+     * completion service never calls it directly.
      *
      * @param actorSubject verified JWT subject, never blank; trimmed exactly
      *        like the rest of the policy package trims it

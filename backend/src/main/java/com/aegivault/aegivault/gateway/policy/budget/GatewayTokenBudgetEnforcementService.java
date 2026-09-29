@@ -69,8 +69,10 @@ import java.util.Objects;
  *
  * <p>Depends only on the policy resolver and the token budget. It holds no
  * reference to the completion service, the request counter, the rate limiter,
- * Redis, providers, repositories, controllers, or the audit ledger, and it is
- * not yet invoked by any gateway traffic path.
+ * Redis, providers, repositories, controllers, or the audit ledger. Its one
+ * live caller is {@link com.aegivault.aegivault.gateway.GatewayCompletionService},
+ * which calls it once per request, after request inspection and provider
+ * selection and immediately before provider invocation.
  */
 public class GatewayTokenBudgetEnforcementService {
 

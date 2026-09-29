@@ -839,12 +839,14 @@ the request result. A clean provider response returns as ALLOW with the
   `requestsPerDay` and calls the counter once, mapping the single result onto
   its existing `NO_POLICY` / `ALLOW` / `REJECTED` / `INACTIVE` states, with
   ambiguity propagation and fail-closed behaviour unchanged.
-  **`tokensPerDay` remains unenforced**: it is never read by the enforcement
-  service, and there is no token reservation in the request path, no
-  pre-request token check, no response token rollback, and no character
-  heuristic.
-  **The token-budget reservation primitive now exists, as infrastructure
-  only.** `GatewayTokenBudget` is a separate abstraction from
+  **The token half is enforced separately, never from here**: this service
+  never reads `tokensPerDay`. That half of the policy is enforced by
+  reserving before provider invocation and settling after it, through
+  `GatewayTokenBudgetEnforcementService` and
+  `GatewayTokenBudgetSettlementService`. There is still no token estimation, no
+  tokenizer, and no character heuristic anywhere in the path.
+  **The token-budget reservation primitive is a separate abstraction.**
+  `GatewayTokenBudget` is a separate abstraction from
   `GatewayUsagePolicyCounter` and from the global rate limiter: it answers "does
   this actor have room in its daily *token* budget", not "may this actor make
   this request". Its single operation is
@@ -942,10 +944,11 @@ the request result. A clean provider response returns as ALLOW with the
   any write when it is absent, and otherwise removes the field and adjusts the
   total, deliberately not touching the TTL so the day's own expiry is
   preserved. It is never a GET, a Java-side compare, and then an HDEL/INCR.
-  **This is still infrastructure only.** No gateway path calls `reconcile`, no
-  completion service or enforcement service references it, and nothing reserves
-  before a provider call or settles after one, so `tokensPerDay` remains
-  entirely unenforced and no provider request is ever rejected on token grounds.
+  **The primitive is reached only through the two coordinators.** No gateway
+  path calls `reconcile` directly: `GatewayTokenBudgetSettlementService` is its
+  only caller, and that is itself called once per provider phase by
+  `GatewayCompletionService`, so every settlement is atomic, single-use, and
+  never retried.
   **The input to a future reservation is now defined, and is deliberately
   caller-supplied.** `GatewayTokenBudgetReservationRequest` is a one-field
   immutable record carrying the **requested reservation amount**: the number of
@@ -996,12 +999,12 @@ the request result. A clean provider response returns as ALLOW with the
   response; **no endpoint, resolver, or evaluator behaviour changed**, owner
   scoping is untouched, and lifecycle audit metadata stays exactly as minimal
   as before — the numeric value is not added to `CREATED`/`UPDATED` event data.
-  **It is still not enforced**: no gateway code path reads the column, nothing
-  reserves before a provider call, `tokensPerDay` remains unenforced, and **no
-  token estimation or prediction is performed** anywhere — the amount is
+  **It is enforced now, by reservation and settlement**: nothing reads the
+  column to predict anything, and **no token estimation or prediction is
+  performed** anywhere — the amount is
   configuration, not a computed figure, and real provider usage is still
   obtained only after the provider response and reconciled then.
-  **A token-budget enforcement coordinator now exists, still unwired.**
+  **A token-budget enforcement coordinator now exists and is live.**
   `GatewayTokenBudgetEnforcementService.reserve(actorSubject, now)` resolves
   the actor's effective policy and, when that policy declares a daily token
   limit, reserves capacity in **one atomic `tryReserve` call** using exactly
@@ -1030,11 +1033,11 @@ the request result. A clean provider response returns as ALLOW with the
   The coordinator depends only on `GatewayUsagePolicyResolver` and
   `GatewayTokenBudget`: no completion service, counter, rate limiter, provider,
   repository, controller, or audit ledger. **Reconciliation is not performed
-  here** — the reservation id is simply carried forward for the later runtime
-  step that will follow the provider response — and **the coordinator is not
-  wired into gateway traffic**, so `tokensPerDay` is still unenforced and no
-  live integration has been made.
-  **A post-reservation settlement coordinator now exists, still unwired.**
+  here** — the reservation id is simply carried forward to the runtime step
+  that follows the provider response — and the coordinator is now **wired into
+  gateway traffic**, called by `GatewayCompletionService` after request
+  inspection and provider selection and immediately before provider invocation.
+  **A post-reservation settlement coordinator now exists and is live.**
   `GatewayTokenBudgetSettlementService.settle(actorSubject, reservedAt,
   reservationId, settlement)` decides what happens to a hold once the provider
   phase is over, mapping three accounting truths onto three explicit states.
@@ -1068,12 +1071,82 @@ the request result. A clean provider response returns as ALLOW with the
   a `GatewayTokenBudgetReservationStateException` propagates unchanged rather
   than being swallowed as unknown usage. The service reserves nothing, reads no
   provider content, and applies **no token estimation whatsoever**; it depends
-  only on `GatewayTokenBudget` and carries no Spring annotation, so no gateway
-  path calls it and `tokensPerDay` is still unenforced.
-  **This primitive is not wired into gateway traffic.** No gateway path calls
-  it, no completion service or enforcement service references it, and it is not
-  a Spring bean, so `tokensPerDay` remains entirely unenforced and live
-  `tokensPerDay` enforcement is still pending a later milestone.
+  only on `GatewayTokenBudget` and carries no Spring annotation of its own, so
+  it is exposed as a bean by `GatewayTokenBudgetEnforcementConfiguration`
+  rather than by itself.
+  **`tokensPerDay` is now enforced on live gateway completions.**
+  `GatewayCompletionService` gained exactly two dependencies — the
+  `GatewayTokenBudgetEnforcementService` and the
+  `GatewayTokenBudgetSettlementService` — and nothing below them: never the
+  `GatewayTokenBudget` primitive, a budget implementation, Redis, the policy
+  repository, or the policy resolver. One `GatewayTokenBudget` bean is selected
+  at startup from `aegivault.gateway.token-budget` (`IN_MEMORY` by default,
+  `REDIS` for multi-instance enforcement), mirroring the rate-limiter and
+  policy-counter switches, and both coordinators are built over that one bean.
+  The order inside `POST /api/gateway/complete` is fixed:
+
+  ```
+  global rate limiter
+      v
+  request policy enforcement (requestsPerMinute / requestsPerDay)
+      v
+  request security inspection
+      v
+  inspection audit
+      v
+  provider selection
+      v
+  token-budget reservation      <- new
+      v
+  provider invocation
+      v
+  token-budget settlement       <- new
+      v
+  provider-response inspection
+      v
+  usage recording
+  ```
+
+  **Reservation sits after request inspection and provider selection, and
+  before provider invocation.** That position is the whole point: a request
+  blocked by inspection, and a request whose provider could not be selected,
+  both fail before any capacity is held, so an actor is never charged for work
+  that could not happen. `NO_POLICY`, `INACTIVE`, and `NO_TOKEN_POLICY` each
+  continue with nothing reserved and the budget never consulted.
+  `REJECTED` returns HTTP 429 `{"message": "Gateway token budget exceeded."}`
+  before the provider is invoked, so it creates no usage row and no
+  provider-response audit event, never runs a second inspection, and exposes no
+  current usage, remaining budget, limit, reserved amount, or reservation id.
+  A budget that could not answer is **not** a rejection: it returns HTTP 500
+  `{"message": "Unable to enforce gateway token budget."}`. An outage is never
+  reported as an exceeded limit.
+
+  **Settlement closes the hold before the response is finalized.** A known
+  provider `totalTokens` is reconciled exactly as reported, never capped back
+  to the reservation, so an over-spend stays accounted. An unknown total leaves
+  the reservation held until its own UTC day TTL expires, and is never released
+  to zero and never estimated. A provider failure settles `NO_RESPONSE`, which
+  reconciles at zero. A security BLOCK and an oversized provider response both
+  settle exactly like any other response, because the provider really did
+  produce one. A settlement failure returns HTTP 500
+  `{"message": "Unable to settle gateway token budget."}` and **fails closed**:
+  no provider content, no security BLOCK body, and no normal completion is
+  returned while the day's accounting is unknown, nothing is retried, and a
+  provider error met on the way is kept only as a suppressed exception for
+  server logs.
+
+  **No token estimation is performed anywhere in this path.** The reserved
+  amount is the policy's own `reservationTokensPerRequest`, used unchanged, and
+  real usage is only ever what a provider reported. There is no tokenizer, no
+  character or byte conversion, no prompt-length measurement, no response-size
+  guess, no model-specific formula, and no max-token heuristic. Token budgets
+  here are **reservation and accounting, not token prediction** — which is
+  exactly why a token-only policy (no `requestsPerMinute`, no `requestsPerDay`)
+  now works end to end: it reserves before the provider runs, reconciles the
+  provider's reported usage afterwards, records the usage row exactly as
+  before, and never consults a request counter. Usage recording and the audit
+  ledger are unchanged: there are still **no token-budget audit events**, and no
+  reservation id is stored on a usage row.
   **Usage-policy request limits are now enforced on live gateway completions.**
   `GatewayCompletionService` calls the enforcement service for the
   JWT-derived actor, in a fixed order: the global `GatewayRateLimiter` runs
@@ -1118,12 +1191,13 @@ the request result. A clean provider response returns as ALLOW with the
   replaces the 429: a rejection whose evidence was not stored must not be
   reported as though it had been. A policy-rejected request records no usage
   row, because there was no provider call.
-  The completion service depends only on the enforcement service, never on
-  the policy repository, the counter, a counter implementation, Redis, or the
-  evaluator. This is **request-limit enforcement, not token-budget
-  enforcement**: `tokensPerDay` is still unenforced, and a policy declaring
-  only `tokensPerDay` is admitted without consuming request capacity (and is
-  recorded with an empty `enforcedWindows`).
+  The completion service depends on the request-limit enforcement service and
+  on the two token-budget coordinators, never on the policy repository, the
+  counter, a counter implementation, the token-budget primitive, a budget
+  implementation, Redis, or the evaluator. The two policy halves stay
+  independent: a policy declaring only `tokensPerDay` consumes no request
+  capacity (and is recorded with an empty `enforcedWindows`) while still
+  reserving and settling tokens.
   **Policy definition changes are auditable too, under their own event
   types.** A lifecycle mutation and a runtime enforcement decision are
   different facts, so the ledger records `GATEWAY_USAGE_POLICY_CREATED`,
@@ -1185,8 +1259,7 @@ the request result. A clean provider response returns as ALLOW with the
   identifiers are all withheld. **Cryptographic verification remains a
   separate concern** — `GET /api/audit/verify` is unchanged, and this
   endpoint is a scoped read projection, not a verifier. There is no
-  pagination, and this is still **not token-budget enforcement**:
-  `tokensPerDay` remains unenforced and no enforcement behavior changed.
+  pagination, and it adds no enforcement behavior of its own.
   There is
   no admin or cross-user usage reporting, and no budget, quota, cost,
   or accounting enforcement exists yet. No external cloud provider exists. No response redaction or rewriting exists: blocking
@@ -1212,14 +1285,15 @@ the request result. A clean provider response returns as ALLOW with the
   limit. No production-scale distributed guarantees are claimed beyond
   this single atomic counter.
 
-### Token-budget reservation primitive (infrastructure only)
+### Token-budget reservation and settlement (live)
 
-`tokensPerDay` is still **not enforced**, and the primitive that will make it
-safe to enforce now exists as `GatewayTokenBudget` in
-`gateway.policy.budget`. It is **infrastructure only**: it is not a Spring bean,
-nothing in the gateway completion path, the rate limiter, the request-policy
-counter, provider selection, or the audit ledger calls it, and no live request
-is admitted or rejected by a token amount. It exists because actual provider
+`tokensPerDay` **is enforced**, through the `GatewayTokenBudget` primitive in
+`gateway.policy.budget` and the two coordinators described above. The primitive
+itself is never called by the completion path: exactly one bean implements it
+(selected from `aegivault.gateway.token-budget`), and only
+`GatewayTokenBudgetEnforcementService` and
+`GatewayTokenBudgetSettlementService` use it, so the dependency direction stays
+one way. It exists because actual provider
 token usage is known only *after* a provider response, so a pre-request
 "read the current total, compare, then admit" is unsafe under concurrency — two
 requests arriving together would both read the same total and both conclude

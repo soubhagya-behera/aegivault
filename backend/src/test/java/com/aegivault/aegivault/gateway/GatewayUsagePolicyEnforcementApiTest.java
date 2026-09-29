@@ -8,6 +8,8 @@ import com.aegivault.aegivault.audit.AuditEventData;
 import com.aegivault.aegivault.audit.AuditLedgerEntry;
 import com.aegivault.aegivault.audit.AuditLedgerEntryRepository;
 import com.aegivault.aegivault.auth.RegisterRequest;
+import com.aegivault.aegivault.gateway.usage.GatewayUsageRecord;
+import com.aegivault.aegivault.gateway.usage.GatewayUsageRepository;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -15,6 +17,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.ObjectMapper;
@@ -26,9 +29,11 @@ import tools.jackson.databind.ObjectMapper;
  * atomic counter — nothing about the policy layer is stubbed.
  *
  * <p>Each test registers its own user, so each actor has its own counter and
- * the tests stay independent even though the counter is a shared bean. The
- * policy is created through its own API, which is what makes this a genuine
- * proof that a user-defined policy is actually enforced on live traffic.
+ * its own token budget and the tests stay independent even though the counter
+ * and the budget are shared beans. The policy is created through its own API,
+ * which is what makes this a genuine proof that a user-defined policy is
+ * actually enforced on live traffic — including the token half, which
+ * {@code tokensPerDay} reserves and settles around the provider call.
  *
  * <p>Its annotations deliberately match the other plain
  * {@code @SpringBootTest} + {@code @AutoConfigureMockMvc} gateway tests so the
@@ -52,6 +57,12 @@ class GatewayUsagePolicyEnforcementApiTest {
     @Autowired
     private AuditLedgerEntryRepository ledger;
 
+    @Autowired
+    private GatewayUsageRepository usageRecords;
+
+    @Autowired
+    private JwtDecoder jwtDecoder;
+
     private List<AuditLedgerEntry> entriesOfType(String eventType) {
         return ledger.findAll().stream()
                 .filter(entry -> eventType.equals(entry.getEventType()))
@@ -69,6 +80,21 @@ class GatewayUsagePolicyEnforcementApiTest {
         return objectMapper.readTree(result.getResponse().getContentAsString()).get("token").asText();
     }
 
+    /**
+     * The single entry of that type that belongs to this test's own actor.
+     *
+     * <p>{@code findAll()} carries no ordering guarantee, so "the last entry"
+     * would be an arbitrary row of the shared ledger. Scoping by the JWT
+     * subject is what makes these assertions mean what they claim: this
+     * request's decision, not somebody else's.
+     */
+    private AuditLedgerEntry entryFor(String eventType, String token) {
+        String actor = jwtDecoder.decode(token).getSubject();
+        return entriesOfType(eventType).stream()
+                .filter(entry -> actor.equals(entry.getActorSubject()))
+                .reduce((first, second) -> second)
+                .orElseThrow(() -> new AssertionError("no " + eventType + " entry for this actor"));
+    }
     private void createPolicy(String token, String json) throws Exception {
         mvc.perform(post("/api/gateway/policies")
                         .header("Authorization", "Bearer " + token)
@@ -150,14 +176,98 @@ class GatewayUsagePolicyEnforcementApiTest {
     }
 
     @Test
-    void aTokenOnlyPolicyDoesNotLimitTheActor() throws Exception {
+    void aTokenOnlyPolicyIsNowEnforcedAndRecoversTheReservedTokensItDidNotUse() throws Exception {
+        // The end-to-end proof that tokensPerDay is a live control: a policy
+        // with no request window at all still reserves before the provider is
+        // invoked and settles after it answers.
         String token = register();
-        createPolicy(token, "{\"name\":\"tokens-only\",\"tokensPerDay\":1000,\"reservationTokensPerRequest\":100,\"enabled\":true}");
+        createPolicy(token, "{\"name\":\"tokens-only\",\"tokensPerDay\":1000,"
+                + "\"reservationTokensPerRequest\":100,\"enabled\":true}");
 
-        // tokensPerDay is not enforced: there is no truthful token number
-        // before the provider runs, so the request is simply not limited.
         assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);
+
+        // One provider response means exactly one usage row, carrying this
+        // provider's own (here: unreported) counts — null stays null.
+        List<GatewayUsageRecord> rows = usageRecords.findByActorSubjectOrderByCreatedAtDescIdDesc(
+                jwtDecoder.decode(token).getSubject());
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getTotalTokens()).isNull();
+        assertThat(rows.get(0).getOutcome().name()).isEqualTo("DELIVERED");
+    }
+
+    @Test
+    void aTokenOnlyPolicyRefusesWithItsOwnMessageOnceTheDayIsSpent() throws Exception {
+        // The mock provider reports no token count, so each reservation stays
+        // held for the day: a 1,000-token day with 100 held per request admits
+        // ten requests and refuses the eleventh.
+        String token = register();
+        createPolicy(token, "{\"name\":\"tokens-only\",\"tokensPerDay\":1000,"
+                + "\"reservationTokensPerRequest\":100,\"enabled\":true}");
+
+        for (int i = 0; i < 10; i++) {
+            assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);
+        }
+
+        MvcResult refused = complete(token, CLEAN);
+
+        assertThat(refused.getResponse().getStatus()).isEqualTo(429);
+        var json = objectMapper.readTree(refused.getResponse().getContentAsString());
+        assertThat(json.propertyNames()).isEqualTo(new java.util.TreeSet<>(java.util.List.of("message")));
+        assertThat(json.get("message").asText()).isEqualTo("Gateway token budget exceeded.");
+        // Never the request-limit or global rate-limit message, and no budget
+        // state whatsoever.
+        assertThat(refused.getResponse().getContentAsString())
+                .doesNotContain("Gateway usage policy limit exceeded.", "Gateway rate limit exceeded.")
+                .doesNotContain("1000", "100", "remaining", "reservation", "token-budget");
+        // A refused reservation never reaches a provider, so no eleventh row.
+        assertThat(usageRecords.findByActorSubjectOrderByCreatedAtDescIdDesc(
+                jwtDecoder.decode(token).getSubject())).hasSize(10);
+    }
+
+    @Test
+    void aMixedPolicyEnforcesRequestsAndTokensIndependently() throws Exception {
+        // The request window is exhausted first and says so; the token budget
+        // then refuses on its own with a different message. Neither control
+        // compensates for the other.
+        String strictToken = register();
+        createPolicy(strictToken, "{\"name\":\"one-per-minute\",\"requestsPerMinute\":1,"
+                + "\"tokensPerDay\":100000,\"reservationTokensPerRequest\":100,\"enabled\":true}");
+
+        assertThat(complete(strictToken, CLEAN).getResponse().getStatus()).isEqualTo(200);
+        assertThat(complete(strictToken, CLEAN).getResponse().getContentAsString())
+                .contains("Gateway usage policy limit exceeded.");
+
+        // A second actor whose request window is generous but whose token day
+        // is not: admitted twice by the request control, refused by the token
+        // one.
+        String tokenOnlyToken = register();
+        createPolicy(tokenOnlyToken, "{\"name\":\"generous-requests\",\"requestsPerMinute\":100,"
+                + "\"tokensPerDay\":100,\"reservationTokensPerRequest\":100,\"enabled\":true}");
+
+        assertThat(complete(tokenOnlyToken, CLEAN).getResponse().getStatus()).isEqualTo(200);
+        MvcResult tokenRefused = complete(tokenOnlyToken, CLEAN);
+
+        assertThat(tokenRefused.getResponse().getStatus()).isEqualTo(429);
+        assertThat(tokenRefused.getResponse().getContentAsString())
+                .contains("Gateway token budget exceeded.")
+                .doesNotContain("Gateway usage policy limit exceeded.");
+    }
+
+    @Test
+    void aSecurityBlockReservesNothingFromTheActorsTokenDay() throws Exception {
+        // Reservation happens after request inspection, so a blocked request
+        // leaves the day untouched: the follow-up clean request is still
+        // admitted even though the whole day was exactly one reservation wide.
+        String token = register();
+        createPolicy(token, "{\"name\":\"one-reservation-per-day\",\"tokensPerDay\":100,"
+                + "\"reservationTokensPerRequest\":100,\"enabled\":true}");
+
+        assertThat(complete(token, "contact " + EMAIL + " for access.").getResponse().getStatus())
+                .isEqualTo(200);
+
         assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);
+        // And the day really did have only that one reservation in it.
+        assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(429);
     }
 
     @Test
@@ -200,7 +310,7 @@ class GatewayUsagePolicyEnforcementApiTest {
         // A real ledger entry, written by the real audit seam.
         var created = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED);
         assertThat(created.size()).isEqualTo(before + 1);
-        AuditLedgerEntry entry = created.get(created.size() - 1);
+        AuditLedgerEntry entry = entryFor(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED, token);
         assertThat(entry.getResourceType()).isEqualTo(AuditEventData.GATEWAY_USAGE_POLICY_RESOURCE);
         assertThat(entry.getResourceId()).isNotNull();
         assertThat(entry.getEventData())
@@ -221,7 +331,7 @@ class GatewayUsagePolicyEnforcementApiTest {
         // The refusal left evidence even though the request went nowhere.
         var created = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_REJECTED);
         assertThat(created.size()).isEqualTo(before + 1);
-        assertThat(created.get(created.size() - 1).getEventData())
+        assertThat(entryFor(AuditEventData.GATEWAY_USAGE_POLICY_REJECTED, token).getEventData())
                 .isEqualTo("{\"decision\":\"REJECTED\",\"rejectedWindow\":\"MINUTE\"}");
     }
 
@@ -283,11 +393,12 @@ class GatewayUsagePolicyEnforcementApiTest {
 
         assertThat(complete(token, CLEAN).getResponse().getStatus()).isEqualTo(200);
 
-        // The policy was applied (and so is recorded), but with no request
-        // window configured, so tokensPerDay is still unenforced.
+        // The policy is applied (and so is recorded), but with no request
+        // window configured there is no request capacity to consume — the
+        // token half is enforced separately, by reservation and settlement.
         var created = entriesOfType(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED);
         assertThat(created.size()).isEqualTo(before + 1);
-        assertThat(created.get(created.size() - 1).getEventData())
+        assertThat(entryFor(AuditEventData.GATEWAY_USAGE_POLICY_ALLOWED, token).getEventData())
                 .isEqualTo("{\"decision\":\"ALLOW\",\"enforcedWindows\":[]}");
     }
 

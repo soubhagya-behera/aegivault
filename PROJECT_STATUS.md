@@ -541,10 +541,11 @@
      `Unable to record gateway policy audit event.`, and for a refused request
      it replaces the 429, because a rejection whose evidence was not stored must
      not be reported as though it had been. This is **request-limit
-     enforcement, not token-budget enforcement**: `tokensPerDay` is still
-     unenforced, and a policy declaring only `tokensPerDay` is admitted without
-     consuming request capacity (and is recorded with an empty
-     `enforcedWindows`). The completion service depends only on the enforcement
+     enforcement for request limits only**: a policy declaring only
+     `tokensPerDay` consumes no request capacity (and is recorded with an empty
+     `enforcedWindows`), and its token half is enforced separately, by
+     reservation and settlement. The completion service depends only on the
+     enforcement
      service, never on the policy repository, the counter, a counter
      implementation, Redis, or the evaluator. Existing global rate limiting and
      existing inspection audit behavior are otherwise unchanged.
@@ -596,7 +597,7 @@
      exposed. The query is strictly read-only, the ledger stays append-only,
      and **cryptographic verification remains a separate concern** —
      `GET /api/audit/verify` is unchanged. No token-budget or enforcement
-     behavior is added: `tokensPerDay` remains unenforced.
+     behavior is added: it reads usage and changes no enforcement.
 
 
 
@@ -755,10 +756,12 @@
   audit event data. **No token estimation or prediction was added**: the
   amount is configuration, not a computed figure, and actual provider token
   usage is still obtained only after the provider response and reconciled
-  against the reservation then. `tokensPerDay` is still NOT enforced.
-  A **token-budget enforcement coordinator** now exists as
-  `GatewayTokenBudgetEnforcementService.reserve(actorSubject, now)`, still
-  with no live caller. It resolves the actor's effective policy and, when the
+  against the reservation then. `tokensPerDay` is now enforced on live gateway
+  completions.
+  A **token-budget enforcement coordinator** is live as
+  `GatewayTokenBudgetEnforcementService.reserve(actorSubject, now)`, called by
+  `GatewayCompletionService` after request inspection and provider selection and
+  immediately before provider invocation. It resolves the actor's effective policy and, when the
   policy declares `tokensPerDay`, makes **one atomic `tryReserve` call** using
   exactly the policy-controlled `reservationTokensPerRequest` — the configured
   amount passed through unchanged, with **no token estimation performed**: no
@@ -816,8 +819,48 @@
   `GatewayTokenBudgetReservationStateException` propagates unchanged instead of
   being swallowed as unknown usage. The service reserves nothing, reads no
   provider content, and adds **no token estimation** of any kind; it depends
-  only on `GatewayTokenBudget`. `tokensPerDay` remains unenforced and no live
-  token-budget integration exists yet.
+  only on `GatewayTokenBudget`. It is called by `GatewayCompletionService` once
+  per provider phase, after provider invocation and before the response is
+  size-checked, inspected, recorded, or returned.
+  **`tokensPerDay` is now enforced on `POST /api/gateway/complete`.**
+  `GatewayCompletionService` gained exactly two dependencies —
+  `GatewayTokenBudgetEnforcementService` and
+  `GatewayTokenBudgetSettlementService` — and nothing below them: never the
+  `GatewayTokenBudget` primitive, a budget implementation, Redis, the policy
+  repository, or the policy resolver. One `GatewayTokenBudget` bean is chosen at
+  startup from `aegivault.gateway.token-budget` (`IN_MEMORY` by default,
+  `REDIS` for multi-instance), and both coordinators are built over it. The
+  fixed order is: global rate limiter, request policy enforcement, request
+  security inspection, inspection audit, provider selection, **token reservation**,
+  provider invocation, **token settlement**, provider-response inspection, usage
+  recording. Reservation happens **after** request inspection and provider
+  selection and **before** provider invocation, so a request blocked by
+  inspection — or one whose provider could not be selected — never reserves
+  anything. `NO_POLICY`, `INACTIVE`, and `NO_TOKEN_POLICY` continue normally with
+  nothing reserved and the budget never consulted. `REJECTED` is HTTP **429**
+  `{"message": "Gateway token budget exceeded."}` before the provider runs, so
+  no provider invocation, no usage row, no provider-response audit event, no
+  second inspection, and no exposure of usage, remaining budget, limit, reserved
+  amount, or reservation id. A budget that cannot be consulted is **not** a
+  rejection: it is HTTP **500** `{"message": "Unable to enforce gateway token
+  budget."}` and never becomes a 429. Settlement runs as soon as a provider
+  response exists: a **known** `totalTokens` is reconciled **exactly** as
+  reported (never capped to the reservation), **unknown** usage leaves the
+  reservation held until its own UTC day TTL expires (never released to zero,
+  never estimated), a **provider failure** settles `NO_RESPONSE` and reconciles
+  at **zero**, and a security BLOCK or an oversized response is settled exactly
+  like any other response because the provider really did produce one. A
+  **settlement failure** is HTTP **500** `{"message": "Unable to settle gateway
+  token budget."}` and **fails closed**: no provider content, no security BLOCK
+  body, and no normal completion, with no automatic retry. Token budgets here
+  are **reservation and accounting, not token prediction**: the reserved amount
+  is always the policy's own `reservationTokensPerRequest` and real usage is only
+  ever what a provider reported — **no token estimation, tokenizer, pricing, or
+  prediction was added anywhere**. A token-only policy (no `requestsPerMinute`,
+  no `requestsPerDay`) is therefore genuinely active: it reserves, calls the
+  provider, reconciles usage, records the usage row, and succeeds. Usage
+  recording, the usage schema, and the audit ledger are unchanged: still no
+  token-budget audit events, and no reservation id is stored on a usage row.
 
 ## Next planned step
 

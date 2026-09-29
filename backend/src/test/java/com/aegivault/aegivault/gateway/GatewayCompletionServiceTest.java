@@ -80,8 +80,23 @@ class GatewayCompletionServiceTest {
             new com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementService(
                     policyResolver, new AlwaysAdmitsPolicyCounter());
 
+    /**
+     * The real token-budget coordinators over one shared in-memory budget:
+     * inert here because the actor has no enabled policy, so pre-existing
+     * gateway behavior is exercised unchanged.
+     */
+    private final InertTokenBudget tokenBudget = new InertTokenBudget(policyResolver);
+
     private final GatewayCompletionService service = new GatewayCompletionService(
-            rateLimiter, policyEnforcement, inspections, responseInspections, selector, audit, usage);
+            rateLimiter,
+policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspections,
+responseInspections,
+selector,
+audit,
+usage);
 
     private static GatewayInspectionRequest inspection(String content) {
         return new GatewayInspectionRequest(UUID.randomUUID(), "analyst", "test-model", content);
@@ -210,7 +225,16 @@ class GatewayCompletionServiceTest {
     void providerFailureDoesNotExecuteResponseInspection() {
         ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
         GatewayCompletionService failingService =
-                new GatewayCompletionService(rateLimiter, policyEnforcement, inspections, responseSpy, selector, audit, usage);
+                new GatewayCompletionService(
+                        rateLimiter,
+policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspections,
+responseSpy,
+selector,
+audit,
+usage);
         when(selected.complete(any())).thenThrow(new RuntimeException("simulated-provider-boom-9z"));
 
         assertThatThrownBy(() -> failingService.complete(inspection("Summarize quarterly revenue trends.")))
@@ -237,7 +261,16 @@ class GatewayCompletionServiceTest {
     void providerSelectionFailureDoesNotExecuteResponseInspection() {
         ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
         GatewayCompletionService failingService =
-                new GatewayCompletionService(rateLimiter, policyEnforcement, inspections, responseSpy, selector, audit, usage);
+                new GatewayCompletionService(
+                        rateLimiter,
+policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspections,
+responseSpy,
+selector,
+audit,
+usage);
         when(selector.select(any())).thenThrow(new RuntimeException("simulated-routing-boom-7q"));
 
         assertThatThrownBy(() -> failingService.complete(inspection("Summarize quarterly revenue trends.")))
@@ -280,7 +313,16 @@ class GatewayCompletionServiceTest {
     void oversizedProviderResponseNeverReachesResponseInspection() {
         ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
         GatewayCompletionService oversizedService =
-                new GatewayCompletionService(rateLimiter, policyEnforcement, inspections, responseSpy, selector, audit, usage);
+                new GatewayCompletionService(
+                        rateLimiter,
+policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspections,
+responseSpy,
+selector,
+audit,
+usage);
         String oversized = "a".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH + 1);
         when(selected.complete(any())).thenReturn(new LlmResponse("test-model", oversized));
 
@@ -296,7 +338,16 @@ class GatewayCompletionServiceTest {
     void oversizedProviderResponseWithPiiStillFailsInsteadOfBlocking() {
         ProviderResponseInspectionService responseSpy = mock(ProviderResponseInspectionService.class);
         GatewayCompletionService oversizedService =
-                new GatewayCompletionService(rateLimiter, policyEnforcement, inspections, responseSpy, selector, audit, usage);
+                new GatewayCompletionService(
+                        rateLimiter,
+policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspections,
+responseSpy,
+selector,
+audit,
+usage);
         String oversizedPii = EMAIL + " " + "a".repeat(GatewayCompletionService.MAX_PROVIDER_RESPONSE_LENGTH);
         when(selected.complete(any())).thenReturn(new LlmResponse("test-model", oversizedPii));
 
@@ -318,7 +369,15 @@ class GatewayCompletionServiceTest {
     void rateLimitedActorFailsBeforeInspectionAuditOrProvider() {
         SecurityInspectionService inspectionsSpy = mock(SecurityInspectionService.class);
         GatewayCompletionService limitedService = new GatewayCompletionService(
-                actor -> false, policyEnforcement, inspectionsSpy, responseInspections, selector, audit, usage);
+                actor -> false,
+                policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspectionsSpy,
+responseInspections,
+selector,
+audit,
+usage);
 
         assertThatThrownBy(() -> limitedService.complete(inspection("Summarize quarterly revenue trends.")))
                 .isInstanceOf(GatewayRateLimitExceededException.class)
@@ -337,7 +396,15 @@ class GatewayCompletionServiceTest {
             return true;
         };
         GatewayCompletionService recordingService = new GatewayCompletionService(
-                recording, policyEnforcement, inspections, responseInspections, selector, audit, usage);
+                recording,
+policyEnforcement,
+tokenBudget.enforcement(),
+tokenBudget.settlement(),
+inspections,
+responseInspections,
+selector,
+audit,
+usage);
         when(selected.complete(any())).thenReturn(new LlmResponse("test-model", "completion text"));
 
         recordingService.complete(inspection("Summarize quarterly revenue trends."));

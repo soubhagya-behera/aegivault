@@ -73,8 +73,10 @@ import java.util.Objects;
  *
  * <p>Depends only on {@link GatewayTokenBudget}. It holds no reference to the
  * completion service, the reservation coordinator, providers, Redis, the policy
- * repository, the rate limiter, the audit ledger, or any controller, and no
- * gateway traffic path calls it yet.
+ * repository, the rate limiter, the audit ledger, or any controller. Its one
+ * live caller is {@link com.aegivault.aegivault.gateway.GatewayCompletionService},
+ * which calls it once per provider phase — never before provider invocation and
+ * never twice.
  */
 public class GatewayTokenBudgetSettlementService {
 

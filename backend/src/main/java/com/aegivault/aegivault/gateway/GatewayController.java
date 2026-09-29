@@ -3,6 +3,8 @@ package com.aegivault.aegivault.gateway;
 import com.aegivault.aegivault.audit.AuditLedgerException;
 import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyAmbiguousException;
 import com.aegivault.aegivault.gateway.policy.GatewayUsagePolicyEnforcementException;
+import com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetEnforcementException;
+import com.aegivault.aegivault.gateway.policy.budget.GatewayTokenBudgetSettlementException;
 import com.aegivault.aegivault.gateway.usage.GatewayUsageException;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -148,6 +150,52 @@ public class GatewayController {
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     GatewayError usagePolicyUnavailable(GatewayUsagePolicyEnforcementException ex) {
         return new GatewayError(GatewayUsagePolicyEnforcementException.MESSAGE);
+    }
+
+    /**
+     * Token-budget rejection: the actor's own enabled policy had no token
+     * capacity left for the current UTC day, so the request was refused before
+     * the provider ran. The request inspection and its audit entry already
+     * happened and are left exactly as they are — no second inspection, no
+     * usage record, no provider-response audit entry. Generic 429 with a
+     * message deliberately distinct from both other refusals, and never the
+     * limit, reserved or remaining tokens, current usage, reservation id,
+     * actor, policy id, or Redis detail.
+     */
+    @ExceptionHandler(GatewayTokenBudgetLimitExceededException.class)
+    @ResponseStatus(HttpStatus.TOO_MANY_REQUESTS)
+    GatewayError tokenBudgetLimitExceeded(GatewayTokenBudgetLimitExceededException ex) {
+        return new GatewayError(GatewayTokenBudgetLimitExceededException.MESSAGE);
+    }
+
+    /**
+     * Token-budget infrastructure failure: the daily token budget could not be
+     * checked, so the request is neither admitted nor treated as exceeded — a
+     * generic 500 with no Redis host, key, token count, limit, reservation id,
+     * actor, policy detail, or exception text, cause retained in server logs
+     * only. Deliberately not a 429: an outage is not an exceeded budget, and
+     * reporting it as one would hide the outage.
+     */
+    @ExceptionHandler(GatewayTokenBudgetEnforcementException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    GatewayError tokenBudgetUnavailable(GatewayTokenBudgetEnforcementException ex) {
+        return new GatewayError(GatewayTokenBudgetEnforcementException.MESSAGE);
+    }
+
+    /**
+     * Token-budget settlement failure: a provider response already existed (or
+     * a reservation was held), but the day's accounting could not be
+     * finalised. Fails closed with a generic 500 rather than returning provider
+     * content, a security BLOCK body, or a normal completion while the budget
+     * state is unknown. No retry is attempted, and no provider, Redis, token
+     * count, reservation id, actor, or exception text is exposed. Distinct from
+     * the request-policy enforcement failure above, which is about deciding
+     * admission rather than closing a hold.
+     */
+    @ExceptionHandler(GatewayTokenBudgetSettlementException.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
+    GatewayError tokenBudgetSettlementFailed(GatewayTokenBudgetSettlementException ex) {
+        return new GatewayError(GatewayTokenBudgetSettlementException.MESSAGE);
     }
 
     /**
