@@ -139,4 +139,58 @@ class PolicySnapshotTest {
                         "default", "v1", TransformationPlan.of(List.of())))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void aSnapshotRoundTripsThroughItsStoredForm() {
+        // The parse is the exact inverse of the render, which is what lets a
+        // background worker execute a persisted run from its row alone.
+        PolicySnapshot frozen = PolicySnapshot.fromPlan("default", "v1", twoRulePlan());
+
+        PolicySnapshot parsed = PolicySnapshot.fromJson(frozen.toJson());
+
+        assertThat(parsed.toJson()).isEqualTo(frozen.toJson());
+        assertThat(parsed.policyName()).isEqualTo("default");
+        assertThat(parsed.policyVersion()).isEqualTo("v1");
+        assertThat(parsed.rules()).isEqualTo(frozen.rules());
+    }
+
+    @Test
+    void aParsedSnapshotRebuildsExactlyThePlanItWasFrozenFrom() {
+        // The plan a run executes later is the plan it was created with, not
+        // whatever the application's current policy happens to be.
+        PolicySnapshot frozen =
+                PolicySnapshot.fromPlan("default", "v1", DefaultTransformationPolicy.plan());
+
+        assertThat(PolicySnapshot.fromJson(frozen.toJson()).toPlan().strategies())
+                .isEqualTo(DefaultTransformationPolicy.plan().strategies());
+    }
+
+    @Test
+    void anUnreadableSnapshotIsRejectedRatherThanPartiallyApplied() {
+        // A snapshot that cannot be read exactly must not become a plan that
+        // quietly covers less than the run promised, so every one of these is
+        // refused outright.
+        assertThatThrownBy(() -> PolicySnapshot.fromJson(null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> PolicySnapshot.fromJson("  "))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> PolicySnapshot.fromJson("not json"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> PolicySnapshot.fromJson("[]"))
+                .isInstanceOf(IllegalArgumentException.class);
+        // Missing labels.
+        assertThatThrownBy(() -> PolicySnapshot.fromJson("{\"policyVersion\":\"v1\",\"rules\":{\"EMAIL\":\"KEEP\"}}"))
+                .isInstanceOf(IllegalArgumentException.class);
+        // No rules at all.
+        assertThatThrownBy(() -> PolicySnapshot.fromJson(
+                        "{\"policyName\":\"default\",\"policyVersion\":\"v1\",\"rules\":{}}"))
+                .isInstanceOf(IllegalArgumentException.class);
+        // An unknown PII type or strategy name is never skipped or defaulted.
+        assertThatThrownBy(() -> PolicySnapshot.fromJson(
+                        "{\"policyName\":\"default\",\"policyVersion\":\"v1\",\"rules\":{\"NOT_A_TYPE\":\"KEEP\"}}"))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> PolicySnapshot.fromJson(
+                        "{\"policyName\":\"default\",\"policyVersion\":\"v1\",\"rules\":{\"EMAIL\":\"NOT_A_STRATEGY\"}}"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

@@ -862,6 +862,56 @@
   recording, the usage schema, and the audit ledger are unchanged: still no
   token-budget audit events, and no reservation id is stored on a usage row.
 
+## Asynchronous sanitization execution
+
+  A small job-launching layer now exists so a persisted `SanitizationRun` can be
+  executed outside the HTTP request thread. **Asynchronous execution is now
+  real**, while `POST /api/runs` is **unchanged and still synchronous** — the
+  new path is internal and is not yet reachable through an endpoint.
+  `SanitizationRun` remains the persisted job/execution state: a `QUEUED` row
+  *is* a job waiting to run. **No job table was created** — no queue table, no
+  second execution record, and no change to the run lifecycle
+  (`QUEUED -> RUNNING -> COMPLETED | FAILED`).
+  `SanitizationRunJobLauncher.launch(SanitizationRunTarget)` does exactly three
+  things: refuse a run that is not `QUEUED` or is already in flight, submit one
+  task to a bounded pool, and return. It holds only the existing
+  `SanitizationRunExecutor` and a task executor — **no CSV parsing, PII
+  detection, transformation, artifact storage, audit hashing, or policy
+  resolution** — so every one of those stays in the component that already owns
+  it. **No lifecycle logic is duplicated**: the worker's `startRun` is still the
+  authoritative `QUEUED -> RUNNING` gate, and the terminal transition plus the
+  `SANITIZATION_RUN_CREATED` / `SANITIZATION_RUN_COMPLETED` / `SANITIZATION_RUN_FAILED`
+  events come from the same shared core as before, with no new audit event type
+  and no duplicate. The run's stored input is opened through the existing
+  `DatasetInputSource` and its artifact is written by the existing
+  `SanitizationArtifactStore` through the same bounded capture, and the plan
+  executed is the one frozen into the run row at creation (`PolicySnapshot`
+  gained `fromJson`/`toPlan` as the exact inverse of its existing
+  `toJson`, so a worker needs nothing but the run row).
+  **Execution is process-local and uses a bounded worker pool.** Submissions go
+  to one `ThreadPoolTaskExecutor` bean with finite pool and queue bounds taken
+  from configuration (`aegivault.sanitization.jobs.pool-size` = 2,
+  `max-pool-size` = 4, `queue-capacity` = 50), built from Spring's own threading
+  — no `new Thread(...)`, no thread per request, and no common fork-join pool,
+  and never an unbounded executor. The pool keeps an abort policy, so a
+  submission past the bounds is reported to the caller as
+  `SanitizationRunJobLaunchException` instead of being buffered without limit
+  or silently run on the caller's thread; because the in-flight hold is released
+  on that refusal, the run stays `QUEUED` and remains launchable. A run that is
+  not `QUEUED` is never launched
+  (`SanitizationRunNotLaunchableException`). **Duplicate-launch protection is
+  process-local too**: a concurrent set of in-flight run ids refuses a second
+  launch of the same run in this instance. It needs no Redis, no database lock,
+  and **no distributed lock**, so it is correct only for a single application
+  instance. Ownership is never a launcher parameter — the worker uses the owner
+  recorded on the run row, so a job cannot be pointed at another actor's data.
+  **No automatic retry exists yet**: there is no retry queue, backoff,
+  dead-letter path, retry counter, or scheduled recovery. **Crash recovery is
+  deliberately not solved**: persisted `QUEUED`/`RUNNING` states exist, but
+  because execution is process-local **a JVM crash can still leave a run
+  `RUNNING` with nobody to finish it**, and a run that failed unexpectedly stays
+  `RUNNING` exactly as it would have synchronously. Durable recovery and
+  reconciliation of such runs are a later milestone.
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as

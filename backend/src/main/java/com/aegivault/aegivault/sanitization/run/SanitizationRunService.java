@@ -159,6 +159,41 @@ public class SanitizationRunService {
                 .orElseThrow(SanitizationRunNotFoundException::new);
     }
 
+    /**
+     * Reads one run by id alone, for a worker that must execute a run it was
+     * already handed rather than one a caller is asking about.
+     *
+     * <p><strong>The run's own row is the authority on who owns it.</strong> No
+     * owner is supplied here and none can be supplied: the returned
+     * {@link SanitizationRunTarget} carries the {@code ownerSubject} recorded
+     * on the row, so a background job can only ever act with the ownership the
+     * run was created under. This is deliberately <em>not</em> an owner-scoped
+     * lookup like every other method here, because it is not an authorization
+     * question — it answers "what did this run's creator record?", and the run
+     * was created against an owned dataset in the first place.
+     *
+     * <p>Nothing is mutated and nothing is started here. The status is reported
+     * as persisted, so a caller can refuse a run that is not {@code QUEUED}
+     * without consuming any lifecycle transition.
+     *
+     * @param runId run to describe, never null
+     * @return the detached target, never null
+     * @throws SanitizationRunNotFoundException when no such run exists
+     */
+    @Transactional(readOnly = true)
+    public SanitizationRunTarget loadForExecution(UUID runId) {
+        Objects.requireNonNull(runId, "runId must not be null");
+        SanitizationRun run = runs.findById(runId).orElseThrow(SanitizationRunNotFoundException::new);
+        return new SanitizationRunTarget(
+                run.getId(),
+                run.getOwnerSubject(),
+                run.getDataset().getId(),
+                run.getStatus(),
+                run.getPolicyName(),
+                run.getPolicyVersion(),
+                run.getPolicySnapshot());
+    }
+
     private static String requireOwner(String ownerSubject) {
         if (ownerSubject == null || ownerSubject.isBlank()) {
             throw new IllegalArgumentException("ownerSubject must not be blank");

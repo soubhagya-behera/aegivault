@@ -6,8 +6,9 @@ package com.aegivault.aegivault.sanitization.run;
  * <p>The allowed flow is {@code QUEUED -> RUNNING -> COMPLETED} or
  * {@code QUEUED -> RUNNING -> FAILED}. {@code COMPLETED} and
  * {@code FAILED} are terminal. No other states exist: there is no
- * cancellation, pause, or retry in this milestone because no background
- * worker exists yet that could act on them.
+ * cancellation, pause, or retry, because nothing in the application can act on
+ * them yet. A background worker may now pick up a {@code QUEUED} run, but it
+ * still cannot cancel, pause, or retry one.
  *
  * <p>The state machine lives here in the domain, not in a controller or
  * service: {@link #canTransitionTo(RunStatus)} is the single definition of

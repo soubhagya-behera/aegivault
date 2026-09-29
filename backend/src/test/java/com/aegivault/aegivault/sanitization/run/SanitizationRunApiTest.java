@@ -16,9 +16,11 @@ import com.aegivault.aegivault.dataset.Dataset;
 import com.aegivault.aegivault.dataset.DatasetRepository;
 import com.aegivault.aegivault.sanitization.DefaultTransformationPolicy;
 import com.aegivault.aegivault.sanitization.artifact.DatabaseArtifactStore;
+import com.aegivault.aegivault.sanitization.run.job.SanitizationRunJobLauncher;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -52,6 +54,12 @@ class SanitizationRunApiTest {
 
     @Autowired
     private SanitizationRunExecutor executor;
+
+    @Autowired
+    private SanitizationRunService runs;
+
+    @Autowired
+    private com.aegivault.aegivault.sanitization.run.job.SanitizationRunJobLauncher launcher;
 
     @Autowired
     private DatasetRepository datasets;
@@ -497,6 +505,76 @@ class SanitizationRunApiTest {
             assertThat(entry.getEventData())
                     .doesNotContain("bob@example.com", "password", "sk-", "Bearer", "Exception");
         }
+    }
+
+    /**
+     * The asynchronous execution path, end to end against real PostgreSQL: a
+     * {@code QUEUED} run is persisted, handed to the real bounded worker pool,
+     * and executed by the existing executor until it reaches a terminal state.
+     *
+     * <p>It lives in this class deliberately. That context is already cached
+     * and, unlike the transactional run tests, it commits its setup — a worker
+     * thread on a separate connection cannot see uncommitted rows, so an
+     * asynchronous path genuinely cannot be proven inside a rolled-back
+     * transaction. No new context and no new pooled datasource is introduced.
+     *
+     * <p>The wait is a bounded poll on the persisted state with a hard
+     * deadline, not a fixed sleep: the assertion is "the run reached a terminal
+     * state", and a slow machine gets more of the deadline rather than a
+     * different test.
+     */
+    @Test
+    void aPersistedQueuedRunLaunchesAndExecutesAsynchronouslyToCompletion() throws Exception {
+        String token = register(email());
+        String subject = jwtDecoder.decode(token).getSubject();
+        String datasetId = createDatasetViaApi(token, "async-customers.csv");
+        uploadInput(token, datasetId, "name,email\nbob,bob@example.com\ncarol,carol@example.com\n");
+        String policyId = registerPolicy(token, "default", "v1");
+
+        // Persisted but not executed: the run row is the queued job.
+        UUID runId = runs.createRun(
+                        subject,
+                        UUID.fromString(datasetId),
+                        DefaultTransformationPolicy.plan(),
+                        "default",
+                        "v1")
+                .id();
+        assertThat(runs.get(subject, runId).status()).isEqualTo(RunStatus.QUEUED);
+
+        // Handed off and returned: nothing is awaited by the launching thread.
+        launcher.launch(runs.loadForExecution(runId));
+
+        SanitizationRunView finished = awaitTerminal(subject, runId);
+
+        // The terminal state, the counts, and the artifact are all produced by
+        // the existing executor path, not by the launcher.
+        assertThat(finished.status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(finished.inputRowCount()).isEqualTo(2L);
+        assertThat(finished.outputRowCount()).isEqualTo(2L);
+        assertThat(readArtifact(artifacts, token, jwtDecoder, runId.toString()))
+                .doesNotContain("bob@example.com", "carol@example.com");
+        // Exactly the executor's own two lifecycle events, in order, once each.
+        List<AuditLedgerEntry> entries = ledgerEntriesForRun(runId);
+        assertThat(entries.stream().map(AuditLedgerEntry::getEventType))
+                .containsExactly("SANITIZATION_RUN_CREATED", "SANITIZATION_RUN_COMPLETED");
+    }
+
+    private SanitizationRunView awaitTerminal(String subject, UUID runId) {
+        Instant deadline = Instant.now().plusSeconds(20);
+        RunStatus status = runs.get(subject, runId).status();
+        while (!status.isTerminal() && Instant.now().isBefore(deadline)) {
+            try {
+                Thread.sleep(20L);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while awaiting the background run");
+            }
+            status = runs.get(subject, runId).status();
+        }
+        assertThat(status.isTerminal())
+                .as("the launched run must reach a terminal state")
+                .isTrue();
+        return runs.get(subject, runId);
     }
 
     @Test

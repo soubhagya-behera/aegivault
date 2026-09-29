@@ -431,7 +431,7 @@ failRun     -> FAILED (error code/stage/message + completed_at)
    infrastructure failure is never swallowed and never reported as success:
    it surfaces as a generic 500 with no storage details. There are no REST
    endpoints and no other integration yet: nothing else appends, and there
-   is no retry queue or background worker. Ledger integrity is verifiable
+   is no retry queue. Ledger integrity is verifiable
    through `GET /api/audit/verify` (authenticated, USER and ADMIN alike;
    the shared ledger needs no owner filtering): one full replay per call
    returning the verdict, the replayed-entry count, and — only when
@@ -442,8 +442,68 @@ failRun     -> FAILED (error code/stage/message + completed_at)
    sequencing only — concurrent appends fail loudly on the UNIQUE
    constraint instead of forking, with no distributed locking. Beyond the
    endpoints described above (datasets, runs, artifact download, and
-   reusable policies), no jobs, Spring Batch, Redis, background workers, or
-   audit event integration was added.
+   reusable policies), no Spring Batch, Redis queue, distributed
+   lock, or audit event integration was added.
+
+* **Asynchronous sanitization execution** (`sanitization.run.job`,
+  implemented; internal only, no endpoint yet): a persisted `QUEUED` run can be
+  executed outside the HTTP request thread.
+
+  ```text
+  SanitizationRunJobLauncher.launch(SanitizationRunTarget)
+      |
+      +-- refuse unless the run is QUEUED and not already in flight here
+      |
+      +-- TaskExecutor.execute(...) --> worker thread
+              |
+              SanitizationRunExecutor.executeQueuedRun(runId)
+                  |
+                  +-- load the run row (its own owner, dataset, frozen policy)
+                  +-- open the stored input through DatasetInputSource
+                  +-- startRun -> RUNNING, then audit SANITIZATION_RUN_CREATED
+                  +-- sanitize (existing engine + bounded capture + artifact)
+                  +-- completeRun/failRun -> audit COMPLETED/FAILED
+  ```
+
+  **The run row is the job.** No job table, no queue table, and no second
+  execution record were added: `SanitizationRun` remains the single persisted
+  job/execution state, and a `QUEUED` row is exactly "a job waiting to run".
+  The launcher holds only the existing executor plus a task executor — no CSV
+  parser, no PII detection, no transformation registry, no artifact store, and
+  no audit ledger — so every execution concern stays in the components that
+  already own it. It performs no lifecycle transition itself: the worker's
+  `startRun` remains the authoritative `QUEUED -> RUNNING` gate, and the
+  terminal transition and its audit events come from the same shared core the
+  synchronous path uses. `POST /api/runs` is **unchanged and still
+  synchronous**; this is an internal execution path only.
+
+  **Bounded pool, process-local execution.** Submissions go to one
+  `ThreadPoolTaskExecutor` bean whose pool and queue are both finite and come
+  from configuration (`aegivault.sanitization.jobs.pool-size`,
+  `max-pool-size`, `queue-capacity`; defaults 2/4/50). Spring's own threading
+  does the work: no `new Thread(...)`, no thread per request, and no common
+  fork-join pool. The pool keeps an abort (reject) policy, so a submission past
+  the bounds is reported to the caller as `SanitizationRunJobLaunchException`
+  rather than being buffered without limit or silently executed on the
+  caller's thread. Because the hold is released when the submission is refused,
+  the run simply stays `QUEUED` and is still launchable later.
+
+  **Duplicate-launch protection is process-local.** A concurrent set of in-flight
+  run ids makes a second launch of the same run in this instance a refusal
+  (`SanitizationRunNotLaunchableException`) rather than a second concurrent
+  execution. This is deliberately an in-memory, per-JVM guard: it needs no
+  Redis, no database lock, and no distributed lock, and is therefore correct
+  only for a single application instance. Ownership is never a launcher
+  parameter — the worker uses the owner recorded on the run row, so a job
+  cannot be pointed at another actor's data.
+
+  **What is deliberately not implemented yet.** There is no retry queue, no
+  backoff, no dead-letter path, no retry counter, and no scheduled
+  reconciliation. Persisted `QUEUED` and `RUNNING` states exist, but execution
+  is process-local: **a JVM crash can still leave a run `RUNNING` with nobody
+  to finish it**, and a run that failed unexpectedly stays `RUNNING` exactly as
+  it would have synchronously. Durable recovery of such runs is a later
+  milestone; nothing here claims otherwise.
 
 Everything below under "planned" is design intent, not implementation.
 

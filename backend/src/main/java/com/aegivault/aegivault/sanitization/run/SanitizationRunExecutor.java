@@ -178,6 +178,73 @@ public class SanitizationRunExecutor {
     }
 
     /**
+     * Executes one <em>already persisted</em> {@code QUEUED} run in the
+     * background, using the run's own stored input and frozen policy.
+     *
+     * <p>This is the entry point an asynchronous job worker uses. It is the
+     * same pipeline as {@link #executeStoredCsv} with exactly one difference:
+     * the run already exists, so the row is read instead of created. Every
+     * concern stays where it was — the run row is the only execution state,
+     * the input is opened through {@link DatasetInputSource}, the plan comes
+     * from the run's own frozen {@link PolicySnapshot}, the engine is
+     * {@link CsvSanitizationService}, the artifact is written by
+     * {@link SanitizationArtifactStore} through the same bounded capture, and
+     * the lifecycle and its audit events are the ones this class already
+     * performs. Nothing is re-implemented here.
+     *
+     * <p><strong>The persisted state machine is still the only authority.</strong>
+     * {@code startRun} performs the {@code QUEUED -> RUNNING} transition and
+     * rejects anything else with the same
+     * {@link InvalidRunTransitionException} every other path raises, so a
+     * worker can never start a run that is already running or terminal. The
+     * terminal transition and its audit event come from the same shared core
+     * as the synchronous paths.
+     *
+     * <p><strong>The input is opened before the run is started.</strong> A
+     * missing or foreign dataset/input therefore fails while the run is still
+     * {@code QUEUED}, exactly as it does before a run row exists on the
+     * synchronous path — nothing is marked {@code RUNNING} for work that could
+     * not begin. An unexpected failure after the start propagates and leaves
+     * the run {@code RUNNING}, which is the existing, documented behaviour.
+     *
+     * <p>There is no output stream to write to: the artifact store is the
+     * destination, so sanitized bytes are captured into the artifact and the
+     * caller-facing output is discarded rather than buffered anywhere new.
+     *
+     * @param runId id of a persisted {@code QUEUED} run, never null
+     * @return the completed run view on success; the failed run view when the
+     *         engine reports a documented-safe domain failure
+     * @throws SanitizationRunNotFoundException when no such run exists
+     * @throws InvalidRunTransitionException when the run is not {@code QUEUED}
+     * @throws ReferencedDatasetNotFoundException when the run's dataset or its
+     *         stored input is missing or belongs to another owner
+     */
+    public SanitizationRunView executeQueuedRun(UUID runId) {
+        SanitizationRunTarget target = runs.loadForExecution(runId);
+        String owner = target.ownerSubject();
+        try (InputStream input = inputs.openInput(owner, target.datasetId())) {
+            SanitizationRunView started = runs.startRun(owner, runId);
+            appendAudit(
+                    AuditEventData.RUN_CREATED,
+                    owner,
+                    runId,
+                    AuditEventData.runCreated(target.datasetId(), target.policyName(), target.policyVersion()));
+            BoundedCapture capture = new BoundedCapture(OutputStream.nullOutputStream());
+            return sanitizeCompleteOrFail(
+                    owner,
+                    started,
+                    PolicySnapshot.fromJson(target.policySnapshot()).toPlan(),
+                    input,
+                    capture,
+                    capture);
+        } catch (DatasetNotFoundException ex) {
+            throw new ReferencedDatasetNotFoundException();
+        } catch (IOException ex) {
+            throw new CsvParseException("Unable to read CSV input.");
+        }
+    }
+
+    /**
      * Shared sanitize-then-finish core: runs the engine, maps documented
      * domain failures to {@code FAILED}, and completes with the structural
      * counts on success.
