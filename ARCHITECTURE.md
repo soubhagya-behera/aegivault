@@ -505,6 +505,71 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   it would have synchronously. Durable recovery of such runs is a later
   milestone; nothing here claims otherwise.
 
+* **PostgreSQL source foundation** (`dataset.postgres`, implemented; internal
+  only, no endpoint yet, metadata only):
+
+  ```text
+  PostgresSourceProperties (aegivault.dataset.postgres.*)
+      |
+  PostgresDataSource  <- the connection boundary
+      |   .schemaName()          : the one configured schema
+      |   .openReadOnlyConnection() : one fresh caller-owned read-only connection
+      v
+  PostgresSchemaDiscoveryService
+      |
+      v
+  DatabaseMetaData.getTables / getColumns  (names, ordinals, type names)
+      |
+      v
+  PostgresSchema -> PostgresTable -> PostgresColumn   (metadata only)
+  ```
+
+  PostgreSQL is now a supported source for **dataset discovery**, and the
+  capability is **read-only schema discovery and nothing more**: the schema
+  name, its base tables, and each table's column names, ordinal positions, and
+  data type names. **No production row data is copied** — and that is structural
+  rather than a promise, because every reachable record component is a name, a
+  count, or a type: no row value, sample, count, constraint, or secret has a
+  field to travel in. There is **no row extraction, no PostgreSQL-to-CSV
+  conversion, no sanitization of database rows, and no PII detection over
+  database values** yet.
+  **No arbitrary SQL API exists.** The boundary exposes exactly two operations
+  and no execute/query method, and discovery never asks the connection for a
+  statement, so there is no query text at all. Every fact comes from
+  `DatabaseMetaData`, and the only identifier taken from configuration — the
+  schema name — is validated against a strict identifier grammar *before* a
+  connection is opened, then escaped into a literal metadata pattern (JDBC
+  patterns treat `%` and `_` as wildcards, so a schema legitimately named
+  `reporting_core` cannot widen its own search). Only one explicit schema is
+  supported, defaulting to `public`; there is no cross-schema browsing, no
+  views or materialized views, no stored-procedure execution, and no
+  foreign-data wrappers.
+  **Read-only, honestly bounded.** The connection requests and re-applies
+  read-only, which PostgreSQL turns into a read-only session, so a write on it
+  fails server-side; nothing is pooled, cached, or held open across a run, and
+  the connection is closed by the end of the discovery call. That is a
+  client-side guarantee, and it is **not** a complete one: it does not change
+  what the configured account is entitled to do, and it does not protect the
+  source from any other connection. **Production use therefore requires
+  database-level read-only credentials** — a source role granted only what
+  discovery needs (for example `CONNECT` and `SELECT`, or
+  `default_transaction_read_only = on`), configured by whoever operates the
+  source database.
+  **Credentials are not persisted.** The source is service-level configuration
+  only (`aegivault.dataset.postgres.host/port/database/username/password/schema`
+  plus a bounded `connect-timeout-seconds`); there is no source table, no
+  repository, and no CRUD API, and the password is never stored in the database,
+  logged, or returned by any accessor. Connection attempts are bounded by the
+  configured timeout (1–60 seconds, default 5), so a silent source cannot hang a
+  caller. Failures are two distinct fixed safe messages — unable to connect, and
+  unable to inspect the schema — carrying no JDBC URL, host, port, username,
+  password, SQL text, or driver text. A checkout with no source configured has no
+  source bean and boots unchanged. **No public REST endpoint exists yet**: the
+  reusable service is deliberately built and proven first.
+  Dependency direction is one-way and narrow: the discovery service depends on
+  `PostgresDataSource` and the JDK alone, and on no dataset persistence, no
+  `SanitizationRun`, no gateway, no policy enforcement, no audit ledger, no PII
+  detection, no Redis, and no controller.
 Everything below under "planned" is design intent, not implementation.
 
 ## Planned architecture

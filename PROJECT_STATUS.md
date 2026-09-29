@@ -912,6 +912,54 @@
   `RUNNING` with nobody to finish it**, and a run that failed unexpectedly stays
   `RUNNING` exactly as it would have synchronously. Durable recovery and
   reconciliation of such runs are a later milestone.
+## PostgreSQL source foundation (metadata only)
+
+  PostgreSQL is now a **supported source foundation** for dataset discovery. The
+  current capability is **read-only schema discovery and nothing more**: a
+  configured source's schema name, its base tables, and for each table the
+  column names, ordinal positions, and data type names. That is the entire
+  result.
+  **No production row data is copied**, and this is structural rather than a
+  promise: discovery asks only JDBC metadata for names, positions, and type
+  names, and the result records (`PostgresSchema`, `PostgresTable`,
+  `PostgresColumn`) have no field in which a row value, a sample, a count, or a
+  secret could travel. There is **no PostgreSQL row extraction, no
+  PostgreSQL-to-CSV conversion, and no sanitization of database rows yet**, and
+  no PII detection runs against any database value. **No arbitrary SQL API
+  exists**: the source abstraction exposes exactly two operations (the schema
+  name, and a read-only connection) with no execute or query method, and
+  discovery never creates a statement, so there is no query text and nothing for
+  a caller to supply.
+  The connection boundary is `PostgresDataSource` (the abstraction) with
+  `DriverManagerPostgresDataSource` as its only implementation, configured from
+  `aegivault.dataset.postgres.*` under the
+  `PostgresSchemaDiscoveryService`. It depends on that abstraction and the JDK
+  only — no dataset persistence, no `SanitizationRun`, no gateway, no policy
+  enforcement, no audit ledger, no PII detection, no Redis, and no controller.
+  **Source credentials are not persisted yet**: the host, port, database,
+  username, password, schema, and a bounded connect timeout are service-level
+  configuration only, with no source table, repository, or CRUD API. The
+  password lives in configuration and in the one implementation class, is never
+  stored in the database, never logged, and never returned by any accessor; the
+  only diagnostic form names host, port, database, and schema. Failures surface
+  as two distinct fixed safe messages — unable to connect, and unable to inspect
+  the schema — carrying no JDBC URL, host, port, username, password, SQL text, or
+  driver text.
+  **Read-only is enforced in code as far as a client can enforce it, and that
+  is not the whole answer.** The connection requests and re-applies read-only,
+  which PostgreSQL turns into a read-only session so a write on it fails
+  server-side, and nothing is pooled, cached, or held open across a run. But
+  read-only does not change what the configured account is *entitled* to do, so
+  **production use requires database-level restrictions on the source
+  credentials**: a role granted only what discovery needs (for example
+  `CONNECT` and `SELECT`, or `default_transaction_read_only = on`), configured
+  by whoever operates the source database. One explicit schema is supported
+  (`public` by default); cross-schema browsing, views and materialized views,
+  stored procedures, and foreign-data wrappers are all out of scope. A source
+  connection is only created when discovery asks for one and is closed by the end
+  of that call, and a connection attempt is bounded by the configured timeout
+  (1–60 seconds, default 5) so a silent source cannot hang a caller. No public
+  REST endpoint exists yet — the reusable backend service comes first.
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as
