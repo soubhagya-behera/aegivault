@@ -1080,6 +1080,67 @@
   server-side read-only write rejection (`25006`), schema isolation, an unknown
   table producing the safe exception, and the absence of any arbitrary-SQL path.
   All test data is obviously synthetic and no value is logged.
+
+## PostgreSQL dataset binding (internal, metadata only)
+
+An Aegivault dataset can now be **internally bound to one discovered PostgreSQL
+base table** (`dataset.postgres.binding`). The path is: dataset → binding →
+schema + table metadata → the existing `PostgresDataSource`. `bind`, `get`, and
+`delete` are implemented and nothing else; **there is no REST endpoint yet** and
+**no source-management API yet**, so this remains an internal backend
+capability.
+
+**The binding stores metadata, not data.** `postgres_dataset_bindings` has
+exactly six columns — `dataset_id`, `owner_subject`, `schema_name`,
+`table_name`, `created_at`, `updated_at`. It stores **no host, port, database,
+username, password, JDBC URL, row, or sampled value**, so the connection always
+comes from the configured `PostgresDataSource`. **Credentials remain application
+configuration only** and are still never persisted, logged, or exposed. The
+`datasets` table and its CSV-only `source_type` constraint are unchanged.
+**Open question, deliberately not resolved here:** `source_type` still admits only
+`CSV`, and this milestone did not change it, so a dataset can currently hold a
+CSV source type *and* a PostgreSQL binding. Nothing in the binding needs a
+source-type marker to work, so no implicit marker was invented — but the
+semantics of "one dataset, two possible sources" need an explicit API decision
+when the source-management endpoint is designed, not a quiet widening here.
+
+**Owner scoping.** Every operation takes the authenticated `ownerSubject`, and
+the chain is `ownerSubject -> owned dataset -> owned binding`. A foreign binding
+and a missing one are indistinguishable: both raise the same
+`PostgresDatasetBindingNotFoundException`, so neither the dataset's existence
+nor the schema/table name leaks, and a dataset owned by someone else cannot be
+bound at all.
+
+**One binding per dataset.** `dataset_id` is the primary key, with a foreign key
+to `datasets(id)` **ON DELETE CASCADE** so a binding never outlives its dataset.
+A second `bind` for the same dataset raises `PostgresDatasetAlreadyBoundException`
+rather than silently reassigning the source; reassignment is a separate future
+decision.
+
+**Table existence is verified through metadata discovery.** `bind` validates both
+identifiers with the existing strict grammar (no dots, quotes, semicolons,
+whitespace, wildcards, or SQL fragments) *before* any source contact, then
+requires the name to be a **discovered base table** via the existing
+`PostgresSchemaDiscoveryService`. Views, materialized views, functions, and
+unknown names are therefore refused. **No SQL is built** and **no row is read**.
+An unconfigured source, an unreachable source, and an absent table all fail with
+one fixed safe message that reveals no JDBC internals or credentials.
+
+**Nothing else was connected.** The binding does not stream, profile, sanitize,
+copy data, create CSV, create artifacts, or create a sanitization run, and no new
+audit event type was added. **PostgreSQL sanitization is still pending.**
+
+**Test coverage (32 new tests).** 11 repository tests against real PostgreSQL
+(persist, read by owner + dataset, owner isolation, missing/foreign dataset,
+cascade on dataset delete, one-binding-per-dataset, deterministic timestamps,
+blank/invalid metadata rejection), 14 unit tests for the service (successful
+bind/get/delete, owner scoping, blank owner, invalid identifiers rejected before
+source lookup, source verification, missing table, unavailable source, duplicate
+binding rejected, cross-owner dataset refused), and 7 integration tests binding a
+real synthetic table end to end — including assertions that **no credentials and
+no row data are persisted**. The integration tests reuse the existing cached
+application context; no new `@SpringBootTest` context was added.
+
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as

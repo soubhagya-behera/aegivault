@@ -534,7 +534,11 @@ failRun     -> FAILED (error code/stage/message + completed_at)
       v
   PostgresSchema -> PostgresTable -> PostgresColumn   (metadata only)
       |
-      v   (one discovered table, chosen by an internal caller)
+      |   Aegivault Dataset  ->  PostgresDatasetBinding  (owner-scoped, a name)
+      |        (postgres_dataset_bindings: datasetId, ownerSubject,
+      |         schemaName, tableName, createdAt, updatedAt; no credentials,
+      |         no row data; FK datasets(id) ON DELETE CASCADE)
+      v   (one discovered base table, chosen by an internal caller)
   PostgresTableRowSource / JdbcPostgresTableRowSource
       |
       v
@@ -660,6 +664,53 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   snapshot. **Profile persistence, PostgreSQL sanitization, and any REST
   endpoint remain future steps.**
 
+  **A dataset can now be internally bound to one PostgreSQL base table**
+  (`dataset.postgres.binding`, implemented; internal only, no endpoint yet).
+  `PostgresDatasetBinding` records exactly six values — `datasetId`,
+  `ownerSubject`, `schemaName`, `tableName`, `createdAt`, `updatedAt` — in
+  `postgres_dataset_bindings`. It is a **name, not content**: the table holds no
+  host, port, database, username, password, JDBC URL, row, sample, or profile,
+  so the connection always comes from the configured `PostgresDataSource` and
+  the binding cannot leak or cache data. The relationship to `datasets` is a
+  foreign key on `dataset_id` with **ON DELETE CASCADE**, so a binding never
+  outlives its dataset; there is no global dataset-to-table map, and the
+  `datasets` table and its CSV-only `source_type` constraint are unchanged. The
+  resulting ambiguity — a dataset may hold a CSV source type *and* a PostgreSQL
+  binding — is an open API decision, not something resolved implicitly here.
+
+  **Ownership is the invariant.** The chain is `ownerSubject -> owned dataset ->
+  owned binding`: the dataset is loaded with an owner-scoped query and the
+  binding is written and read against that owner, so every lookup requires an
+  owner. A foreign binding and a missing one raise the same
+  `PostgresDatasetBindingNotFoundException`, which therefore leaks neither the
+  existence of the dataset nor the schema or table name; a dataset owned by
+  someone else cannot be bound at all.
+
+  **A dataset may reference at most one table.** `dataset_id` is the primary
+  key, and a second `bind` for the same owner and dataset raises
+  `PostgresDatasetAlreadyBoundException` instead of silently reassigning the
+  source. Table reassignment is deliberately a separate future decision.
+
+  **Existence is verified through the existing discovery boundary, never by
+  query.** `bind` validates both identifiers against the same strict grammar as
+  the row stream (no dots, quotes, semicolons, whitespace, wildcards, or SQL
+  fragments), then confirms the name is a **discovered base table** via
+  `PostgresSchemaDiscoveryService` before storing anything. A view, a
+  materialized view, a function, or a name that is simply absent is therefore not
+  a discovered base table and is refused. No SQL is built in this package, and no
+  row is read. An absent source, an unreachable source, a non-configured schema,
+  and an unknown table all fail with one fixed safe
+  `PostgresDatasetBindingSourceException` message that carries no JDBC URL,
+  host, credential, or SQL, so binding cannot be used to probe the source.
+
+  **The binding identifies the source table and nothing more.** It does not
+  stream, profile, sanitize, copy data, create CSV, create artifacts, or create a
+  sanitization run, and no audit event type was added for it. The service
+  exposes only `bind`, `get`, and `delete`; there is no update operation yet.
+  **Credentials remain application configuration only**, and **REST/source
+  management remains unimplemented** — `dataset.postgres.binding` is an internal
+  backend capability.
+
   **PostgreSQL data is still NOT connected to the PII or sanitization
   pipeline.** There is **no PII detection over database values, no PostgreSQL
   sanitization, no PostgreSQL-to-CSV conversion, and no production data
@@ -672,11 +723,14 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   **Credentials are not persisted.** The source is service-level configuration
   only (`aegivault.dataset.postgres.host/port/database/username/password/schema`
   plus a bounded `connect-timeout-seconds`, `max-rows`, and `fetch-size`); there
-  is no source table, no source registry, no row staging table, no row cache, no
-  repository, and no CRUD API, and the password is never stored in the database,
-  logged, or returned by any accessor. Connection attempts are bounded by the
-  configured timeout (1–60 seconds, default 5), so a silent source cannot hang a
-  caller. Failures are distinct fixed safe messages — unable to connect, unable
+  is no source registry, no row staging table, no row cache, and no source
+  credential repository or CRUD API, and the password is never stored in the
+  database, logged, or returned by any accessor. The one table this milestone
+  adds, `postgres_dataset_bindings`, stores no connection detail either — a
+  binding names a table, and the credentials stay in configuration. Connection
+  attempts are bounded by the configured timeout (1–60 seconds, default 5), so a
+  silent source cannot hang a caller. Failures are distinct fixed safe messages
+  — unable to connect, unable
   to inspect the schema, and unable to read a source table. A checkout with no
   source configured has no source bean and no row-streaming bean and boots
   unchanged.
