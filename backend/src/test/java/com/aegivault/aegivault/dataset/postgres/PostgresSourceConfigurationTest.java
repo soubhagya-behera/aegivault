@@ -2,6 +2,7 @@ package com.aegivault.aegivault.dataset.postgres;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -27,7 +28,22 @@ class PostgresSourceConfigurationTest {
     @Configuration(proxyBeanMethods = false)
     @EnableConfigurationProperties(PostgresSourceProperties.class)
     @Import(PostgresSourceConfiguration.class)
-    static class SourceWiring {}
+    static class SourceWiring {
+
+        /**
+         * The existing PII engine the profiler reuses. The real application gets
+         * this from component scanning; this minimal wiring context does not
+         * scan, so it is declared here explicitly.
+         */
+        @org.springframework.context.annotation.Bean
+        com.aegivault.aegivault.pii.profile.PiiColumnProfiler piiColumnProfiler() {
+            return new com.aegivault.aegivault.pii.profile.PiiColumnProfiler(
+                    new com.aegivault.aegivault.pii.PiiDetectorRegistry(
+                            List.of(new com.aegivault.aegivault.pii.EmailDetector(),
+                                    new com.aegivault.aegivault.pii.PhoneDetector(),
+                                    new com.aegivault.aegivault.pii.CreditCardDetector())));
+        }
+    }
 
     @Test
     void theDefaultsAreSafeAndNoSourceBeanExistsUntilOneIsConfigured() {
@@ -109,6 +125,10 @@ class PostgresSourceConfigurationTest {
                             .isEqualTo(PostgresRowLimits.DEFAULT_MAX_ROWS);
                     assertThat(context.getBean(PostgresSourceProperties.class).getFetchSize())
                             .isEqualTo(PostgresRowLimits.DEFAULT_FETCH_SIZE);
+                    // The in-memory profiler is wired over the same boundary, on
+                    // the same condition, and depends only on the row source and
+                    // the existing PII engine.
+                    context.assertThat().hasSingleBean(PostgresTableProfiler.class);
                 });
     }
 

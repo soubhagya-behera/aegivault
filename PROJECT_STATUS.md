@@ -991,16 +991,62 @@
   the end of that call, and a connection attempt is bounded by the configured
   timeout (1–60 seconds, default 5) so a silent source cannot hang a caller.
 
-  **PostgreSQL data is still NOT connected to the PII or sanitization
-  pipeline.** There is **no PII detection over database values, no PostgreSQL
+  **PostgreSQL tables can now be profiled internally, with the existing PII
+  engine.** `PostgresTableProfiler` takes a discovered `PostgresTable`, the
+  `PostgresDataSource`, and a caller-supplied dataset identifier, and returns the
+  **existing** `DatasetProfile`/`ColumnProfile` models. It **reuses**
+  `PiiColumnProfiler`, `PiiDetectorRegistry`, and the existing `PiiType` set
+  wholesale — which detectors run, how supplied/analyzed/analyzable counts are
+  derived, how detection counts and rates are computed, and how detected types
+  are ordered are all the existing engine's, so **no detection, counting,
+  detection-rate, or policy logic is duplicated and no second PostgreSQL-specific
+  profile model exists**. Detection over database values is reuse of the engine,
+  not a new PII path.
+  **How values reach the engine** is the one new thing this class does: a JDBC
+  value is converted to profiling text at that boundary by a single documented
+  strategy — SQL `NULL` → `null` (never the string `"null"`), `String` → verbatim,
+  `bytea` → `null` (binary is left un-decoded rather than fabricated as text),
+  everything else → its own `toString()`. There is no tokenization, language
+  detection, normalization, redaction, or provider-specific transformation; the
+  existing string-oriented detectors simply see the value's own text form.
+  **Profiling is bounded by the existing row-stream limit**: only the rows
+  actually streamed are analysed, and the profile's `suppliedValueCount` per
+  column is the honest number of rows observed. `DatasetProfile` has no
+  truncation field, and rather than invent a new profile schema in this milestone
+  the limitation is documented: a caller must not read a bounded sample as a
+  whole-table profile. Rows are processed one at a time — no table snapshot, no
+  CSV, and no list of all rows is built.
+  Columns keep the table's discovered `ORDINAL_POSITION` order, a deliberate and
+  documented difference from `DatasetProfiler`'s alphabetical ordering, so two
+  identical inputs always produce equivalent profiles; detector order and
+  detected-type order are the existing engine's. An empty table is a normal
+  outcome, not a failure: the discovered columns are still returned with zero
+  observations and zero detections. A SQL `NULL` is preserved as `null` and
+  counted as supplied but not analyzable, exactly as `PiiColumnProfiler` already
+  defines.
+  **Actual row values are never persisted, logged, or exposed.** They exist in
+  memory only for the duration of one profiling call. A detector that fails
+  while inspecting a value can build a message quoting that value, and the
+  profiler wraps any such failure in a fixed, safe
+  `PostgresTableProfileException` (metadata-only message) so it cannot escape; a
+  source-layer failure keeps its own distinct exception, so configuration,
+  discovery, streaming, and profiling failures remain distinguishable.
+  **This is currently an in-memory profiling capability.** **Profile persistence
+  and sanitization integration remain future steps:** no `saveProfile` call, no
+  new profile table, no staging table, no row snapshot, no REST endpoint, and no
+  sanitization call.
+  Dependency direction is one-way and narrow: `PostgresTableProfiler` depends on
+  `PostgresTableRowSource` and the existing PII profiling engine only, and the
+  PII engine does not depend on any PostgreSQL class.
+
+  **PostgreSQL sanitization is still NOT integrated.** There is **no PostgreSQL
   sanitization, no PostgreSQL-to-CSV conversion, and no production data
-  persistence**. `PostgresTableRow` is a carrier only: a value is the JDBC
+  persistence**. `PostgresTableRow` remains a carrier: a value is the JDBC
   driver's own type for that column (or SQL `NULL`, preserved as `null` rather
-  than an empty string), with no domain PII object, no detection, no confidence,
-  and no transformation at this layer. The row source depends on
-  `PostgresDataSource` and the JDK only — no dataset persistence, no
-  `SanitizationRun`, no gateway, no policy enforcement, no audit ledger, no PII
-  detection, no Redis, and no controller.
+  than an empty string), with no domain PII object, no classification, and no
+  transformation at this layer. The profiler reuses the existing detectors but
+  performs no sanitization, writes no policy, and touches no gateway, token
+  budget, rate limiter, or audit ledger.
 
   **Source credentials are not persisted**: the host, port, database, username,
   password, schema, a bounded connect timeout, and the two row-stream bounds are

@@ -542,6 +542,12 @@ failRun     -> FAILED (error code/stage/message + completed_at)
       |
       v
   PostgresTableRow, one row at a time, to a caller-supplied Consumer
+      |
+      v   (internal, in-memory only)
+  PostgresTableProfiler  ->  existing PiiColumnProfiler
+      |
+      v
+  DatasetProfile / ColumnProfile   (existing models, not persisted)
   ```
 
   PostgreSQL is a supported source for **dataset discovery** and, internally, for
@@ -619,13 +625,49 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   **No public REST endpoint exists yet, and none was added**: this remains an
   internal backend source abstraction.
 
+  **PostgreSQL tables can also be profiled internally, with the existing PII
+  engine.** `PostgresTableProfiler` takes a discovered `PostgresTable`, the
+  source, and a caller-supplied dataset identifier, and returns the **existing**
+  `DatasetProfile`/`ColumnProfile` models. It reuses `PiiColumnProfiler` and
+  `PiiDetectorRegistry` wholesale: which detectors run, how supplied/analyzed/
+  analyzable counts are derived, how detection counts and rates are computed, and
+  how detected types are ordered are all the engine's, and **no second
+  PostgreSQL-specific profile model exists**. Its only new responsibility is
+  turning a JDBC value into text so the existing string-oriented detectors can
+  see it: SQL `NULL` becomes `null` (never the string `"null"`), a `String` is
+  used verbatim, `bytea` is left un-decoded as `null` rather than fabricated as
+  text, and everything else uses its own `toString()`. There is no tokenization,
+  language detection, or normalization. Columns are returned in the table's
+  `ORDINAL_POSITION` order — a documented, deliberate difference from
+  `DatasetProfiler`'s alphabetical ordering, because ordinal position is a fact
+  about the table.
+  **Profiling is bounded by the row-stream limit**: only the rows actually
+  streamed are analysed, so a profile describes a bounded sample and never the
+  whole table. `DatasetProfile` has no truncation field and none was invented
+  here; a caller compares the per-column `suppliedValueCount` against the
+  table's row count instead. Rows are processed one at a time — no table
+  snapshot, no CSV, and no list of all rows.
+  **Row values are never persisted, logged, or exposed.** They exist in memory
+  only for the duration of one profiling call: nothing logs a value, none is
+  placed in an exception or its message, none is persisted, none reaches an audit
+  event, and none is returned over HTTP. A detector that fails while inspecting a
+  value can build a message quoting that value, and the profiler wraps any such
+  failure in a fixed safe `PostgresTableProfileException` so it cannot escape; a
+  source-layer failure keeps its own distinct exception, so configuration,
+  discovery, streaming, and profiling failures stay distinguishable.
+  **This is an in-memory capability only.** **No profile is persisted** — no
+  `saveProfile` call, no new profile table, no staging table, and no row
+  snapshot. **Profile persistence, PostgreSQL sanitization, and any REST
+  endpoint remain future steps.**
+
   **PostgreSQL data is still NOT connected to the PII or sanitization
   pipeline.** There is **no PII detection over database values, no PostgreSQL
   sanitization, no PostgreSQL-to-CSV conversion, and no production data
   persistence**. `PostgresTableRow` is a carrier: a value is the driver's own
   JDBC type (or SQL `NULL`), with no domain PII type, no detection, no
-  confidence, no classification, and no transformation at this layer. Wiring
-  this into sanitization is a later milestone.
+  confidence, no classification, and no transformation at this layer. The
+  profiler reuses the existing detectors but performs no sanitization, writes no
+  policy, and touches no gateway, token budget, rate limiter, or audit ledger.
 
   **Credentials are not persisted.** The source is service-level configuration
   only (`aegivault.dataset.postgres.host/port/database/username/password/schema`

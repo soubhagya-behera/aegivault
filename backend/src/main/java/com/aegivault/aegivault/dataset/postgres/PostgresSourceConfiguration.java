@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.dataset.postgres;
 
+import com.aegivault.aegivault.pii.profile.PiiColumnProfiler;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -47,5 +48,21 @@ public class PostgresSourceConfiguration {
     PostgresTableRowSource postgresTableRowSource(PostgresSourceProperties properties) {
         return new JdbcPostgresTableRowSource(
                 new PostgresRowLimits(properties.getMaxRows(), properties.getFetchSize()));
+    }
+
+    /**
+     * The in-memory PII profiler over that row stream.
+     *
+     * <p>Conditional on exactly the same property, so a checkout with no source
+     * configured still has nothing to inject. It reuses the existing
+     * {@code PiiColumnProfiler} rather than defining any PII logic of its own,
+     * and it persists nothing: the profile it returns exists only as the value
+     * handed back to the caller.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "aegivault.dataset.postgres", name = "database")
+    PostgresTableProfiler postgresTableProfiler(
+            PostgresTableRowSource rowSource, PiiColumnProfiler columnProfiler) {
+        return new PostgresTableProfiler(rowSource, columnProfiler);
     }
 }
