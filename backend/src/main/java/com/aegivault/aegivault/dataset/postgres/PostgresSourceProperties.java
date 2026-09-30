@@ -26,6 +26,13 @@ import org.springframework.stereotype.Component;
  * 5 seconds and is rejected when it is not positive or exceeds 60 seconds, so a
  * misconfiguration fails at startup instead of letting a connection attempt
  * hang for an unbounded time.
+ *
+ * <p><strong>Row reads are bounded too.</strong> {@code max-rows} (default
+ * 1,000) caps how many rows one internal row stream may deliver, and
+ * {@code fetch-size} (default 100) caps how many rows the driver holds at a
+ * time. Both are rejected outside the ranges {@link PostgresRowLimits} accepts,
+ * so a bound cannot be configured away. These govern an internal, read-only
+ * stream only; no endpoint and no query parameter can influence them.
  */
 @Component
 @ConfigurationProperties(prefix = "aegivault.dataset.postgres")
@@ -47,6 +54,10 @@ public class PostgresSourceProperties {
     private String schema = "public";
 
     private int connectTimeoutSeconds = 5;
+
+    private int maxRows = PostgresRowLimits.DEFAULT_MAX_ROWS;
+
+    private int fetchSize = PostgresRowLimits.DEFAULT_FETCH_SIZE;
 
     public String getHost() {
         return host;
@@ -102,5 +113,21 @@ public class PostgresSourceProperties {
 
     public void setConnectTimeoutSeconds(int connectTimeoutSeconds) {
         this.connectTimeoutSeconds = connectTimeoutSeconds;
+    }
+
+    public int getMaxRows() {
+        return maxRows;
+    }
+
+    public void setMaxRows(int maxRows) {
+        this.maxRows = maxRows;
+    }
+
+    public int getFetchSize() {
+        return fetchSize;
+    }
+
+    public void setFetchSize(int fetchSize) {
+        this.fetchSize = fetchSize;
     }
 }

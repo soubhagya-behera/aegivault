@@ -32,4 +32,20 @@ public class PostgresSourceConfiguration {
     PostgresDataSource postgresDataSource(PostgresSourceProperties properties) {
         return new DriverManagerPostgresDataSource(properties);
     }
+
+    /**
+     * The bounded row stream, over the same connection boundary.
+     *
+     * <p>Conditional on exactly the same property as the source itself, so a
+     * checkout with no source configured still has no row-reading bean to
+     * inject. The configured bounds are validated here, which means a source
+     * configured with an out-of-range row limit or fetch size fails at startup
+     * rather than on the first read.
+     */
+    @Bean
+    @ConditionalOnProperty(prefix = "aegivault.dataset.postgres", name = "database")
+    PostgresTableRowSource postgresTableRowSource(PostgresSourceProperties properties) {
+        return new JdbcPostgresTableRowSource(
+                new PostgresRowLimits(properties.getMaxRows(), properties.getFetchSize()));
+    }
 }

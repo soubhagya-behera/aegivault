@@ -47,7 +47,7 @@ profiling, and CSV discovery modules:
 * Test suites covering context load, Flyway/JPA persistence, identity and
   dataset REST APIs, PII detectors, PII profiling, CSV discovery/profiling,
   sanitization/transformation engine, the end-to-end CSV sanitization
-  pipeline, and the sanitization run lifecycle (612 tests; see the verified test count below).
+  pipeline, and the sanitization run lifecycle (1688 tests; see the verified test count below).
 * Spring Security with a stateless JWT configuration (no custom login
   page, no sessions): Bearer tokens authenticate every request except
   `/api/auth/**` and actuator health/info; method security is enabled.
@@ -121,10 +121,21 @@ profiling, and CSV discovery modules:
   same `PolicyResponse` and `Location` as `POST /api/policies`; empty
   detection sets fail 400 before anything persists; no run, no execution,
   no dataset/profile/CSV change, no audit writes).
-* 612 total tests verified (context load, dataset persistence, identity persistence,
+* PostgreSQL source row-streaming test coverage (47 new tests): pure unit tests for the
+  row/limits/result model, the exact constructed `SELECT`, identifier rejection before
+  any SQL or connection, row-limit truncation and its exact boundary, fetch-size
+  application, resource closure on every path, dependency direction, and the safe
+  fixed failure message; plus 12 JDBC integration tests against the real local
+  PostgreSQL reusing the existing cached application context — real table streamed,
+  column order preserved, database row order without a claimed order, nulls
+  preserved, common type mapping, empty table, row limit, fetch size, exact limit
+  boundary, closure, read-only write rejection (`25006`), schema isolation, and an
+  unknown table producing the safe exception. All test data is obviously synthetic.
+* 1688 total tests verified (context load, dataset persistence, identity persistence,
   auth API, dataset API, PII detectors, PII profiling, CSV discovery, CSV profiling,
   sanitization/transformation engine, end-to-end CSV sanitization,
-  sanitization run domain/persistence/lifecycle/execution/retrieval),
+  sanitization run domain/persistence/lifecycle/execution/retrieval, PostgreSQL
+  schema discovery, PostgreSQL row streaming),
   0 failures, 0 errors, 0 skipped; the persistence/context suites run against the real
   PostgreSQL with no embedded database, and the CSV/profiling/sanitization/run-domain suites are pure unit tests.
 
@@ -506,7 +517,7 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   milestone; nothing here claims otherwise.
 
 * **PostgreSQL source foundation** (`dataset.postgres`, implemented; internal
-  only, no endpoint yet, metadata only):
+  only, no endpoint yet):
 
   ```text
   PostgresSourceProperties (aegivault.dataset.postgres.*)
@@ -522,54 +533,115 @@ failRun     -> FAILED (error code/stage/message + completed_at)
       |
       v
   PostgresSchema -> PostgresTable -> PostgresColumn   (metadata only)
+      |
+      v   (one discovered table, chosen by an internal caller)
+  PostgresTableRowSource / JdbcPostgresTableRowSource
+      |
+      v
+  SELECT <validated columns> FROM <validated schema>.<validated table>
+      |
+      v
+  PostgresTableRow, one row at a time, to a caller-supplied Consumer
   ```
 
-  PostgreSQL is now a supported source for **dataset discovery**, and the
-  capability is **read-only schema discovery and nothing more**: the schema
-  name, its base tables, and each table's column names, ordinal positions, and
-  data type names. **No production row data is copied** — and that is structural
-  rather than a promise, because every reachable record component is a name, a
-  count, or a type: no row value, sample, count, constraint, or secret has a
-  field to travel in. There is **no row extraction, no PostgreSQL-to-CSV
-  conversion, no sanitization of database rows, and no PII detection over
-  database values** yet.
-  **No arbitrary SQL API exists.** The boundary exposes exactly two operations
-  and no execute/query method, and discovery never asks the connection for a
-  statement, so there is no query text at all. Every fact comes from
-  `DatabaseMetaData`, and the only identifier taken from configuration — the
-  schema name — is validated against a strict identifier grammar *before* a
-  connection is opened, then escaped into a literal metadata pattern (JDBC
-  patterns treat `%` and `_` as wildcards, so a schema legitimately named
-  `reporting_core` cannot widen its own search). Only one explicit schema is
+  PostgreSQL is a supported source for **dataset discovery** and, internally, for
+  **bounded read-only row streaming**.
+  **Schema discovery is metadata only**: the schema name, its base tables, and
+  each table's column names, ordinal positions, and data type names. Every fact
+  comes from `DatabaseMetaData`, and discovery never asks the connection for a
+  statement, so there is no query text at all. The only identifier taken from
+  configuration — the schema name — is validated against a strict identifier
+  grammar *before* a connection is opened, then escaped into a literal metadata
+  pattern (JDBC patterns treat `%` and `_` as wildcards, so a schema legitimately
+  named `reporting_core` cannot widen its own search). Only one explicit schema is
   supported, defaulting to `public`; there is no cross-schema browsing, no
   views or materialized views, no stored-procedure execution, and no
   foreign-data wrappers.
-  **Read-only, honestly bounded.** The connection requests and re-applies
-  read-only, which PostgreSQL turns into a read-only session, so a write on it
-  fails server-side; nothing is pooled, cached, or held open across a run, and
-  the connection is closed by the end of the discovery call. That is a
-  client-side guarantee, and it is **not** a complete one: it does not change
-  what the configured account is entitled to do, and it does not protect the
-  source from any other connection. **Production use therefore requires
-  database-level read-only credentials** — a source role granted only what
-  discovery needs (for example `CONNECT` and `SELECT`, or
-  `default_transaction_read_only = on`), configured by whoever operates the
-  source database.
+
+  **Row streaming is one table at a time, and it is not connected to anything
+  yet.** `PostgresTableRowSource` has exactly one operation,
+  `streamRows(source, table, consumer)`, which takes a **discovered**
+  `PostgresTable` — not a table name and not SQL — and hands rows to the caller
+  one at a time. The initial reader supports **one table and nothing else**: the
+  statement is exactly `SELECT <validated columns> FROM <validated schema>.<validated table>`,
+  in discovered `ORDINAL_POSITION` order, with **no filtering, no joins, no
+  aggregation, no sorting, no pagination, and no caller-supplied SQL**. Every
+  identifier is validated against the same strict grammar and then
+  double-quoted, and a table with any column name that cannot be quoted is
+  refused whole rather than partly read. **No arbitrary SQL path exists**: no
+  `execute`, no `query`, no SQL string parameter, and no `Connection`,
+  `Statement`, or `ResultSet` on the interface, so a caller cannot reach a
+  statement even by wanting to.
+
+  **Rows are read-only and one-at-a-time.** Nothing accumulates: there is no
+  `List` of rows, no `queryForList`, no in-memory CSV, and no cache, so peak
+  memory is a function of the fetch size and the widest single row, not of the
+  table's size. The row ceiling (`max-rows`, default 1,000, max 1,000,000) is
+  enforced *while* reading rather than with a `LIMIT` clause, so the bound
+  applies to rows actually delivered and the statement stays free of caller
+  influence; **truncation is reported, never silent** —
+  `PostgresRowStreamResult.rowLimitReached` tells a caller it received a prefix
+  rather than the table. The fetch size (`fetch-size`, default 100, max 10,000)
+  is applied to the statement *and* auto-commit is turned off for the read,
+  because the PostgreSQL driver honours a fetch size only outside auto-commit
+  mode; that is what makes the streaming claim true rather than aspirational.
+  Both bounds are range-checked at startup, so a bound cannot be configured away.
+
+  **Resource lifecycle is the implementation's job.** The result set and
+  statement are closed by try-with-resources and the connection in a `finally`,
+  on the normal path, when the row ceiling is reached, when the consumer throws,
+  and when the driver throws. The caller closes nothing, because the caller is
+  given no JDBC object to close. One call uses one connection; there is no pool
+  and no connection outlives its call.
+
+  **Read-only, and honest about what that means.** The connection comes from the
+  same `PostgresDataSource` boundary discovery uses — never from `DriverManager` —
+  so the existing read-only guarantee is reused and not weakened. Because the
+  read runs in an explicit transaction, the server enforces it: a write on such
+  a connection is refused with `25006 read_only_sql_transaction`, which is
+  asserted against a real server. That remains a client-side guarantee and **not**
+  a complete one: it does not change what the configured account is entitled to
+  do, and it does not protect the source from any other connection. **Production
+  use therefore requires database-level read-only credentials** — a source role
+  granted only what discovery and reading need (for example `CONNECT` and
+  `SELECT`, or `default_transaction_read_only = on`), configured by whoever
+  operates the source database.
+
+  **Row data is not persisted and not exposed.** Values exist only as arguments
+  to the caller's consumer, for the duration of the call: nothing logs a value,
+  none is placed in an exception or its message, none is persisted, none goes
+  into an audit event, and none is returned over HTTP. `PostgresTableRow.toString()`
+  deliberately withholds values so an accidental log line or an IDE value
+  inspector cannot leak one. Failures are fixed safe messages — including for a
+  table that does not exist, so this boundary is not an existence oracle —
+  carrying no SQL, schema/table internals, JDBC URL, host, port, username,
+  password, driver text, or row value; causes are retained for server logs only.
+  **No public REST endpoint exists yet, and none was added**: this remains an
+  internal backend source abstraction.
+
+  **PostgreSQL data is still NOT connected to the PII or sanitization
+  pipeline.** There is **no PII detection over database values, no PostgreSQL
+  sanitization, no PostgreSQL-to-CSV conversion, and no production data
+  persistence**. `PostgresTableRow` is a carrier: a value is the driver's own
+  JDBC type (or SQL `NULL`), with no domain PII type, no detection, no
+  confidence, no classification, and no transformation at this layer. Wiring
+  this into sanitization is a later milestone.
+
   **Credentials are not persisted.** The source is service-level configuration
   only (`aegivault.dataset.postgres.host/port/database/username/password/schema`
-  plus a bounded `connect-timeout-seconds`); there is no source table, no
+  plus a bounded `connect-timeout-seconds`, `max-rows`, and `fetch-size`); there
+  is no source table, no source registry, no row staging table, no row cache, no
   repository, and no CRUD API, and the password is never stored in the database,
   logged, or returned by any accessor. Connection attempts are bounded by the
   configured timeout (1–60 seconds, default 5), so a silent source cannot hang a
-  caller. Failures are two distinct fixed safe messages — unable to connect, and
-  unable to inspect the schema — carrying no JDBC URL, host, port, username,
-  password, SQL text, or driver text. A checkout with no source configured has no
-  source bean and boots unchanged. **No public REST endpoint exists yet**: the
-  reusable service is deliberately built and proven first.
-  Dependency direction is one-way and narrow: the discovery service depends on
-  `PostgresDataSource` and the JDK alone, and on no dataset persistence, no
-  `SanitizationRun`, no gateway, no policy enforcement, no audit ledger, no PII
-  detection, no Redis, and no controller.
+  caller. Failures are distinct fixed safe messages — unable to connect, unable
+  to inspect the schema, and unable to read a source table. A checkout with no
+  source configured has no source bean and no row-streaming bean and boots
+  unchanged.
+  Dependency direction is one-way and narrow: the discovery service and the row
+  source each depend on `PostgresDataSource` and the JDK alone, and on no
+  dataset persistence, no `SanitizationRun`, no gateway, no policy enforcement, no
+  audit ledger, no PII detection, no Redis, and no controller.
 Everything below under "planned" is design intent, not implementation.
 
 ## Planned architecture

@@ -112,6 +112,44 @@
 	<build>
 		<plugins>
 			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<!--
+						TEST-ONLY. Stop cached Spring contexts from pinning database
+						connections for the whole run.
+
+						The suite builds 10 distinct @SpringBootTest contexts, and the
+						context cache holds every one of them until the JVM exits (there
+						is no @DirtiesContext anywhere). HikariCP's default is
+						minimumIdle = maximumPoolSize = 10, so each cached context
+						permanently holds up to 10 idle connections: 10 x 10 = 100,
+						which is exactly the local server's max_connections. The suite
+						therefore ran permanently at the ceiling, and any unrelated
+						connection (a leftover IDE or Maven JVM, a psql session, a
+						second checkout) tipped it over into
+						"FATAL: sorry, too many clients already", failing whichever
+						context happened to load next.
+
+						Releasing idle connections removes the saturation without
+						lowering peak capacity: maximum-pool-size is deliberately left
+						at the default 10, so a context can still open as many
+						connections as it ever could, it just does not hold them open
+						while nothing is using it. idle-timeout must be >= 10s when
+						minimum-idle is below maximum-pool-size; 10s is HikariCP's
+						minimum and the shortest value it permits.
+
+						These are system properties, so they apply to the test JVM only
+						and cannot affect a packaged application, a production
+						configuration, or PostgreSQL's own configuration.
+					-->
+					<systemPropertyVariables>
+						<spring.datasource.hikari.minimum-idle>0</spring.datasource.hikari.minimum-idle>
+						<spring.datasource.hikari.idle-timeout>10000</spring.datasource.hikari.idle-timeout>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
+			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>

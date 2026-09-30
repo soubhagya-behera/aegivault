@@ -86,6 +86,47 @@ class PostgresSourceConfigurationTest {
                 });
     }
 
+    @Test
+    void theRowStreamIsWiredOnlyWhenASourceIsConfiguredAndWithBoundedDefaults() {
+        runner.run(context -> {
+            // No source configured, no row-reading bean: an absent optional
+            // integration stays absent rather than becoming a startup failure.
+            context.assertThat().doesNotHaveBean(PostgresTableRowSource.class);
+        });
+
+        runner.withPropertyValues(
+                        "aegivault.dataset.postgres.database=analytics",
+                        "aegivault.dataset.postgres.username=aegivault_readonly")
+                .run(context -> {
+                    context.assertThat().hasNotFailed();
+                    context.assertThat().hasSingleBean(PostgresTableRowSource.class);
+                    // Exposed as the abstraction, so no caller reaches a JDBC
+                    // object, a URL, or a credential through the bean.
+                    assertThat(context.getBean(PostgresTableRowSource.class))
+                            .isInstanceOf(JdbcPostgresTableRowSource.class);
+                    // The documented conservative bounds are in force by default.
+                    assertThat(context.getBean(PostgresSourceProperties.class).getMaxRows())
+                            .isEqualTo(PostgresRowLimits.DEFAULT_MAX_ROWS);
+                    assertThat(context.getBean(PostgresSourceProperties.class).getFetchSize())
+                            .isEqualTo(PostgresRowLimits.DEFAULT_FETCH_SIZE);
+                });
+    }
+
+    @Test
+    void anUnboundedRowStreamConfigurationFailsAtStartupRatherThanOnFirstRead() {
+        // A row limit or fetch size outside its range is refused when the bean is
+        // built, so the bound cannot be configured away and then discovered
+        // missing during a read of production data.
+        runner.withPropertyValues(
+                        "aegivault.dataset.postgres.database=analytics",
+                        "aegivault.dataset.postgres.username=aegivault_readonly",
+                        "aegivault.dataset.postgres.max-rows=0")
+                .run(context -> {
+                    context.assertThat().hasFailed();
+                    assertThat(failureMessages(context.getStartupFailure())).contains("maxRows");
+                });
+    }
+
     private static String failureMessages(Throwable failure) {
         StringBuilder messages = new StringBuilder();
         for (Throwable current = failure; current != null; current = current.getCause()) {
