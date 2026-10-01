@@ -1141,6 +1141,68 @@ real synthetic table end to end — including assertions that **no credentials a
 no row data are persisted**. The integration tests reuse the existing cached
 application context; no new `@SpringBootTest` context was added.
 
+## PostgreSQL dataset profiling (internal, persisted metadata only)
+
+A bound PostgreSQL dataset can now **produce and persist a `DatasetProfile`**
+(`dataset.postgres.profiling`). The flow is exactly:
+
+```
+owned dataset -> owned binding -> configured source -> re-confirmed base table
+              -> PostgresTableProfiler -> DatasetProfileService.saveProfile
+              -> re-read via DatasetProfileService.getProfile
+```
+
+`PostgresDatasetProfilingService.profile(ownerSubject, datasetId)` composes only
+existing pieces and **re-implements nothing**: detection, counting, and rates
+stay in the existing `PiiColumnProfiler` via `PostgresTableProfiler`, and
+persistence stays in the existing `DatasetProfileService`, which already owns
+owner scoping and replace-on-resave semantics. **Only metadata is persisted** —
+column names, counts, rates, and type names. There is no new profile table, no
+PostgreSQL-specific profile model, and no row value anywhere in the stored
+aggregate.
+
+**Profiling is bounded by the PostgreSQL row-stream limit.** The persisted
+profile represents exactly the rows the bounded stream delivered, up to its
+configured ceiling; it never claims full-table coverage, and no persisted field
+asserts a row count that was not observed.
+
+**Ownership** is threaded through every composed call: the owner is trimmed
+once, rejected when blank, and there is no ADMIN bypass. A missing or foreign
+binding surfaces the binding layer's own not-found signal, which says nothing
+about the source.
+
+**Stale bindings fail safely and are not changed.** A binding is stored here
+while its table lives in an external database, so the table can be dropped,
+renamed, or replaced by a view afterwards. The name then stops being a
+discovered base table and profiling raises a fixed safe
+`PostgresDatasetProfilingException`; the binding is **not** deleted or repaired,
+no other table or schema is substituted, and **no partial profile is written**. An
+unconfigured source, an unreachable source, a discovery failure, and a profiler
+failure all collapse into that same fixed message, so profiling cannot be used to
+probe the database. Repairing a stale binding is left as an explicit owner
+decision for the future source-management API.
+
+**Re-profiling replaces rather than duplicates.** A second call uses the
+existing `saveProfile` semantics, so one profile row per dataset survives, with
+no stale column or detection rows left behind.
+
+**Nothing else was connected.** No REST endpoint, no sanitization, no
+sanitization run, no artifact, no new audit event, and **no change to the CSV
+profiling path**. **PostgreSQL sanitization is still pending.**
+
+**Test coverage (26 new tests).** 19 pure unit tests (owner validation and
+trimming, binding lookup, binding not found, stale binding, discovery failure,
+profiler failure, row-read failure, unconfigured source, cross-schema refusal,
+no-fall-back-to-similar-name, persistence called exactly once on success, no
+persistence on failure, owner and dataset id propagation, re-profile, dependency
+direction, and a single-operation surface with no SQL or JDBC reachable) and 7
+integration tests against a real synthetic table — verifying the persisted
+profile, PII detection from the existing engine, column metadata, counts and
+rates, replacement on re-profile, absence of any persisted row value, cross-owner
+refusal, stale-binding behaviour, and that the CSV profile path is unaffected.
+The integration tests reuse the existing cached application context; no new
+`@SpringBootTest` context was added.
+
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as

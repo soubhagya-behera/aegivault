@@ -550,8 +550,13 @@ failRun     -> FAILED (error code/stage/message + completed_at)
       v   (internal, in-memory only)
   PostgresTableProfiler  ->  existing PiiColumnProfiler
       |
+      |   (internal orchestration, dataset.postgres.profiling)
+      |   owned dataset -> owned binding -> re-confirmed base table -> profile
       v
-  DatasetProfile / ColumnProfile   (existing models, not persisted)
+  DatasetProfileService.saveProfile / getProfile  (existing persistence)
+      |
+      v
+  DatasetProfile / ColumnProfile   (existing models, persisted, metadata only)
   ```
 
   PostgreSQL is a supported source for **dataset discovery** and, internally, for
@@ -710,6 +715,43 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   **Credentials remain application configuration only**, and **REST/source
   management remains unimplemented** — `dataset.postgres.binding` is an internal
   backend capability.
+
+  **A bound PostgreSQL dataset can now be profiled and the result persisted**
+  (`dataset.postgres.profiling`, implemented; internal only, no endpoint yet).
+  `PostgresDatasetProfilingService.profile(ownerSubject, datasetId)` composes
+  only existing pieces: the owner-scoped `PostgresDatasetBindingService` for the
+  table name, `PostgresSchemaDiscoveryService` to re-confirm it as a discovered
+  base table, `PostgresTableProfiler` to profile it, then
+  `DatasetProfileService.saveProfile(...)` and a re-read via `getProfile(...)`.
+  **It re-implements nothing** — detection, counting, and rates stay in the
+  existing `PiiColumnProfiler`, and persistence stays in the existing
+  `DatasetProfileService`, which already owns owner scoping and replace-on-resave
+  semantics. There is no new profile table, no PostgreSQL-specific profile model,
+  and no second profile schema, so a stored PostgreSQL profile is
+  indistinguishable in shape from a stored CSV profile. **Only metadata is
+  persisted**: column names, counts, rates, and type names, never a row value.
+
+  **Profiling is bounded by the existing row-stream limit.** The profile
+  describes exactly the rows the bounded stream delivered, up to its configured
+  ceiling — never the whole table, and nothing here claims otherwise. **A stale
+  binding fails safely and is not changed.** Because a binding is stored here
+  while its table lives in an external database, the table can be dropped,
+  renamed, or replaced by a view afterwards; the name then simply stops being a
+  discovered base table and profiling raises a fixed safe
+  `PostgresDatasetProfilingException`. It does **not** delete or repair the
+  binding, does not rebind to another table or schema, and persists no partial
+  profile. An unconfigured source, an unreachable source, a discovery failure,
+  and a profiler failure all collapse into that same fixed message, so profiling
+  cannot be used to probe the database; causes are kept for server logs only. A
+  missing or foreign binding surfaces the binding layer's own not-found signal
+  instead, which says nothing about the source. **Ownership is threaded, never
+  widened**: the owner is trimmed once, rejected when blank, and passed to every
+  composed call, with no ADMIN bypass.
+
+  **This milestone stops at profiling.** There is **no REST endpoint, no
+  sanitization, no sanitization run, no artifact, and no new audit event**, and
+  the CSV profiling path is untouched. **PostgreSQL sanitization is still
+  pending.**
 
   **PostgreSQL data is still NOT connected to the PII or sanitization
   pipeline.** There is **no PII detection over database values, no PostgreSQL
