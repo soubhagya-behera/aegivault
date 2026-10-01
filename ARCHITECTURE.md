@@ -557,6 +557,16 @@ failRun     -> FAILED (error code/stage/message + completed_at)
       |
       v
   DatasetProfile / ColumnProfile   (existing models, persisted, metadata only)
+      |
+      |   (internal bridge, dataset.postgres.sanitization)
+      |   owned dataset -> owned binding -> re-confirmed base table
+      |   -> bounded row stream -> caller's TransformationPlan
+      |   -> existing DataSanitizationService -> existing CsvSanitizationWriter
+      v
+  SanitizationRunExecutor.executeContent (existing lifecycle)
+      |
+      v
+  SanitizationRun + SanitizationArtifactStore   (existing models, one artifact)
   ```
 
   PostgreSQL is a supported source for **dataset discovery** and, internally, for
@@ -664,10 +674,10 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   failure in a fixed safe `PostgresTableProfileException` so it cannot escape; a
   source-layer failure keeps its own distinct exception, so configuration,
   discovery, streaming, and profiling failures stay distinguishable.
-  **This is an in-memory capability only.** **No profile is persisted** — no
-  `saveProfile` call, no new profile table, no staging table, and no row
-  snapshot. **Profile persistence, PostgreSQL sanitization, and any REST
-  endpoint remain future steps.**
+  **The profiler itself is an in-memory capability.** `PostgresTableProfiler`
+  persists nothing — no staging table, no row snapshot — but its result is now
+  persisted by the profiling bridge below, and that result remains metadata
+  only. **Any REST endpoint remains a future step.**
 
   **A dataset can now be internally bound to one PostgreSQL base table**
   (`dataset.postgres.binding`, implemented; internal only, no endpoint yet).
@@ -753,14 +763,71 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   the CSV profiling path is untouched. **PostgreSQL sanitization is still
   pending.**
 
-  **PostgreSQL data is still NOT connected to the PII or sanitization
-  pipeline.** There is **no PII detection over database values, no PostgreSQL
-  sanitization, no PostgreSQL-to-CSV conversion, and no production data
-  persistence**. `PostgresTableRow` is a carrier: a value is the driver's own
-  JDBC type (or SQL `NULL`), with no domain PII type, no detection, no
-  confidence, no classification, and no transformation at this layer. The
-  profiler reuses the existing detectors but performs no sanitization, writes no
-  policy, and touches no gateway, token budget, rate limiter, or audit ledger.
+  **A bound PostgreSQL dataset can now be sanitized into the existing CSV
+  artifact format** (`dataset.postgres.sanitization`, implemented; internal only,
+  no endpoint yet). `PostgresDatasetSanitizationService.sanitize(ownerSubject,
+  datasetId, plan, policyName, policyVersion)` is a bridge and nothing more:
+  owner-scoped binding for the schema and table → metadata re-confirmation →
+  `PostgresTableRowSource` → the caller's `TransformationPlan` applied by
+  `DataSanitizationService` → `CsvSanitizationWriter` →
+  `SanitizationRunExecutor`.
+
+  **Transformation logic is reused, not re-implemented.** Detection stays in
+  `PiiDetectorRegistry` and masking, redaction, hashing, and synthesis stay in
+  the existing strategies, reached only through the existing engine. The one
+  PostgreSQL-specific step is `PostgresRowSanitizer`, which converts a streamed
+  row's values to text and renders a NULL as an empty CSV field — there is no
+  PostgreSQL-specific sanitizer hierarchy. CSV escaping is the project's single
+  `CsvSanitizationWriter`, made public for this reuse, so a PostgreSQL artifact
+  is byte-for-byte consistent with a CSV artifact.
+
+  **The transformation plan is the caller's.** No policy is selected or inferred
+  here: the caller supplies the plan, and a type the plan does not cover fails
+  closed through the engine's existing `MissingTransformationException`.
+
+  **The source is read-only and never mutated.** Rows are read through the
+  existing `PostgresTableRowSource` over the existing read-only
+  `PostgresDataSource`, which issues one `SELECT`. There is no UPDATE, DELETE,
+  or DDL in this package, and no connection, statement, or SQL text is reachable
+  from the service.
+
+  **Rows are streamed, never loaded.** Each row is transformed, written, and
+  released before the next arrives: no row list, no full-table CSV string, no row
+  cache. Peak memory is a function of the fetch size and the widest single row.
+
+  **Row-limit semantics are bounded and stated, not hidden.** Only the rows the
+  bounded stream actually delivers are sanitized. `SanitizationRun` has no field
+  for "the source stream was truncated", so rather than inventing one or
+  overloading an existing count, the signal is returned to the caller in
+  `PostgresSanitizationResult.rowLimitReached()` and nothing persisted claims
+  full-table coverage. Recording it on the run is a deliberate future decision.
+
+  **One run lifecycle, not a second.** The executor gained one seam —
+  `SanitizationContentSource`, the "supply sanitized bytes and counts" step — so
+  a non-CSV source reuses the existing `QUEUED -> RUNNING -> COMPLETED | FAILED`
+  transitions, the existing audit events, the existing bounded capture, and the
+  existing `SanitizationArtifactStore`. There is still exactly one state machine,
+  one failure mapping, and one artifact path.
+
+  **A stale binding fails before a run exists.** The bound table is re-confirmed
+  through discovery before the run is created, so a dropped, renamed, or replaced
+  table yields no run, no artifact, and no partial artifact, and the binding is
+  left untouched rather than deleted or repointed. Ownership is threaded with no
+  ADMIN bypass. Source values exist in memory only while one row is processed:
+  none is logged, placed in an exception, persisted, or sent to an audit event.
+
+  **No REST endpoint exists yet, and async job integration remains a later
+  step.** `SanitizationRunJobLauncher` is untouched and this service runs
+  synchronously.
+
+  **The row layer stays a carrier, and production data is never persisted.**
+  `PostgresTableRow` is still just the driver's own JDBC type (or SQL `NULL`),
+  with no domain PII type, confidence, classification, or transformation, and the
+  profiler performs no sanitization, writes no policy, and touches no gateway,
+  token budget, rate limiter, or audit ledger. Sanitization now exists as a
+  separate internal bridge above, but **no raw row is ever persisted, staged, or
+  cached**: values live in memory for the duration of one row, and only
+  sanitized output reaches the artifact store.
 
   **Credentials are not persisted.** The source is service-level configuration
   only (`aegivault.dataset.postgres.host/port/database/username/password/schema`

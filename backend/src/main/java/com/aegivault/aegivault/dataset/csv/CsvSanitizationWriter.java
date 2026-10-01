@@ -7,7 +7,16 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Focused CSV record writer used only by the sanitization pipeline.
+ * Focused CSV record writer used by the sanitization pipeline.
+ *
+ * <p><strong>Shared, not duplicated.</strong> This is the project's one CSV
+ * writer, public precisely so a non-CSV source can emit sanitized CSV without
+ * inventing a second set of quoting rules. The PostgreSQL sanitization bridge
+ * writes its header and records through this class, so a PostgreSQL artifact is
+ * byte-for-byte consistent with a CSV artifact and a second escaping
+ * implementation cannot drift away from this one. Fields must not be
+ * {@code null}: a caller decides its own null representation before writing,
+ * because only the caller knows what a missing value should mean.
  *
  * <p>Escapes one record at a time directly to the caller's stream: a field is
  * quoted only when it contains a comma, a double quote, {@code LF}, or
@@ -18,13 +27,13 @@ import java.util.Objects;
  * beyond one record, nothing is logged, and this class never closes or owns
  * the stream.
  */
-final class CsvSanitizationWriter {
+public final class CsvSanitizationWriter {
 
     private static final byte[] LINE_FEED = {'\n'};
 
     private final OutputStream output;
 
-    CsvSanitizationWriter(OutputStream output) {
+    public CsvSanitizationWriter(OutputStream output) {
         this.output = Objects.requireNonNull(output, "output must not be null");
     }
 
@@ -33,7 +42,7 @@ final class CsvSanitizationWriter {
      *
      * @param fields field values in column order, at least one, no null entries
      */
-    void writeRecord(List<String> fields) {
+    public void writeRecord(List<String> fields) {
         Objects.requireNonNull(fields, "fields must not be null");
         try {
             for (int index = 0; index < fields.size(); index++) {
@@ -52,7 +61,7 @@ final class CsvSanitizationWriter {
     /**
      * Flushes the underlying stream without closing it.
      */
-    void flush() {
+    public void flush() {
         try {
             output.flush();
         } catch (IOException ex) {

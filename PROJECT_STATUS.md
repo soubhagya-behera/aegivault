@@ -1039,9 +1039,9 @@
   `PostgresTableRowSource` and the existing PII profiling engine only, and the
   PII engine does not depend on any PostgreSQL class.
 
-  **PostgreSQL sanitization is still NOT integrated.** There is **no PostgreSQL
-  sanitization, no PostgreSQL-to-CSV conversion, and no production data
-  persistence**. `PostgresTableRow` remains a carrier: a value is the JDBC
+  **Sanitization was added later, in a separate internal bridge.** There is still
+  **no production data persistence**: no source-row table, no snapshot, and no
+  raw value written anywhere. `PostgresTableRow` remains a carrier: a value is the JDBC
   driver's own type for that column (or SQL `NULL`, preserved as `null` rather
   than an empty string), with no domain PII object, no classification, and no
   transformation at this layer. The profiler reuses the existing detectors but
@@ -1128,7 +1128,8 @@ one fixed safe message that reveals no JDBC internals or credentials.
 
 **Nothing else was connected.** The binding does not stream, profile, sanitize,
 copy data, create CSV, create artifacts, or create a sanitization run, and no new
-audit event type was added. **PostgreSQL sanitization is still pending.**
+audit event type was added. (Profiling and sanitization were added later as
+separate internal bridges; both reuse this binding.)
 
 **Test coverage (32 new tests).** 11 repository tests against real PostgreSQL
 (persist, read by owner + dataset, owner isolation, missing/foreign dataset,
@@ -1186,9 +1187,9 @@ decision for the future source-management API.
 existing `saveProfile` semantics, so one profile row per dataset survives, with
 no stale column or detection rows left behind.
 
-**Nothing else was connected.** No REST endpoint, no sanitization, no
-sanitization run, no artifact, no new audit event, and **no change to the CSV
-profiling path**. **PostgreSQL sanitization is still pending.**
+**Nothing else was connected.** No REST endpoint, no new audit event, and **no
+change to the CSV profiling path**. (Sanitization was added later as a separate
+internal bridge; it reuses this binding.)
 
 **Test coverage (26 new tests).** 19 pure unit tests (owner validation and
 trimming, binding lookup, binding not found, stale binding, discovery failure,
@@ -1202,6 +1203,76 @@ rates, replacement on re-profile, absence of any persisted row value, cross-owne
 refusal, stale-binding behaviour, and that the CSV profile path is unaffected.
 The integration tests reuse the existing cached application context; no new
 `@SpringBootTest` context was added.
+
+## PostgreSQL sanitization bridge (internal, CSV artifact)
+
+A bound PostgreSQL dataset can now be **sanitized into the existing CSV artifact
+format, internally** (`dataset.postgres.sanitization`). The flow is:
+
+```
+owned dataset -> owned binding -> re-confirmed base table
+              -> bounded row stream -> caller's TransformationPlan
+              -> existing DataSanitizationService -> existing CsvSanitizationWriter
+              -> SanitizationRunExecutor.executeContent
+                   -> QUEUED -> RUNNING -> COMPLETED, audit, artifact
+```
+
+**Transformation logic is reused from the existing engine.** Detection stays in
+`PiiDetectorRegistry` and masking, redaction, hashing, and synthesis stay in the
+existing strategies, applied by `DataSanitizationService`. The only
+PostgreSQL-specific step is a small row adapter (`PostgresRowSanitizer`) that
+converts one streamed row's values to text — **no PostgreSQL-specific sanitizer
+hierarchy and no duplicated masking logic**. CSV escaping reuses the project's
+single `CsvSanitizationWriter`, so a PostgreSQL artifact is byte-for-byte
+consistent with a CSV artifact.
+
+**Artifact storage is reused.** Output is written through the existing
+`SanitizationArtifactStore` using the executor's existing bounded capture. There
+is no PostgreSQL-specific artifact storage, staging table, temporary table, or
+second artifact model.
+
+**Rows are streamed rather than loaded all at once.** Each row is transformed,
+written, and released before the next arrives — no row list, no full-table CSV
+string, no row cache.
+
+**Source tables are read-only.** Rows are read through the existing
+`PostgresTableRowSource` over the existing read-only `PostgresDataSource`, which
+issues one `SELECT`. There is no UPDATE, DELETE, or DDL in the package, and no
+connection, statement, or SQL text is reachable from the service.
+
+**Row-limit semantics are bounded and documented.** Only rows the bounded stream
+actually delivers are sanitized. `SanitizationRun` cannot express "the source
+stream was truncated", so rather than inventing a field, the signal is returned
+to the caller as `PostgresSanitizationResult.rowLimitReached()` and nothing
+persisted claims full-table coverage.
+
+**One run lifecycle, not a second.** The executor gained a single seam,
+`SanitizationContentSource` — the "supply sanitized bytes and counts" step — so a
+non-CSV source reuses the existing transitions, audit events, bounded capture,
+and failure mapping. There remains exactly one state machine and one artifact
+path.
+
+**No policy auto-selection.** The caller supplies the `TransformationPlan`; a
+type the plan does not cover fails closed through the existing
+`MissingTransformationException`. Resolving dataset profile → policy → plan is a
+future orchestration concern.
+
+**A stale binding fails before a run exists**, so there is no run, no artifact,
+and no partial artifact, and the binding is left untouched. Ownership is
+threaded with no ADMIN bypass.
+
+**No REST endpoint exists yet, and async job integration remains a later step** —
+`SanitizationRunJobLauncher` is untouched and the service runs synchronously.
+
+**Test coverage (28 new tests).** 18 unit tests (binding resolution, header and
+ordinal column order, row adaptation, null handling, transformation dispatch via
+the caller's plan, CSV escaping, empty-table header-only output, row-limit
+reporting, stale binding, discovery and row-read failures, blank owner, owner
+threading, dependency direction, safe message) and 10 integration tests against a
+real synthetic table: stored artifact, header order, transformed vs preserved
+values, NULL handling, row limit, empty table, repeated sanitization, stale
+binding, cross-owner refusal, source immutability with a read-only write
+rejection, and profile reuse. No new `@SpringBootTest` context was added.
 
 ## Next planned step
 

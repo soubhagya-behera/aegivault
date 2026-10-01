@@ -245,6 +245,103 @@ public class SanitizationRunExecutor {
     }
 
     /**
+     * Executes one sanitization whose content comes from a source other than
+     * stored CSV, through this executor's existing run lifecycle.
+     *
+     * <p><strong>This is a seam, not a second lifecycle.</strong> The run is
+     * created, started, audited, completed, and failed by exactly the same code
+     * as the CSV paths, and the artifact is captured and stored by the same
+     * bounded capture. The only thing a caller supplies is where sanitized bytes
+     * come from — there is still one state machine, one failure mapping, one
+     * audit sequence, and one artifact path in the codebase.
+     *
+     * <p>There is no caller-facing output stream: the
+     * {@link SanitizationArtifactStore} is the destination, exactly as for
+     * {@link #executeQueuedRun}, so sanitized bytes are captured into the
+     * artifact and no second copy is buffered anywhere.
+     *
+     * <p>A source failure is reported the same way a CSV failure is: the run
+     * reaches {@code FAILED} with metadata-only detail and no artifact, rather
+     * than an exception escaping with source internals attached.
+     *
+     * @param ownerSubject calling owner, never blank; must own the dataset
+     * @param datasetId dataset being sanitized, must belong to the owner
+     * @param plan explicit plan frozen into the run and applied by the source
+     * @param policyName policy label frozen into the run, never blank
+     * @param policyVersion version label frozen into the run, never blank
+     * @param content supplies the sanitized bytes and counts, never null
+     * @return the completed run view on success; the failed run view when the
+     *         source reports a documented-safe domain failure
+     */
+    public SanitizationRunView executeContent(
+            String ownerSubject,
+            UUID datasetId,
+            TransformationPlan plan,
+            String policyName,
+            String policyVersion,
+            SanitizationContentSource content) {
+        Objects.requireNonNull(content, "content must not be null");
+        String owner = requireOwner(ownerSubject);
+        SanitizationRunView created = runs.createRun(owner, datasetId, plan, policyName, policyVersion);
+        SanitizationRunView started = runs.startRun(owner, created.id());
+        appendAudit(
+                AuditEventData.RUN_CREATED,
+                owner,
+                created.id(),
+                AuditEventData.runCreated(datasetId, policyName, policyVersion));
+        BoundedCapture capture = new BoundedCapture(OutputStream.nullOutputStream());
+        return completeOrFail(owner, started, content, capture);
+    }
+
+    /**
+     * Shared finish core for a {@link SanitizationContentSource}: runs the
+     * source, maps documented-safe domain failures to {@code FAILED}, stores the
+     * captured artifact, and completes with the structural counts.
+     *
+     * <p>The failure mapping is the same one the CSV path uses, extended with
+     * {@link com.aegivault.aegivault.sanitization.SanitizationSourceException}
+     * so a source that could not be read is distinguishable in the run record
+     * from content that could not be transformed — without either carrying a
+     * source detail.
+     */
+    private SanitizationRunView completeOrFail(
+            String owner, SanitizationRunView started, SanitizationContentSource content, BoundedCapture capture) {
+        RunResult result;
+        try {
+            result = content.sanitizeTo(capture);
+        } catch (com.aegivault.aegivault.sanitization.SanitizationSourceException ex) {
+            return failAndAudit(
+                    owner, started.id(), new RunFailure("SOURCE_UNAVAILABLE", "SOURCE", ex.getMessage()));
+        } catch (CsvParseException ex) {
+            return failAndAudit(
+                    owner, started.id(), new RunFailure("CSV_PARSE_ERROR", "TOKENIZE", ex.getMessage()));
+        } catch (MissingTransformationException ex) {
+            return failAndAudit(
+                    owner, started.id(), new RunFailure("POLICY_GAP", "TRANSFORM", ex.getMessage()));
+        } catch (SanitizationException ex) {
+            return failAndAudit(
+                    owner, started.id(), new RunFailure("TRANSFORM_ERROR", "TRANSFORM", ex.getMessage()));
+        } catch (ArtifactTooLargeException ex) {
+            return failAndAudit(
+                    owner, started.id(), new RunFailure("OUTPUT_TOO_LARGE", "WRITE", ex.getMessage()));
+        }
+        // Stored before completion, so a completed run always has exactly one
+        // artifact and a failed store never reports completion.
+        artifacts.storeArtifact(owner, started.id(), new ByteArrayInputStream(capture.captured()));
+        SanitizationRunView completed = runs.completeRun(owner, started.id(), result);
+        appendAudit(
+                AuditEventData.RUN_COMPLETED,
+                owner,
+                started.id(),
+                AuditEventData.runCompleted(
+                        result.inputRows(),
+                        result.outputRows(),
+                        result.blankRowsSkipped(),
+                        result.columnCount()));
+        return completed;
+    }
+
+    /**
      * Shared sanitize-then-finish core: runs the engine, maps documented
      * domain failures to {@code FAILED}, and completes with the structural
      * counts on success.
