@@ -901,6 +901,31 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   `PostgreSQL source is not available.`, with no driver, SQL, or connection
   detail. An empty schema is a normal 200 with an empty list.
 
+  **An authenticated binding API now exists**:
+  `POST /api/datasets/{datasetId}/postgres/binding`, accepting exactly
+  `{ "schemaName": "...", "tableName": "..." }` and returning `201 Created`
+  with a `Location` header pointing at the binding resource and a body of
+  `datasetId`, `schemaName`, `tableName`, `createdAt`, `updatedAt`. The actor is
+  `jwt.getSubject()` and nothing else; the request record has only those two
+  components, so no owner, host, port, database, username, password, JDBC URL,
+  SQL, source configuration, row limit, or policy field can even be supplied. The
+  controller adds **no validation, discovery, or existence check of its own** — it
+  holds exactly the existing `PostgresDatasetBindingService`, which remains
+  responsible for identifier grammar, owner scoping, base-table verification, and
+  the one-binding-per-dataset rule. **The binding stores only schema and table
+  metadata**, and **source credentials remain external configuration**. A second
+  bind is a `409` that leaves the existing binding untouched and discloses
+  neither the old table nor the owner. There is deliberately **no GET or DELETE
+  route**: inspection and removal stay internal until the source-management
+  workflow is clearer, so a dataset cannot be re-pointed by overwrite.
+
+  **`Dataset.source_type` is not changed by binding.** The dataset row still
+  records `CSV`; the binding is an additional source association, and the two
+  together are the explicit ambiguity this milestone preserves rather than
+  resolves. Deciding what a PostgreSQL-backed dataset's source type means is a
+  later API decision, and profiling and sanitization continue to happen through
+  the separate internal services that consume the binding.
+
   **The row layer stays a carrier, and production data is never persisted.**
   `PostgresTableRow` is still just the driver's own JDBC type (or SQL `NULL`),
   with no domain PII type, confidence, classification, or transformation, and the

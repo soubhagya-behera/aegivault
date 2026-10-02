@@ -23,6 +23,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -205,6 +208,67 @@ class PostgresDatasetBindingPostgresTest {
 
         assertThatThrownBy(() -> service.bind(OWNER, dataset.getId(), "public", FIXTURE))
                 .isInstanceOf(PostgresDatasetAlreadyBoundException.class);
+        assertThat(service.get(OWNER, dataset.getId()).getTableName()).isEqualTo(FIXTURE);
+    }
+
+    @Test
+    void theApiPathBindsARowlessDiscoveryAndPersistsWithoutTouchingTheSource() {
+        // End to end through the controller's own entry point, against the real
+        // service, the real discovery, and the real database:
+        //   create dataset -> discover synthetic table -> bind -> persisted -> read back.
+        //
+        // No new Spring context and no MockMvc: the HTTP layer is already covered
+        // by the standalone controller test, and what matters here is that the
+        // production pieces fit together against a real source.
+        Dataset dataset = datasetFor(OWNER);
+        assertThat(discovery.discover(applicationSource()).table(FIXTURE)).isPresent();
+
+        PostgresDatasetBindingController controller =
+                new PostgresDatasetBindingController(service());
+        Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OWNER).build();
+
+        ResponseEntity<PostgresBindingResponse> response = controller.bind(
+                jwt, dataset.getId(), new CreatePostgresBindingRequest("public", FIXTURE));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getHeaders().getLocation())
+                .hasToString("/api/datasets/" + dataset.getId() + "/postgres/binding");
+        PostgresBindingResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.datasetId()).isEqualTo(dataset.getId());
+        assertThat(body.schemaName()).isEqualTo("public");
+        assertThat(body.tableName()).isEqualTo(FIXTURE);
+        assertThat(body.createdAt()).isNotNull();
+
+        // Persisted, and retrievable through the internal service.
+        PostgresDatasetBinding read = service().get(OWNER, dataset.getId());
+        assertThat(read.getTableName()).isEqualTo(FIXTURE);
+        assertThat(bindingRepository.findById(dataset.getId())).isPresent();
+
+        // The dataset row itself is untouched: binding records an association
+        // and does not rewrite the dataset's CSV source type.
+        assertThat(datasets.findById(dataset.getId()).orElseThrow().getSourceType())
+                .isEqualTo("CSV");
+
+        // Only metadata discovery ran: the source table is unchanged.
+        assertThat(discovery.discover(applicationSource()).table(FIXTURE)).isPresent();
+    }
+
+    @Test
+    void theApiPathRefusesASecondBindingAndLeavesTheFirstIntact() throws Exception {
+        Dataset dataset = datasetFor(OWNER);
+        PostgresDatasetBindingService service = service();
+        service.bind(OWNER, dataset.getId(), "public", FIXTURE);
+
+        PostgresDatasetBindingController controller =
+                new PostgresDatasetBindingController(service);
+        Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OWNER).build();
+
+        assertThatThrownBy(() -> controller.bind(
+                        jwt, dataset.getId(), new CreatePostgresBindingRequest("public", FIXTURE)))
+                .isInstanceOf(PostgresDatasetAlreadyBoundException.class);
+
+        // The original binding stands; nothing was replaced or duplicated.
         assertThat(service.get(OWNER, dataset.getId()).getTableName()).isEqualTo(FIXTURE);
     }
 

@@ -1408,6 +1408,72 @@ credential fields, only the expected response fields present, empty schema,
 context and no datasource pool were added** — which matters given the
 repository's prior PostgreSQL connection-pressure issues.
 
+## PostgreSQL dataset binding API (authenticated, metadata only)
+
+`POST /api/datasets/{datasetId}/postgres/binding` lets an authenticated owner
+bind their dataset to one discovered PostgreSQL base table. It accepts **only**
+`{"schemaName": "...", "tableName": "..."}` and returns **201 Created** with a
+`Location` header of `/api/datasets/{datasetId}/postgres/binding` and a body of
+`datasetId`, `schemaName`, `tableName`, `createdAt`, `updatedAt` — no
+`ownerSubject`, credential, connection detail, row count, sample, PII, or SQL.
+
+**The actor comes only from the verified JWT subject.** The request record has
+exactly two components, so no owner, host, port, database, username, password,
+JDBC URL, SQL, source setting, row limit, or policy field can be supplied at all;
+`actorSubject`/`ownerSubject` query parameters, headers, and body properties are
+all ignored.
+
+**The existing internal service does all the work.** The controller holds exactly
+`PostgresDatasetBindingService` and adds no identifier validation, no discovery,
+and no existence check of its own, so ownership scoping, the strict identifier
+grammar, cross-schema rejection, base-table verification, and the
+one-binding-per-dataset rule remain single-sourced. Foreign and missing datasets
+are the same generic 404; ownership is verified before any source access.
+
+**One binding per dataset is enforced as a conflict.** A second bind returns
+**409** with the fixed message `The dataset is already bound to a PostgreSQL
+table.`, leaving the existing binding exactly as it is — so the previous schema
+and table are never disclosed and a dataset cannot be silently re-pointed.
+Reassignment stays an explicit delete-then-bind.
+
+**An undiscovered table fails safely.** A name that is not a discovered base
+table, an unconfigured source, or an unreadable source all return the same **503**
+`PostgreSQL source is not available.` — no hint about whether a similarly named
+table exists, and no JDBC, SQL, or driver detail. Blank and overlong identifiers
+(over 63 characters, which PostgreSQL would truncate) are refused at the HTTP
+boundary with **400**, and a malformed dataset id is **400**; neither echoes the
+offending text.
+
+**`Dataset.source_type` is unchanged.** The dataset row still records `CSV`, so a
+dataset can hold a CSV source type *and* a PostgreSQL binding. That is the
+existing explicit ambiguity: the binding identifies an **additional** source
+association rather than changing the dataset's recorded type. Deciding final
+source-management semantics remains a later API decision.
+
+**Scope.** No GET or DELETE route exists — the internal get/delete service
+methods stay internal — and this endpoint only creates the binding. It does not
+profile, sanitize, create a run or artifact, launch background work, or emit an
+audit event; profiling and sanitization still happen through the separate
+internal services that consume the binding. The only PostgreSQL interaction
+anywhere on the path is the existing metadata discovery inside
+`PostgresDatasetBindingService`: **no row is read, and no row-value query is
+introduced.**
+
+**Test coverage (15 new tests, no new Spring context).** 13 standalone MockMvc
+tests (201 with `Location`, response shape, token-derived owner with
+query/header/body owner attempts ignored, absence of owner and credential
+fields, 404, 409 with the exact message, unknown table, unavailable source, blank
+and overlong identifiers, grammar-refused identifier without echo, malformed
+UUID, no GET/DELETE route, single-operation surface, and a two-field request
+contract) plus 2 end-to-end cases added to the **existing**
+`PostgresDatasetBindingPostgresTest`, which reuse its cached context: create
+dataset → discover the synthetic table → bind through the controller → binding
+persisted and readable through the internal service, `source_type` still `CSV`,
+the source unchanged, and a second bind refused with the first left intact. **No
+new `@SpringBootTest` context and no datasource pool were added**, and the
+internal binding service's own unit and persistence tests were left as the
+single source of truth for that behaviour rather than duplicated.
+
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as
