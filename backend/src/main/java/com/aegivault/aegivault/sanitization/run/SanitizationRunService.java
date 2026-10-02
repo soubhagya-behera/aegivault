@@ -62,13 +62,46 @@ public class SanitizationRunService {
     @Transactional
     public SanitizationRunView createRun(
             String ownerSubject, UUID datasetId, TransformationPlan plan, String policyName, String policyVersion) {
+        return createRun(ownerSubject, datasetId, plan, policyName, policyVersion, SanitizationSourceType.CSV);
+    }
+
+    /**
+     * Creates a {@code QUEUED} run against an owned dataset for an explicit
+     * source, freezing the given plan into the run row.
+     *
+     * <p>The source kind is recorded once here and never changed, so the run's
+     * execution path is decided at creation rather than inferred later from data
+     * that may have changed in between. The plan is frozen into the run's
+     * immutable {@code PolicySnapshot} at the same moment, so a later policy
+     * update or deletion cannot change what this run will do.
+     *
+     * @param ownerSubject calling owner, never blank
+     * @param datasetId dataset to sanitize, must belong to the owner
+     * @param plan explicit plan to freeze, never null
+     * @param policyName policy label, e.g. {@code "default"}, never blank
+     * @param policyVersion version label, e.g. {@code "v1"}, never blank
+     * @param sourceType which source the run reads, never null
+     * @return the persisted run
+     * @throws ReferencedDatasetNotFoundException when the dataset is missing
+     *         or belongs to another owner
+     */
+    @Transactional
+    public SanitizationRunView createRun(
+            String ownerSubject,
+            UUID datasetId,
+            TransformationPlan plan,
+            String policyName,
+            String policyVersion,
+            SanitizationSourceType sourceType) {
         String owner = requireOwner(ownerSubject);
         Objects.requireNonNull(datasetId, "datasetId must not be null");
+        Objects.requireNonNull(sourceType, "sourceType must not be null");
         Dataset dataset = datasets
                 .findByIdAndOwnerSubject(datasetId, owner)
                 .orElseThrow(ReferencedDatasetNotFoundException::new);
         PolicySnapshot snapshot = PolicySnapshot.fromPlan(policyName, policyVersion, plan);
-        return SanitizationRunView.from(runs.saveAndFlush(new SanitizationRun(dataset, owner, snapshot)));
+        return SanitizationRunView.from(
+                runs.saveAndFlush(new SanitizationRun(dataset, owner, snapshot, sourceType)));
     }
 
     /**
@@ -181,6 +214,17 @@ public class SanitizationRunService {
      * @throws SanitizationRunNotFoundException when no such run exists
      */
     @Transactional(readOnly = true)
+    /**
+     * Loads the detached execution description of one run, without regard to an
+     * owner: the worker is not a caller and takes no owner parameter, and the
+     * owner it receives is the one recorded on the row.
+     *
+     * <p>The returned target carries the run's own source type, so dispatch reads
+     * what was recorded at creation rather than inferring a source from current
+     * data.
+     *
+     * @throws SanitizationRunNotFoundException when no such run exists
+     */
     public SanitizationRunTarget loadForExecution(UUID runId) {
         Objects.requireNonNull(runId, "runId must not be null");
         SanitizationRun run = runs.findById(runId).orElseThrow(SanitizationRunNotFoundException::new);
@@ -191,7 +235,8 @@ public class SanitizationRunService {
                 run.getStatus(),
                 run.getPolicyName(),
                 run.getPolicyVersion(),
-                run.getPolicySnapshot());
+                run.getPolicySnapshot(),
+                run.getSourceType());
     }
 
     private static String requireOwner(String ownerSubject) {

@@ -46,6 +46,7 @@ import com.aegivault.aegivault.sanitization.run.RunStatus;
 import com.aegivault.aegivault.sanitization.run.SanitizationContentSource;
 import com.aegivault.aegivault.sanitization.run.SanitizationRunExecutor;
 import com.aegivault.aegivault.sanitization.run.SanitizationRunView;
+import com.aegivault.aegivault.sanitization.run.SanitizationSourceType;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -203,7 +204,8 @@ class PostgresDatasetSanitizationServiceTest {
     private static SanitizationRunView runView(RunResult result) {
         return new SanitizationRunView(
                 UUID.fromString("00000000-0000-0000-0000-0000000000aa"), DATASET_ID,
-                RunStatus.COMPLETED, "policy", "v1", "{}", result.inputRows(), result.outputRows(),
+                RunStatus.COMPLETED, "policy", "v1", "{}",
+                SanitizationSourceType.POSTGRESQL, result.inputRows(), result.outputRows(),
                 result.blankRowsSkipped(), result.columnCount(),
                 null, null, null, null, null, 0L, null, null);
     }
@@ -474,12 +476,14 @@ class PostgresDatasetSanitizationServiceTest {
         for (var field : PostgresDatasetSanitizationService.class.getDeclaredFields()) {
             assertThat(field.getType().getName()).doesNotContain("java.sql");
         }
-        // No policy auto-selection: the only public operation takes the plan.
+        // Two public operations, and both are content producers, not lifecycle
+        // verbs: sanitize for the synchronous path, contentSourceFor for a run
+        // the existing executor already owns. No bind, launch, or transition.
         assertThat(java.util.Arrays.stream(PostgresDatasetSanitizationService.class.getDeclaredMethods())
                 .filter(method -> java.lang.reflect.Modifier.isPublic(method.getModifiers()))
                 .filter(method -> !method.isSynthetic())
                 .map(java.lang.reflect.Method::getName))
-                .containsExactly("sanitize");
+                .containsExactlyInAnyOrder("sanitize", "contentSourceFor");
     }
 
     @Test

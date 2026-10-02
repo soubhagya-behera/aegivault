@@ -70,6 +70,15 @@ public class SanitizationRun {
     @Column(name = "status", nullable = false)
     private RunStatus status;
 
+    /**
+     * Which source this run reads. Written once at creation and never updated, so
+     * a queued run cannot be re-pointed at a different source; changing a run's
+     * source means creating a new run.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "source_type", nullable = false, updatable = false)
+    private SanitizationSourceType sourceType;
+
     @Column(name = "policy_name", nullable = false)
     private String policyName;
 
@@ -128,9 +137,31 @@ public class SanitizationRun {
      * @param snapshot frozen policy, never null
      */
     public SanitizationRun(Dataset dataset, String ownerSubject, PolicySnapshot snapshot) {
+        this(dataset, ownerSubject, snapshot, SanitizationSourceType.CSV);
+    }
+
+    /**
+     * Creates a run in {@link RunStatus#QUEUED} state for an explicit source,
+     * with the policy frozen from the snapshot. Counts, timestamps (except audit
+     * stamps), and failure fields all start null.
+     *
+     * @param dataset owning dataset, never null; must belong to
+     *        {@code ownerSubject} (checked by the service before calling)
+     * @param ownerSubject owner copied from the dataset for owner-scoped
+     *        queries, never blank
+     * @param snapshot frozen policy, never null
+     * @param sourceType which source the run reads, never null; recorded once
+     *        and never updated
+     */
+    public SanitizationRun(
+            Dataset dataset,
+            String ownerSubject,
+            PolicySnapshot snapshot,
+            SanitizationSourceType sourceType) {
         this.dataset = Objects.requireNonNull(dataset, "dataset must not be null");
         this.ownerSubject = requireText(ownerSubject, "ownerSubject");
         Objects.requireNonNull(snapshot, "snapshot must not be null");
+        this.sourceType = Objects.requireNonNull(sourceType, "sourceType must not be null");
         this.policyName = snapshot.policyName();
         this.policyVersion = snapshot.policyVersion();
         this.policySnapshot = snapshot.toJson();

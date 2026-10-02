@@ -1274,6 +1274,90 @@ values, NULL handling, row limit, empty table, repeated sanitization, stale
 binding, cross-owner refusal, source immutability with a read-only write
 rejection, and profile reuse. No new `@SpringBootTest` context was added.
 
+## PostgreSQL queued runs (async, same launcher and lifecycle)
+
+**`SanitizationRun` can now represent CSV or PostgreSQL execution.** The run
+records a `source_type` — `CSV` or `POSTGRESQL` — written once at creation and
+never updated, so a queued run cannot be re-pointed and its execution path is
+never inferred from data that may change between queueing and execution. The
+migration default is `CSV`, so every pre-existing and already-queued run stays a
+CSV run on the existing unchanged path.
+
+**PostgreSQL runs reuse the same async launcher and the same lifecycle.**
+Dispatch happens inside the existing `SanitizationRunExecutor.executeQueuedRun`:
+a `CSV` run takes the existing stored-input path, a `POSTGRESQL` run is routed to
+the registered `SanitizationSourceProvider` — an interface declared in the run
+package and implemented by the PostgreSQL package, so the dependency points one
+way and a checkout with no PostgreSQL source simply has no provider to select.
+`SanitizationRunJobLauncher` remains the launcher, the bounded pool remains the
+pool, and there is still exactly one state machine
+(`QUEUED -> RUNNING -> COMPLETED | FAILED`) and one artifact path. **No new run
+states, job table, executor, or thread pool.**
+
+**The policy snapshot is frozen at run creation** and rebuilt from the run's own
+`PolicySnapshot` at execution time, so a policy edited or deleted after queueing
+cannot change what the run does, and it is never re-resolved.
+
+**Ownership stays owner-scoped** end to end: creation resolves the binding
+owner-scoped before a run exists, and execution uses the owner recorded on the
+run row. There is no ADMIN bypass, and one actor cannot queue or execute against
+another actor's dataset or binding.
+
+**PostgreSQL credentials remain external configuration.** The worker uses the
+configured `PostgresDataSource` and the dataset's own persisted binding; no
+request body, current policy contents, or caller-supplied schema, table, or
+credential is ever accepted. **Sanitized output remains the existing CSV
+artifact format**, stored through the existing `SanitizationArtifactStore` with
+the same bounded capture. The existing `SANITIZATION_RUN_CREATED` /
+`_COMPLETED` / `_FAILED` events are reused unchanged, carrying counts and safe
+metadata only.
+
+**A stale binding fails the run safely.** Source resolution happens after the
+`RUNNING` transition, so a table that disappeared after queueing fails through the
+existing `FAILED` mapping (`SOURCE_UNAVAILABLE` / `SOURCE`) with safe metadata
+and no artifact — partial or otherwise — and the binding is never modified.
+
+**Retries and crash recovery are still not implemented.** A failed run stays
+failed; there is no retry, backoff, scheduled reconciliation of orphaned
+`RUNNING` runs, or dead-letter behaviour, and the launcher's in-flight guard
+remains process-local.
+
+**Test coverage (15 new tests).** 11 unit tests (source-kind recording,
+owner-scoped binding lookup before any run exists, missing and cross-owner
+binding, snapshot freezing and no re-resolution, credential-free creation and
+dispatch, argument validation, dependency direction) and 4 async integration
+tests through the real launcher and real pool: a queued PostgreSQL run reaches
+`COMPLETED` with a sanitized artifact, the source table is unchanged, a policy
+changed after queueing does not alter the run's snapshot or output, and a stale
+binding reaches `FAILED` with no artifact and an intact binding. No new
+`@SpringBootTest` context was added.
+
+**The lifecycle authority is unchanged.** `SanitizationRunExecutor` remains the
+only place that transitions a run, captures and stores its artifact, appends its
+audit events, and maps a failure; no PostgreSQL-specific class holds any of that.
+Two narrow adapters were extracted from it: `CsvSanitizationSources` (stored CSV
+into a `SanitizationContentSource`) and `SanitizationRunSourceDispatcher` (select
+the provider for a recorded source kind). Both CSV and PostgreSQL runs then hand
+the executor the same `SanitizationContentSource` and finish through one
+identical core, instead of two near-duplicate ones.
+
+**The production bean graph is verified explicitly.** The executor and the
+PostgreSQL sanitization service mutually need each other, so
+`PostgresSanitizationRunService` holds an `ObjectProvider` and resolves on demand.
+A dedicated `ApplicationContextRunner` wiring test builds the real production
+beans — executor, dispatcher, PostgreSQL run service, PostgreSQL sanitization
+service, and the source configuration, with only database-backed collaborators
+mocked — and asserts the context starts, the executor exists, the dispatcher's
+provider collection holds the real PostgreSQL provider, and the deferred
+sanitization reference resolves to the real service. No `BeanCurrentlyInCreation`
+occurs, and **no global circular-reference setting was added or changed** (a
+search of the repository finds no such property). The real async integration test
+is kept and still proves queue → launcher → worker → sanitization → artifact →
+lifecycle.
+
+**Test coverage (4 new wiring tests).** All production files touched by this
+milestone are under the 400-line rule; `SanitizationRunExecutor` is 399.
+
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as

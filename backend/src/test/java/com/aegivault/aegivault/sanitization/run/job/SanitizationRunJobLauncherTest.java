@@ -23,6 +23,7 @@ import com.aegivault.aegivault.sanitization.run.SanitizationRun;
 import com.aegivault.aegivault.sanitization.run.SanitizationRunExecutor;
 import com.aegivault.aegivault.sanitization.artifact.SanitizationArtifactStore;
 import com.aegivault.aegivault.sanitization.run.SanitizationRunTarget;
+import com.aegivault.aegivault.sanitization.run.SanitizationSourceType;
 import com.aegivault.aegivault.sanitization.strategy.TransformationRegistry;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -70,12 +71,14 @@ class SanitizationRunJobLauncherTest {
 
     private static SanitizationRunTarget queued(UUID id, String owner) {
         return new SanitizationRunTarget(
-                id, owner, UUID.randomUUID(), RunStatus.QUEUED, "default", "v1", SNAPSHOT);
+                id, owner, UUID.randomUUID(), RunStatus.QUEUED, "default", "v1", SNAPSHOT,
+                SanitizationSourceType.CSV);
     }
 
     private static SanitizationRunTarget withStatus(RunStatus status) {
         return new SanitizationRunTarget(
-                UUID.randomUUID(), "actor-1", UUID.randomUUID(), status, "default", "v1", SNAPSHOT);
+                UUID.randomUUID(), "actor-1", UUID.randomUUID(), status, "default", "v1", SNAPSHOT,
+                SanitizationSourceType.CSV);
     }
 
     @Test

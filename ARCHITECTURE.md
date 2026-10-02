@@ -469,8 +469,14 @@ failRun     -> FAILED (error code/stage/message + completed_at)
               |
               SanitizationRunExecutor.executeQueuedRun(runId)
                   |
-                  +-- load the run row (its own owner, dataset, frozen policy)
-                  +-- open the stored input through DatasetInputSource
+                  +-- load the run row (its own owner, dataset, frozen policy,
+                  |                  and its recorded source_type)
+                  +-- rebuild the plan from the run's frozen PolicySnapshot
+                  |
+                  +-- dispatch on that recorded source_type:
+                  |     CSV        -> open the stored input through DatasetInputSource
+                  |     POSTGRESQL -> the registered SanitizationSourceProvider
+                  |
                   +-- startRun -> RUNNING, then audit SANITIZATION_RUN_CREATED
                   +-- sanitize (existing engine + bounded capture + artifact)
                   +-- completeRun/failRun -> audit COMPLETED/FAILED
@@ -816,9 +822,64 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   ADMIN bypass. Source values exist in memory only while one row is processed:
   none is logged, placed in an exception, persisted, or sent to an audit event.
 
-  **No REST endpoint exists yet, and async job integration remains a later
-  step.** `SanitizationRunJobLauncher` is untouched and this service runs
-  synchronously.
+  **A `SanitizationRun` can now represent CSV or PostgreSQL execution**
+  (`source_type`, implemented). The run records a **source kind** — `CSV` or
+  `POSTGRESQL` — written once at creation and never updated, so a queued run
+  cannot be re-pointed and its execution path is never inferred from data that
+  may change between queueing and execution. The migration default is `CSV`, so
+  every pre-existing and already-queued run stays a CSV run on the existing
+  unchanged path. The column has **no room for a host, database, username,
+  password, JDBC URL, schema, or table name**, and none may be added to it.
+
+  **PostgreSQL runs reuse the same launcher and the same lifecycle.** Dispatch
+  happens inside the existing `SanitizationRunExecutor.executeQueuedRun`: a `CSV`
+  run takes the existing stored-input path; a `POSTGRESQL` run is routed to the
+  registered `SanitizationSourceProvider`. That interface is declared in the run
+  package and implemented by the PostgreSQL package, so the dependency points
+  one way and a checkout with no PostgreSQL source simply has no provider to
+  select. `SanitizationRunJobLauncher` remains the launcher, the bounded pool
+  remains the pool, and there is still exactly one state machine
+  (`QUEUED -> RUNNING -> COMPLETED | FAILED`), one artifact path, and the same
+  three audit events. **No new run states, job table, executor, or thread pool.**
+
+  **The executor stays the lifecycle owner.** `SanitizationRunExecutor` is the
+  only place that transitions a run, captures and stores its artifact, appends
+  its audit events, and maps a failure to `RunFailure`; no source-specific class
+  holds any of that authority. It delegates only two narrow adapters:
+  `CsvSanitizationSources` turns stored CSV into a `SanitizationContentSource`,
+  and `SanitizationRunSourceDispatcher` selects the provider for a recorded source
+  kind. Because both CSV and database runs then hand the executor the same
+  `SanitizationContentSource`, they finish through one identical core rather than
+  two near-duplicate ones.
+
+  **The executor's bean graph is proved, not assumed.** The executor and the
+  PostgreSQL sanitization service mutually need each other, so
+  `PostgresSanitizationRunService` holds an `ObjectProvider` and resolves the
+  service on demand. A wiring test builds the real production beans — executor,
+  dispatcher, PostgreSQL run service, PostgreSQL sanitization service, and the
+  source configuration — and asserts they start and relate correctly, with no
+  `BeanCurrentlyInCreationException` and **no global circular-reference setting**.
+  The separate real-database integration test still proves execution behaviour.
+
+  **The policy snapshot is frozen at run creation** and rebuilt from the run's
+  own `PolicySnapshot` at execution time, so a policy edited or deleted after
+  queueing cannot change what the run does, and it is never re-resolved.
+
+  **PostgreSQL credentials remain external configuration.** The worker uses the
+  configured `PostgresDataSource` and the dataset's own persisted binding; it
+  accepts no request body, no current policy contents, and no caller-supplied
+  schema, table, or credential. **Sanitized output remains the existing CSV
+  artifact format**, stored through the existing `SanitizationArtifactStore`.
+
+  **A stale binding fails the run safely.** Because source resolution happens
+  after the `RUNNING` transition, a table that disappeared after queueing fails
+  the run through the existing `FAILED` mapping with safe metadata and no
+  artifact — partial or otherwise — and the binding is never modified. A run that
+  fails stays failed: **retries, backoff, crash recovery, orphan-`RUNNING`
+  repair, and dead-letter behaviour are still not implemented**, and the
+  in-flight guard remains process-local.
+
+  **No REST endpoint exists yet.** `SanitizationRunJobLauncher` is unchanged.
 
   **The row layer stays a carrier, and production data is never persisted.**
   `PostgresTableRow` is still just the driver's own JDBC type (or SQL `NULL`),

@@ -30,6 +30,8 @@ import java.util.UUID;
  * @param policyName policy label frozen at creation, never blank
  * @param policyVersion policy version label frozen at creation, never blank
  * @param policySnapshot canonical frozen policy text, never blank
+ * @param sourceType which source the run reads, never null; recorded on the run
+ *        row and never re-inferred
  */
 public record SanitizationRunTarget(
         UUID id,
@@ -38,7 +40,8 @@ public record SanitizationRunTarget(
         RunStatus status,
         String policyName,
         String policyVersion,
-        String policySnapshot) {
+        String policySnapshot,
+        SanitizationSourceType sourceType) {
 
     public SanitizationRunTarget {
         Objects.requireNonNull(id, "id must not be null");
@@ -56,5 +59,6 @@ public record SanitizationRunTarget(
         if (policySnapshot == null || policySnapshot.isBlank()) {
             throw new IllegalArgumentException("policySnapshot must not be blank");
         }
+        Objects.requireNonNull(sourceType, "sourceType must not be null");
     }
 }

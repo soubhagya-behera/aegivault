@@ -199,6 +199,45 @@ public class PostgresDatasetSanitizationService {
                 output -> streamSanitizedCsv(configured, rows, table, plan, output, truncated));
         return PostgresSanitizationResult.of(run, truncated[0]);
     }
+    /**
+     * Builds the content source for one already-persisted run, resolving the
+     * binding lazily so this service takes no lifecycle responsibility.
+     *
+     * <p>The returned source re-reads the owner-scoped binding and re-confirms
+     * the base table when it runs, not when it is built. That is what lets the
+     * existing executor own the lifecycle: the run is already {@code RUNNING} by
+     * the time a disappeared table surfaces, so the failure is recorded on the
+     * run as {@code FAILED} with safe metadata and no artifact, exactly as any
+     * other documented-safe source failure is.
+     *
+     * @param ownerSubject owner recorded on the run row, never blank
+     * @param datasetId dataset recorded on the run row, never null
+     * @param plan plan rebuilt from the run's frozen policy snapshot, never null
+     * @return the content source, never null
+     */
+    public SanitizationContentSource contentSourceFor(
+            String ownerSubject, UUID datasetId, TransformationPlan plan) {
+        Objects.requireNonNull(datasetId, "datasetId must not be null");
+        Objects.requireNonNull(plan, "plan must not be null");
+        String owner = requireOwner(ownerSubject);
+        return output -> {
+            PostgresDatasetBinding binding = bindings.get(owner, datasetId);
+            PostgresDataSource configured = source.getIfAvailable();
+            PostgresTableRowSource rows = rowSources.getIfAvailable();
+            if (configured == null || rows == null) {
+                throw new PostgresDatasetSanitizationException(
+                        new IllegalStateException("no PostgreSQL source is configured"));
+            }
+            return streamSanitizedCsv(
+                    configured,
+                    rows,
+                    rediscoverBoundTable(configured, binding),
+                    plan,
+                    output,
+                    new boolean[1]);
+        };
+    }
+
     /** Re-confirms the bound table through metadata discovery, or fails safely. */
     private PostgresTable rediscoverBoundTable(
             PostgresDataSource configured, PostgresDatasetBinding binding) {
