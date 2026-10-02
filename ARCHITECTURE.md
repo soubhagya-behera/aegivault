@@ -926,6 +926,39 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   later API decision, and profiling and sanitization continue to happen through
   the separate internal services that consume the binding.
 
+  **An authenticated PostgreSQL profiling API now exists**:
+  `POST /api/datasets/{datasetId}/postgres/profile`, with **no request body** —
+  the operation has no parameter for an owner, schema, table, policy, row limit,
+  or credential, so none can be supplied, and a body a caller happens to send is
+  simply not read. The actor is `jwt.getSubject()` and nothing else. **A
+  PostgreSQL binding must already exist**: the binding is the sole source of the
+  table, the endpoint never falls back to the dataset's CSV input and never
+  discovers or guesses a table, and a dataset with no binding is the same generic
+  404 as a foreign or missing one — so it reveals neither whether the dataset
+  exists nor whether it is bound. Ownership and the binding are both checked
+  before any PostgreSQL read, so a foreign caller never triggers discovery.
+
+  The controller holds only `PostgresDatasetProfilingService`: discovery, bounded
+  row reading, PII detection, and profile persistence all stay inside it, and no
+  repository, sanitizer, run executor, artifact store, or launcher is reachable
+  from here. **The response is the existing `DatasetProfileResponse`** — one
+  profile concept with one representation, reused unchanged rather than a
+  PostgreSQL-specific view being introduced — and it is **metadata only**: column
+  names, counts, rates, and detected types, never a sampled value, a row value, a
+  credential, or a JDBC detail.
+
+  **Bounded PostgreSQL sampling remains in force.** The profile covers the rows
+  the existing bounded row stream delivered, up to its configured ceiling, and
+  nothing here widens that bound or claims a full-table read. An empty table
+  yields a valid profile with the discovered columns present, zero counts, and no
+  invented findings. **A stale binding fails safely** with the existing fixed
+  `PostgresDatasetProfilingException` message — no partial profile is written and
+  the binding is neither deleted nor repointed — and re-profiling replaces the
+  stored profile through the existing `saveProfile` semantics, so no duplicate
+  profile or detection rows accumulate. **No sanitization or run is created by
+  this endpoint**: it is synchronous profiling only, and the existing CSV
+  profiling endpoint is untouched.
+
   **The row layer stays a carrier, and production data is never persisted.**
   `PostgresTableRow` is still just the driver's own JDBC type (or SQL `NULL`),
   with no domain PII type, confidence, classification, or transformation, and the

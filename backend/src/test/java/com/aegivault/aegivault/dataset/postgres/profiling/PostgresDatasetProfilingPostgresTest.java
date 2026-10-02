@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -204,6 +205,112 @@ class PostgresDatasetProfilingPostgresTest {
                 .filter(candidate -> candidate.columnName().equals(name))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    @Test
+    void theApiPathProfilesABoundDatasetAndPersistsTheResult() throws SQLException {
+        seed("1, '" + EMAIL_A + "', 'clean'");
+        Dataset dataset = boundDataset(OWNER);
+        PostgresDatasetProfilingController controller =
+                new PostgresDatasetProfilingController(service());
+        Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OWNER).build();
+
+        DatasetProfileResponse profile = controller.profile(jwt, dataset.getId());
+
+        // The existing profile representation, reused rather than duplicated.
+        assertThat(profile.datasetId()).isEqualTo(dataset.getId());
+        assertThat(profile.totalColumns()).isEqualTo(3);
+        // Detections come from the existing PII engine applied to real rows.
+        assertThat(column(profile, "email").detectionCounts()).containsEntry(PiiType.EMAIL, 1);
+        assertThat(column(profile, "note").detectedTypes()).isEmpty();
+
+        // Persisted through the real DatasetProfileService.
+        assertThat(profiles.findByDatasetIdAndOwnerSubject(dataset.getId(), OWNER)).isPresent();
+    }
+
+    @Test
+    void repeatedApiProfilingReplacesThePriorProfile() throws SQLException {
+        Dataset dataset = boundDataset(OWNER);
+        PostgresDatasetProfilingController controller =
+                new PostgresDatasetProfilingController(service());
+        Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OWNER).build();
+
+        seed("1, '" + EMAIL_A + "', 'a'");
+        assertThat(column(controller.profile(jwt, dataset.getId()), "email").detectionCounts())
+                .containsEntry(PiiType.EMAIL, 1);
+
+        // The table's contents change completely; the stored profile must follow.
+        seed("1, 'no-pii-here', 'b'");
+        DatasetProfileResponse second = controller.profile(jwt, dataset.getId());
+
+        // One profile row survives, holding only the latest run's findings.
+        assertThat(profiles.findByDatasetIdAndOwnerSubject(dataset.getId(), OWNER))
+                .hasValueSatisfying(stored -> assertThat(stored.getColumns()).hasSize(3));
+        assertThat(column(second, "email").detectionCounts()).isEmpty();
+    }
+
+    @Test
+    void anEmptyTableStillYieldsAValidProfileWithZeroCounts() throws SQLException {
+        seed();
+        Dataset dataset = boundDataset(OWNER);
+        PostgresDatasetProfilingController controller =
+                new PostgresDatasetProfilingController(service());
+        Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OWNER).build();
+
+        DatasetProfileResponse profile = controller.profile(jwt, dataset.getId());
+
+        // Discovered columns remain, counts are zero, and nothing is invented.
+        assertThat(profile.totalColumns()).isEqualTo(3);
+        assertThat(profile.columns()).extracting(DatasetProfileResponse.ColumnProfileResponse::columnName)
+                .containsExactly("id", "email", "note");
+        assertThat(profile.columns()).allSatisfy(c -> {
+            assertThat(c.suppliedValueCount()).isZero();
+            assertThat(c.detectedTypes()).isEmpty();
+        });
+    }
+
+    @Test
+    void aForeignActorIsRefusedBeforeAnyPostgresReadHappens() {
+        Dataset dataset = boundDataset(OWNER);
+        PostgresDatasetProfilingController controller =
+                new PostgresDatasetProfilingController(service());
+        Jwt foreign = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OTHER).build();
+
+        // The binding lookup is owner-scoped, so a foreign caller never reaches
+        // discovery or the row stream.
+        assertThatThrownBy(() -> controller.profile(foreign, dataset.getId()))
+                .isInstanceOf(com.aegivault.aegivault.dataset.postgres.binding
+                        .PostgresDatasetBindingNotFoundException.class);
+    }
+
+    @Test
+    void deletingTheExternalTableFailsSafelyAndLeavesTheBindingIntact() throws SQLException {
+        String stale = "aegivault_profile_api_stale";
+        execute("DROP TABLE IF EXISTS " + stale);
+        try {
+            execute("CREATE TABLE " + stale + " (id integer, email varchar(120))");
+            Dataset dataset = datasetFor(OWNER);
+            bindingService().bind(OWNER, dataset.getId(), SCHEMA, stale);
+
+            // The table disappears while the binding remains.
+            execute("DROP TABLE " + stale);
+
+            PostgresDatasetProfilingController controller =
+                    new PostgresDatasetProfilingController(service());
+            Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OWNER).build();
+
+            assertThatThrownBy(() -> controller.profile(jwt, dataset.getId()))
+                    .isInstanceOf(PostgresDatasetProfilingException.class)
+                    .hasMessage(PostgresDatasetProfilingException.MESSAGE);
+
+            // No partial profile, and the stale binding is neither deleted nor
+            // repointed.
+            assertThat(profiles.findByDatasetIdAndOwnerSubject(dataset.getId(), OWNER)).isEmpty();
+            assertThat(bindings.findByDatasetIdAndOwnerSubject(dataset.getId(), OWNER))
+                    .hasValueSatisfying(binding -> assertThat(binding.getTableName()).isEqualTo(stale));
+        } finally {
+            execute("DROP TABLE IF EXISTS " + stale);
+        }
     }
 
     @Test

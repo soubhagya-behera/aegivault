@@ -1474,6 +1474,74 @@ new `@SpringBootTest` context and no datasource pool were added**, and the
 internal binding service's own unit and persistence tests were left as the
 single source of truth for that behaviour rather than duplicated.
 
+## PostgreSQL dataset profiling API (authenticated, metadata only)
+
+`POST /api/datasets/{datasetId}/postgres/profile` lets an authenticated owner
+profile the table their dataset is bound to. **It takes no request body** — there
+is no parameter for an owner, schema, table, policy, row limit, or credential, so
+none can be supplied, and a body sent by a caller is not read. The actor comes
+exclusively from `@AuthenticationPrincipal Jwt jwt` → `jwt.getSubject()`.
+
+**Ownership and the binding are both required, and both are checked before any
+PostgreSQL read.** A missing dataset, a foreign dataset, and a dataset with **no
+PostgreSQL binding** all return the same generic **404** — so the endpoint reveals
+neither whether the dataset exists nor whether it is bound, and it never falls
+back to the dataset's CSV input or discovers/guesses a table. The binding is the
+sole source of schema and table; the strict identifier grammar, cross-schema
+rejection, base-table verification, and the one-binding-per-dataset rule all stay
+in `PostgresDatasetBindingService`. A foreign caller never triggers PostgreSQL
+discovery, and there is no ADMIN bypass.
+
+**The existing service does all the work.** The controller holds exactly
+`PostgresDatasetProfilingService` and re-implements nothing: source discovery,
+bounded row streaming, PII detection, and profile persistence remain in that
+service, and the controller touches no repository and cannot reach a sanitizer,
+run executor, artifact store, or launcher.
+
+**The response is the existing `DatasetProfileResponse`** — deliberately not a
+second PostgreSQL-specific profile view, so a profile is one concept with one
+representation. It is **metadata only**: dataset and column names, supplied /
+analyzed / analyzable counts, per-type detection counts and rates, and detected
+types. **No sampled value, row value, credential, or JDBC detail is returned.**
+
+**Bounded profiling remains in force.** The profile describes the rows the
+existing bounded row stream delivered, up to its configured row ceiling; nothing
+here widens that bound or claims a full-table read, and no row value is exposed.
+An empty table yields a valid profile with the discovered columns present, zero
+counts, and no invented findings.
+
+**Stale bindings fail safely.** A bound table that no longer exists returns the
+existing fixed `PostgresDatasetProfilingException` message as **503**
+(`Unable to profile the bound PostgreSQL source table.`), carrying no JDBC URL,
+host, port, database, username, password, SQL, driver text, schema/table name, or
+row value. **No partial profile is written**, and the binding is neither deleted
+nor repointed.
+
+**Re-profiling replaces.** A second call uses the existing `saveProfile`
+replacement semantics: one profile row per dataset survives, with no duplicate
+profile rows and no stale detection rows.
+
+**Scope.** No sanitization, no `SanitizationRun`, no artifact, no background
+launch, and no new audit event — synchronous profiling only. The existing CSV
+profiling endpoint `POST /api/datasets/{datasetId}/profile` is untouched and
+already covered by `DatasetPreviewPolicyApiTest`, which continues to exercise it,
+so no duplicate regression test was added.
+
+**Test coverage (15 new tests, no new Spring context).** 10 standalone MockMvc
+tests (200 with no body required, response shape and absence of value/credential
+fields, a caller-supplied body and owner hints ignored, 404 for foreign/missing
+dataset, 404 for no binding, stale binding, unavailable source, malformed UUID, and
+assertions that the controller holds only the profiling service and exposes only
+a bodyless single-verb operation) plus 5 end-to-end cases added to the
+**existing** `PostgresDatasetProfilingPostgresTest`, reusing its cached context:
+profiling a bound dataset through the controller persists a profile with
+detections from the existing engine, repeated profiling replaces the prior
+profile, an empty table yields a zero-count profile, a foreign actor is refused
+before any PostgreSQL read, and deleting the external table fails safely while
+leaving the binding intact. **No new `@SpringBootTest` context and no datasource
+pool were added**, `max_connections` was not touched, and no sleeps or retries
+were introduced.
+
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as
