@@ -14,6 +14,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -39,9 +40,16 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * only PostgreSQL interaction anywhere on this path is the existing metadata
  * discovery inside that service.
  *
- * <p><strong>Create only.</strong> There is deliberately no read or delete route:
- * inspection and removal stay internal until the source-management workflow is
- * clearer, and exposing them now would invite rebinding by overwrite.
+ * <p><strong>Create and read; never modify.</strong> Creation records an
+ * association and reading reports it, but there is deliberately no update,
+ * rebind, or delete route: reassignment stays an explicit delete-then-bind in a
+ * later milestone, so exposing an overwrite now would invite rebinding by
+ * accident.
+ *
+ * <p><strong>The read touches no PostgreSQL.</strong> {@code GET /binding}
+ * returns the stored binding row and opens no connection, does not rediscover or
+ * verify the table, and reads no rows, so it cannot reflect a source that has
+ * since changed.
  *
  * <p><strong>The dataset's source type is not changed.</strong> Binding records an
  * additional source association; {@code Dataset.source_type} still reads CSV,
@@ -78,6 +86,33 @@ public class PostgresDatasetBindingController {
         return ResponseEntity
                 .created(URI.create("/api/datasets/" + datasetId + "/postgres/binding"))
                 .body(PostgresBindingResponse.from(binding));
+    }
+
+    /**
+     * Returns the caller's current binding for this dataset, if it has one.
+     *
+     * <p><strong>Strictly read-only and metadata-only.</strong> This reads the
+     * binding row and nothing else: it opens no PostgreSQL connection, does not
+     * rediscover or verify the table, reads no rows, and does not profile,
+     * sanitize, or create a run. The stored binding is the entire source of the
+     * answer, so the response cannot reflect a table that has since changed and
+     * cannot reveal anything the owner has not already bound.
+     *
+     * <p>A dataset the caller owns with no PostgreSQL binding is the same
+     * generic 404 as a foreign or missing dataset, so this cannot be used to
+     * discover whether somebody else has bound a dataset. Nothing is mutated:
+     * there is no update, rebind, or delete here, and binding remains a
+     * one-binding-per-dataset rule enforced by the service.
+     *
+     * @param jwt verified token; its subject is the only accepted owner
+     * @param datasetId dataset whose binding to read, must belong to the caller
+     * @return the stored binding's metadata, without owner or connection detail
+     */
+    @GetMapping("/binding")
+    public PostgresBindingResponse getBinding(
+            @AuthenticationPrincipal Jwt jwt, @PathVariable UUID datasetId) {
+        PostgresDatasetBinding binding = bindings.get(jwt.getSubject(), datasetId);
+        return PostgresBindingResponse.from(binding);
     }
 
     /** A missing and a foreign dataset are the same generic 404. */

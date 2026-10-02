@@ -926,6 +926,34 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   later API decision, and profiling and sanitization continue to happen through
   the separate internal services that consume the binding.
 
+  **The owner can now read their own current binding**:
+  `GET /api/datasets/{datasetId}/postgres/binding`. The actor is
+  `jwt.getSubject()` and nothing else — the read takes no request body, and
+  `ownerSubject` in a query parameter or header is simply not read. It delegates
+  to the existing owner-scoped `PostgresDatasetBindingService.get(...)`, so a
+  foreign dataset, a missing dataset, and a dataset the owner has not bound all
+  produce the **same generic 404** and none of them reveals another user's
+  schema or table or whether they have a binding at all. There is no ADMIN
+  bypass.
+
+  **The read is strictly metadata-only and opens no PostgreSQL connection.** It
+  returns the stored binding row and nothing more: no rediscovery or base-table
+  verification (which only `bind` performs), no row read, no profiling, no
+  sanitization, and no run. The response reuses the existing
+  `PostgresBindingResponse` — `datasetId`, `schemaName`, `tableName`,
+  `createdAt`, `updatedAt` — rather than introducing a second view, and carries
+  no owner, host, port, database, username, password, JDBC URL, row count, row
+  value, PII finding, or SQL. A malformed dataset id is a 400 that does not echo
+  the submitted text.
+
+  **The read is read-only.** Nothing is updated, rebound, deleted, or switched,
+  and the dataset's `source_type` is untouched — binding still records an
+  association only, and the one-binding-per-dataset rule is unchanged. **No
+  DELETE or rebind route is exposed in this milestone**: reassignment remains an
+  explicit delete-then-bind decision for a later, separate change. The existing
+  `POST` binding route is unchanged in every respect — request shape, 201 status,
+  `Location` header, conflict behaviour, ownership, and source-type behaviour.
+
   **An authenticated PostgreSQL profiling API now exists**:
   `POST /api/datasets/{datasetId}/postgres/profile`, with **no request body** —
   the operation has no parameter for an owner, schema, table, policy, row limit,

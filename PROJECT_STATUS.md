@@ -1635,6 +1635,64 @@ dataset being refused. **No new `@SpringBootTest` context, no new datasource poo
 and no new executor were introduced**; `max_connections` was not touched, and no
 `Thread.sleep` or retry was added.
 
+## PostgreSQL binding read API (metadata-only, no source access)
+
+`GET /api/datasets/{datasetId}/postgres/binding` lets an authenticated owner
+retrieve the PostgreSQL table their dataset is currently bound to. **The actor
+comes exclusively from `@AuthenticationPrincipal Jwt jwt` → `jwt.getSubject()`**;
+the read takes no request body, and an `ownerSubject` supplied as a query
+parameter or header is simply not read.
+
+**Ownership is enforced by the existing owner-scoped lookup.** The endpoint
+delegates to `PostgresDatasetBindingService.get(...)` and touches no repository
+directly. **A foreign dataset, a missing dataset, and a dataset the owner has
+not bound all return the same generic 404**, so the response reveals neither
+whether a dataset exists, who owns it, nor whether somebody else has bound it —
+and no other user's schema or table is ever disclosed. There is no ADMIN bypass.
+
+**The response is the existing `PostgresBindingResponse`** — no second view was
+introduced — with exactly `datasetId`, `schemaName`, `tableName`, `createdAt`,
+and `updatedAt`. It carries **no `ownerSubject`, host, port, database, username,
+password, JDBC URL, row count, row value, PII finding, or SQL**; the DTO has no
+field in which any of those could appear. A malformed dataset UUID is a **400**
+whose message does not echo the submitted text.
+
+**GET opens no PostgreSQL connection.** It is a metadata lookup against the
+stored binding row only: it does not rediscover or re-verify the table (which is
+`bind`'s job), read rows, profile, sanitize, or create a run. The binding row is
+the entire source of the answer, so the response cannot reflect a source that has
+since changed.
+
+**GET is strictly read-only.** It updates, rebinds, deletes, or switches nothing,
+and the dataset's `source_type` is untouched — binding still records an
+association only, and the one-binding-per-dataset rule is unchanged.
+**DELETE and rebind are deliberately not exposed in this milestone**;
+reassignment stays an explicit delete-then-bind decision for a later change.
+**The existing `POST` binding route is unchanged** in request shape, 201 status,
+`Location` header, conflict behaviour, ownership, and source-type behaviour.
+
+**No audit event was added** for the read, and binding, policy, run, and gateway
+audit behaviour are untouched.
+
+**Tests added (9 new tests, no new Spring context).** 7 standalone MockMvc tests
+in the existing `PostgresDatasetBindingControllerTest` (owner reads its own
+binding with exact stored values and timestamps; the response carries no owner,
+credential, connection, row-count, or SQL detail; the actor comes only from the
+token and query/header owner hints are ignored; a foreign or missing binding is
+the same generic 404; an unbound dataset is that same 404 with no schema or
+table field; a malformed UUID is a 400 with no service interaction; and the read
+invokes only the owner-scoped `get`, never `bind`, proving no discovery or
+profiling occurs), plus 2 integration tests in the existing cached
+`PostgresDatasetBindingPostgresTest` (bind then read through the controller,
+verifying the returned timestamps equal the persisted row and that reading
+creates no second binding and leaves `source_type` CSV; and a foreign actor being
+refused while the owner can still read theirs). Two existing tests were updated
+because they asserted the read route did not exist: the route-verb test now
+asserts only `DELETE` and `PUT` are 405, and the method-set assertion now
+expects `bind` and `getBinding`. **No new `@SpringBootTest` context, no new
+datasource pool, and no sleeps or retries were added**; `max_connections` was not
+touched.
+
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as

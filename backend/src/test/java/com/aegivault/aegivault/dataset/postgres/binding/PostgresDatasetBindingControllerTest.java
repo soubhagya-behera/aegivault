@@ -259,24 +259,27 @@ class PostgresDatasetBindingControllerTest {
     }
 
     @Test
-    void thereIsNoReadOrDeleteRouteOnThisResource() throws Exception {
-        // Create-only: inspection and removal stay internal for now.
-        mvc.perform(get(PATH)).andExpect(status().isMethodNotAllowed());
-        org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder delete =
-                org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete(PATH);
-        mvc.perform(delete).andExpect(status().isMethodNotAllowed());
+    void theOnlyVerbsOnThisResourceAreCreateAndRead() throws Exception {
+        // Read is now available; modification is not. Deletion, rebinding, and
+        // update stay a later milestone, so POST-only paths answer 405.
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .delete(PATH))
+                .andExpect(status().isMethodNotAllowed());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .put(PATH).contentType(MediaType.APPLICATION_JSON)
+                        .content(body("public", "customers")))
+                .andExpect(status().isMethodNotAllowed());
     }
 
     @Test
-    void theControllerExposesOnlyTheBindOperationAndNeverTheOwnerOrSource() throws Exception {
-        // One verb, and its signature takes no owner, schema, or table of its own
-        // beyond the validated request.
+    void theControllerExposesOnlyBindAndReadAndNeverTheOwnerOrSource() throws Exception {
+        // Two verbs, bind and read, and read takes no request body of any kind.
         assertThat(java.util.Arrays.stream(
                         PostgresDatasetBindingController.class.getDeclaredMethods())
                 .filter(method -> java.lang.reflect.Modifier.isPublic(method.getModifiers()))
                 .filter(method -> !method.isSynthetic())
                 .map(java.lang.reflect.Method::getName))
-                .containsExactly("bind");
+                .containsExactly("bind", "getBinding");
 
         // It holds only the existing binding service: no repository, no profiler,
         // no sanitizer, no run executor, no artifact store.
@@ -296,5 +299,111 @@ class PostgresDatasetBindingControllerTest {
         assertThat(java.util.Arrays.stream(CreatePostgresBindingRequest.class.getRecordComponents())
                 .map(java.lang.reflect.RecordComponent::getName))
                 .containsExactly("schemaName", "tableName");
+    }
+
+    private void givenGetSucceeds() {
+        when(bindings.get(anyString(), eq(DATASET_ID))).thenReturn(bindingWithTimestamps());
+    }
+
+    @Test
+    void theOwnerReadsItsOwnBindingAndGetsTwoHundredWithExactlyTheStoredValues() throws Exception {
+        givenGetSucceeds();
+
+        mvc.perform(get(PATH))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.datasetId").value(DATASET_ID.toString()))
+                .andExpect(jsonPath("$.schemaName").value("public"))
+                .andExpect(jsonPath("$.tableName").value("customers"))
+                .andExpect(jsonPath("$.createdAt").value("2026-01-02T03:04:05Z"))
+                .andExpect(jsonPath("$.updatedAt").value("2026-01-02T03:04:05Z"));
+
+        // The owner-scoped internal lookup is what served it.
+        verify(bindings).get(SUBJECT, DATASET_ID);
+    }
+
+    @Test
+    void theReadResponseCarriesExactlyTheFiveMetadataKeysAndNothingElse() throws Exception {
+        givenGetSucceeds();
+
+        String body = mvc.perform(get(PATH))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        // Metadata only: no owner, no credential, no connection detail, no row
+        // count, no value, no PII finding, and no SQL.
+        assertThat(body)
+                .doesNotContain("ownerSubject")
+                .doesNotContain("actorSubject")
+                .doesNotContain("host")
+                .doesNotContain("port")
+                .doesNotContain("database")
+                .doesNotContain("username")
+                .doesNotContain("password")
+                .doesNotContain("jdbc")
+                .doesNotContain("rowCount")
+                .doesNotContain("SELECT")
+                .doesNotContain(SUBJECT);
+    }
+
+    @Test
+    void theReadActorComesOnlyFromTheTokenAndOwnerHintsAreIgnored() throws Exception {
+        givenGetSucceeds();
+
+        // A read takes no body at all, so the only channels a caller could try to
+        // name a different actor are query parameters and headers.
+        mvc.perform(get(PATH)
+                        .param("ownerSubject", "someone-else")
+                        .param("actorSubject", "someone-else")
+                        .header("X-Owner-Subject", "someone-else"))
+                .andExpect(status().isOk());
+
+        // Only the token subject reached the service.
+        verify(bindings).get(SUBJECT, DATASET_ID);
+    }
+
+    @Test
+    void aForeignOrMissingBindingIsTheSameGenericNotFound() throws Exception {
+        // The service's owner-scoped lookup signals both identically, so the
+        // response cannot distinguish them or reveal another owner's schema/table.
+        when(bindings.get(anyString(), eq(DATASET_ID)))
+                .thenThrow(new PostgresDatasetBindingNotFoundException());
+
+        mvc.perform(get(PATH))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Dataset not found."));
+    }
+
+    @Test
+    void aDatasetWithNoBindingIsThatSameGenericNotFound() throws Exception {
+        // Not an empty object, not a null body, and never a guessed CSV state.
+        when(bindings.get(anyString(), eq(DATASET_ID)))
+                .thenThrow(new PostgresDatasetBindingNotFoundException());
+
+        mvc.perform(get(PATH))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.schemaName").doesNotExist())
+                .andExpect(jsonPath("$.tableName").doesNotExist());
+    }
+
+    @Test
+    void aMalformedDatasetIdOnReadIsABadRequestThatDoesNotEchoTheText() throws Exception {
+        mvc.perform(get("/api/datasets/not-a-uuid/postgres/binding"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Invalid dataset id."));
+
+        // The lookup never ran, so nothing was read for an unusable id.
+        verifyNoInteractions(bindings);
+    }
+
+    @Test
+    void theReadNeverDiscoversVerifiesOrProfilesTheSource() throws Exception {
+        givenGetSucceeds();
+
+        mvc.perform(get(PATH)).andExpect(status().isOk());
+
+        // Only the owner-scoped row read happened: no bind (which would
+        // rediscover and verify the table), no profile, and no sanitizer.
+        verify(bindings).get(SUBJECT, DATASET_ID);
+        verify(bindings, never()).bind(anyString(), eq(DATASET_ID), anyString(), anyString());
     }
 }

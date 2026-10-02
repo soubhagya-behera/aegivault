@@ -283,6 +283,71 @@ class PostgresDatasetBindingPostgresTest {
     }
 
     @Test
+    void theApiPathReadsTheOwnersOwnPersistedBindingWithoutTouchingTheSource() {
+        // End to end through the controller's read entry point, against the real
+        // service and the real database:
+        //   create dataset -> bind synthetic table -> GET binding -> exact values.
+        //
+        // No new Spring context and no MockMvc: the HTTP contract is already
+        // covered by the standalone controller test, and what matters here is
+        // that the read returns the persisted row exactly as written.
+        Dataset dataset = datasetFor(OWNER);
+        PostgresDatasetBindingService service = service();
+        service.bind(OWNER, dataset.getId(), "public", FIXTURE);
+
+        PostgresDatasetBindingController controller =
+                new PostgresDatasetBindingController(service);
+        Jwt jwt = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OWNER).build();
+
+        PostgresBindingResponse body = controller.getBinding(jwt, dataset.getId());
+
+        assertThat(body.datasetId()).isEqualTo(dataset.getId());
+        assertThat(body.schemaName()).isEqualTo("public");
+        assertThat(body.tableName()).isEqualTo(FIXTURE);
+        assertThat(body.createdAt()).isNotNull();
+        assertThat(body.updatedAt()).isNotNull();
+
+        // Exactly the persisted row, and only the metadata the binding stores.
+        PostgresDatasetBinding stored = bindingRepository.findById(dataset.getId()).orElseThrow();
+        assertThat(body.createdAt()).isEqualTo(stored.getCreatedAt());
+        assertThat(body.updatedAt()).isEqualTo(stored.getUpdatedAt());
+
+        // Reading is not mutating: the same single binding for this dataset is
+        // still there, no second binding appeared, and the dataset's own source
+        // type is still untouched. Only this dataset's row is inspected, because
+        // the shared test database holds other classes' committed bindings.
+        assertThat(service.get(OWNER, dataset.getId()).getTableName()).isEqualTo(FIXTURE);
+        assertThat(bindingRepository.findById(dataset.getId())).isPresent();
+        assertThat(datasets.findById(dataset.getId()).orElseThrow().getSourceType())
+                .isEqualTo("CSV");
+
+        // The source table still holds its single synthetic row: the read
+        // consumed nothing and, crucially, the read path performs no
+        // discovery or verification against PostgreSQL at all.
+        assertThat(discovery.discover(applicationSource()).table(FIXTURE)).isPresent();
+    }
+
+    @Test
+    void theApiPathRefusesToReadAnotherOwnersBinding() {
+        Dataset dataset = datasetFor(OWNER);
+        service().bind(OWNER, dataset.getId(), "public", FIXTURE);
+        PostgresDatasetBindingController controller =
+                new PostgresDatasetBindingController(service());
+        Jwt foreign = Jwt.withTokenValue("token").header("alg", "none").claim("sub", OTHER).build();
+
+        // Identical to reading a dataset that does not exist: the owner's
+        // schema and table are never disclosed.
+        assertThatThrownBy(() -> controller.getBinding(foreign, dataset.getId()))
+                .isInstanceOf(PostgresDatasetBindingNotFoundException.class);
+
+        // The owner can still read theirs, so nothing was consumed by the attempt.
+        assertThat(controller.getBinding(
+                        Jwt.withTokenValue("t").header("alg", "none").claim("sub", OWNER).build(),
+                        dataset.getId())
+                .tableName()).isEqualTo(FIXTURE);
+    }
+
+    @Test
     void theBindingCanBeDeletedAndTheDatasetSurvives() {
         Dataset dataset = datasetFor(OWNER);
         PostgresDatasetBindingService service = service();
