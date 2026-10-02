@@ -1542,6 +1542,99 @@ leaving the binding intact. **No new `@SpringBootTest` context and no datasource
 pool were added**, `max_connections` was not touched, and no sleeps or retries
 were introduced.
 
+## PostgreSQL sanitization run API (asynchronous, owner-scoped)
+
+`POST /api/datasets/{datasetId}/postgres/runs` lets an authenticated owner queue
+a sanitization run for the PostgreSQL table their dataset is bound to. It takes
+exactly one field — `{"policyId": "..."}` — because the dataset is the path
+variable, not a body field. **The actor comes exclusively from
+`@AuthenticationPrincipal Jwt jwt` → `jwt.getSubject()`**; the request has no
+owner field, so no body, query parameter, or header can supply or override it.
+No schema, table, source type, connection detail, credential, JDBC URL,
+transformation rule, SQL, requested token value, or row limit can be sent.
+
+**Ownership, binding, and policy are all required and all owner-scoped**, and
+they are checked in that order: the actor must own the dataset, the PostgreSQL
+binding must belong to that actor and dataset, and the policy must belong to
+that actor. **A missing dataset, a foreign dataset, a dataset with no binding,
+and a missing or foreign policy all return the same generic 404**, so no response
+reveals which reference failed or whether it exists. There is no ADMIN bypass.
+The binding check happens **before** the policy is read, so a foreign caller
+never reaches the policy table at all.
+
+**The binding must already exist.** The endpoint never discovers a table, never
+selects the first table, and never creates a binding; the existing owner-scoped
+binding is the sole source of the table, and it is never updated, deleted, or
+replaced.
+
+**The policy is frozen into the run snapshot.** The caller's policy is resolved
+owner-scoped through `SanitizationPolicyService`, its rules become the
+`TransformationPlan`, and its name, version, and rules are frozen into the run's
+immutable `PolicySnapshot` at creation. A plan or rule set is never accepted
+from the request. **A later policy edit or later policy deletion cannot change an
+already-queued run**, and the recorded `source_type` stays `POSTGRESQL`. Profiling
+is never triggered automatically — the `policyId` is explicit and nothing is
+inferred or selected for the caller.
+
+**The created run is a `POSTGRESQL` `QUEUED` run** carrying the dataset, the
+owner, the frozen snapshot, and the policy name and version. It is created
+through the existing `PostgresSanitizationRunService`, so run creation and the
+snapshot are not re-implemented. **No credential, JDBC URL, schema, table, or row
+data is persisted on the run or on any audit event.**
+
+**Execution happens asynchronously through the existing launcher.** The
+persisted run is handed to the same `SanitizationRunJobLauncher` and the same
+bounded pool a CSV run uses — no second executor, thread pool, queue, or job
+table was added — and **the API returns `202 Accepted`** with a `Location` header
+pointing at the existing run resource `/api/runs/{runId}`, where callers already
+poll. The body is the existing `SanitizationRunView`. The request never waits for
+`COMPLETED`, and **no PostgreSQL row is read during request handling**: the source
+is only read later by the worker.
+
+**Launch failure is reported honestly.** If the bounded pool refuses the
+submission, the launcher's own safe failure is returned (503 with no pool, queue,
+thread, or executor detail). The run stays `QUEUED` and launchable rather than
+being marked running, failed, retried, or deleted, so success is never claimed
+for work that did not start.
+
+**Audit reuses the existing run lifecycle events** —
+`SANITIZATION_RUN_CREATED`, `SANITIZATION_RUN_COMPLETED`, `SANITIZATION_RUN_FAILED`
+— with the existing safe metadata only. No PostgreSQL-specific audit event was
+added. Artifact capture is unchanged: the existing `SanitizationRunExecutor`,
+`SanitizationArtifactStore`, and artifact path are used, and no second artifact
+path exists.
+
+**The existing CSV run API `POST /api/runs` is unchanged.** No source-specific
+field was added to its request, its synchronous behaviour and 201 response are
+untouched, and it is still covered by its existing `SanitizationRunApiTest`.
+
+**Credentials remain external configuration.** Connection details live only in
+deployment configuration; they are never accepted in a request, never stored on a
+run, and never returned. **No raw PostgreSQL row data enters request
+persistence** — only the run's operation metadata.
+
+**Tests added (25 new tests, no new Spring context).** 18 standalone MockMvc
+tests (202 with the run location, Location pointing at `/api/runs/{id}`,
+`source_type` `POSTGRESQL` with `QUEUED` status, actor from JWT only with
+body/query/header owner hints ignored, a body-supplied dataset id ignored, unknown
+properties ignored, the four indistinguishable 404 cases, malformed dataset and
+policy UUIDs, absent and unparseable bodies, safe launch-failure and
+not-launchable responses with no executor detail, no credentials/row data in the
+response, only a create verb on the path, and structural assertions that the
+controller holds only the orchestrator and the request carries only `policyId`),
+7 orchestrator tests (launch hand-off with the persisted target, policy freezing,
+the binding-before-policy-before-queue-before-launch order, a missing binding
+never reaching the policy, a foreign policy creating nothing, a refused
+submission attempted exactly once, and the collaborator set), and 5 end-to-end
+tests added to the **existing** `PostgresSanitizationRunJobTest`, reusing its
+cached context, real launcher, and existing `awaitTerminal` polling: API-queued
+run reaching `COMPLETED` with an artifact and an unchanged source table, the
+existing audit events only with safe event data, a snapshot frozen against a later
+policy edit and deletion, a foreign actor creating no run row, and an unbound
+dataset being refused. **No new `@SpringBootTest` context, no new datasource pool,
+and no new executor were introduced**; `max_connections` was not touched, and no
+`Thread.sleep` or retry was added.
+
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as

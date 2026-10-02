@@ -57,6 +57,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.oauth2.jwt.Jwt;
 
 /**
  * A queued PostgreSQL run executed by the real existing launcher: the persisted
@@ -77,6 +78,9 @@ class PostgresSanitizationRunJobTest {
     private static final String FIXTURE = "aegivault_queued_sanitize_fixture";
 
     private static final String OWNER = "pg-queued-owner";
+
+    /** A second actor, used to prove a foreign caller is refused. */
+    private static final String OTHER = "pg-queued-other";
 
     private static final String SCHEMA = "public";
 
@@ -110,6 +114,12 @@ class PostgresSanitizationRunJobTest {
 
     @Autowired
     private SanitizationRunJobLauncher launcher;
+
+    @Autowired
+    private com.aegivault.aegivault.sanitization.policy.SanitizationPolicyService policyService;
+
+    @Autowired
+    private com.aegivault.aegivault.audit.AuditLedgerEntryRepository ledger;
 
     @Autowired
     private PiiDetectorRegistry detectors;
@@ -387,6 +397,186 @@ class PostgresSanitizationRunJobTest {
         } finally {
             execute("DROP TABLE IF EXISTS " + stale);
         }
+    }
+
+    /**
+     * The API path, end to end: the real controller and orchestrator over the
+     * real launcher, worker pool, executor, row stream, and artifact store.
+     *
+     * <p>Only the PostgreSQL provider is assembled locally, exactly as the tests
+     * above do, because the application context has no configured PostgreSQL
+     * source. Everything else is the real bean from the existing cached context,
+     * so no new context, pool, or executor is introduced.
+     */
+    private PostgresSanitizationRunController apiController() {
+        SanitizationRunJobLauncher launcher = wiredLauncher();
+        return new PostgresSanitizationRunController(new PostgresSanitizationRunRequestService(
+                runCreation(), bindingService(), policyService, runService, launcher));
+    }
+
+    private static Jwt as(String subject) {
+        return Jwt.withTokenValue("token").header("alg", "none").claim("sub", subject).build();
+    }
+
+    /** A policy owned by {@link #OWNER}, with the fixture's PII masked and hashed. */
+    private UUID ownerPolicy(String name, String version) {
+        return policyService.create(OWNER, name, version, null,
+                List.of(
+                        new TransformationRule(PiiType.EMAIL, TransformationStrategy.MASK),
+                        new TransformationRule(PiiType.CREDIT_CARD, TransformationStrategy.HASH_SHA256)))
+                .id();
+    }
+
+    private List<com.aegivault.aegivault.audit.AuditLedgerEntry> auditFor(UUID runId) {
+        return ledger.findAllByOrderBySequenceNumberAsc().stream()
+                .filter(entry -> runId.equals(entry.getResourceId()))
+                .toList();
+    }
+
+    @Test
+    void theApiQueuesAPostgresRunThatTheWorkerCompletesWithAnArtifact() throws Exception {
+        seed("1, '" + EMAIL + "', '" + CARD + "', 'keep-me'");
+        Dataset dataset = boundDataset();
+        UUID policyId = ownerPolicy("api-pol", "v1");
+
+        org.springframework.http.ResponseEntity<SanitizationRunView> response = apiController().create(
+                as(OWNER), dataset.getId(), new PostgresRunCreationRequest(policyId));
+
+        // Accepted, not created-and-finished: the run is queued and the response
+        // returned without waiting for sanitization.
+        assertThat(response.getStatusCode().value()).isEqualTo(202);
+        assertThat(response.getHeaders().getLocation().toString())
+                .isEqualTo("/api/runs/" + response.getBody().id());
+        SanitizationRunView accepted = response.getBody();
+        assertThat(accepted.status()).isEqualTo(RunStatus.QUEUED);
+        assertThat(accepted.sourceType()).isEqualTo(SanitizationSourceType.POSTGRESQL);
+        assertThat(accepted.datasetId()).isEqualTo(dataset.getId());
+        // The existing run resource is where the caller polls.
+        assertThat(runService.get(OWNER, accepted.id()).id()).isEqualTo(accepted.id());
+
+        // The launch was real: the existing worker executed the run.
+        SanitizationRunView finished = awaitTerminal(accepted.id());
+        assertThat(finished.status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(finished.inputRowCount()).isEqualTo(1L);
+
+        // The existing artifact store produced the sanitized output.
+        String csv = artifactOf(accepted.id());
+        assertThat(csv).doesNotContain(EMAIL).doesNotContain(CARD).contains("keep-me");
+
+        // The source table is never written to.
+        assertThat(readEmail()).isEqualTo(EMAIL);
+    }
+
+    @Test
+    void anApiCreatedRunRecordsTheExistingRunAuditEventsOnly() throws Exception {
+        seed("1, '" + EMAIL + "', '" + CARD + "', 'n'");
+        Dataset dataset = boundDataset();
+        UUID policyId = ownerPolicy("audit-pol", "v1");
+
+        org.springframework.http.ResponseEntity<SanitizationRunView> response = apiController().create(
+                as(OWNER), dataset.getId(), new PostgresRunCreationRequest(policyId));
+        assertThat(awaitTerminal(response.getBody().id()).status()).isEqualTo(RunStatus.COMPLETED);
+
+        // The existing lifecycle events, appended by the existing executor. No
+        // PostgreSQL-specific event type was introduced.
+        List<String> types = auditFor(response.getBody().id()).stream()
+                .map(com.aegivault.aegivault.audit.AuditLedgerEntry::getEventType)
+                .toList();
+        assertThat(types).contains("SANITIZATION_RUN_CREATED", "SANITIZATION_RUN_COMPLETED");
+        assertThat(types).allSatisfy(type ->
+                assertThat(type).startsWith("SANITIZATION_RUN_"));
+
+        // Safe metadata only: no credential, no schema/table, no raw row value.
+        assertThat(auditFor(response.getBody().id()).stream()
+                .map(com.aegivault.aegivault.audit.AuditLedgerEntry::getEventData)
+                .reduce("", (a, b) -> a + " " + b))
+                .doesNotContain(EMAIL)
+                .doesNotContain(CARD)
+                .doesNotContain(FIXTURE)
+                .doesNotContain("jdbc")
+                .doesNotContain("password")
+                .doesNotContain("SELECT");
+    }
+
+    @Test
+    void theQueuedRunSnapshotIsFrozenAgainstLaterPolicyEditsAndDeletion() throws Exception {
+        seed("1, '" + EMAIL + "', '" + CARD + "', 'n'");
+        Dataset dataset = boundDataset();
+        UUID policyId = ownerPolicy("frozen-pol", "v1");
+
+        org.springframework.http.ResponseEntity<SanitizationRunView> response = apiController().create(
+                as(OWNER), dataset.getId(), new PostgresRunCreationRequest(policyId));
+        SanitizationRunView accepted = response.getBody();
+        String frozen = accepted.policySnapshot();
+        assertThat(frozen).isNotBlank();
+
+        // Both a later edit and a later deletion happen before execution. The
+        // queued run must be unaffected: it holds copied snapshot text, not a
+        // reference to the policy.
+        policyService.update(OWNER, policyId, "renamed", "v9", null,
+                List.of(new TransformationRule(PiiType.EMAIL, TransformationStrategy.REDACT)));
+        policyService.delete(OWNER, policyId);
+
+        SanitizationRunView finished = awaitTerminal(accepted.id());
+        assertThat(finished.status()).isEqualTo(RunStatus.COMPLETED);
+        // The run kept the labels and rules it was created with.
+        assertThat(finished.policySnapshot()).isEqualTo(frozen);
+        assertThat(finished.policyName()).isEqualTo("frozen-pol");
+        assertThat(finished.policyVersion()).isEqualTo("v1");
+        assertThat(finished.sourceType()).isEqualTo(SanitizationSourceType.POSTGRESQL);
+
+        // A mask keeps a tail while a redaction would not, so the artifact proves
+        // the original policy ran rather than the replacement.
+        assertThat(artifactOf(accepted.id()))
+                .contains(new MaskTransformation().apply(EMAIL))
+                .doesNotContain(new RedactTransformation().apply(EMAIL));
+    }
+
+    @Test
+    void aForeignActorCannotQueueARunOrReachThePostgresSource() throws Exception {
+        seed("1, '" + EMAIL + "', '" + CARD + "', 'n'");
+        Dataset dataset = boundDataset();
+        UUID policyId = ownerPolicy("owner-pol", "v1");
+
+        // Another actor, against the owner's dataset and the owner's policy.
+        assertThatThrownBy(() -> apiController().create(
+                        as(OTHER), dataset.getId(), new PostgresRunCreationRequest(policyId)))
+                .isInstanceOf(com.aegivault.aegivault.dataset.postgres.binding
+                        .PostgresDatasetBindingNotFoundException.class);
+
+        // No run row exists, so no worker was submitted and no source was read.
+        assertThat(runs.findByDatasetIdAndOwnerSubject(dataset.getId(), OWNER)).isEmpty();
+        assertThat(runs.findByDatasetIdAndOwnerSubject(dataset.getId(), OTHER)).isEmpty();
+    }
+
+    @Test
+    void anApiRunWithoutAnOwnedPolicyIsRefusedWithoutCreatingAnything() throws Exception {
+        seed("1, '" + EMAIL + "', '" + CARD + "', 'n'");
+        Dataset dataset = boundDataset();
+
+        // A random policy id the caller does not own.
+        assertThatThrownBy(() -> apiController().create(
+                        as(OWNER), dataset.getId(),
+                        new PostgresRunCreationRequest(UUID.randomUUID())))
+                .isInstanceOf(com.aegivault.aegivault.sanitization.policy
+                        .PolicyNotFoundException.class);
+
+        assertThat(runs.findByDatasetIdAndOwnerSubject(dataset.getId(), OWNER)).isEmpty();
+    }
+
+    @Test
+    void anUnboundDatasetCannotBeSanitizedThroughTheApi() throws Exception {
+        // No binding at all: the endpoint must not discover a table or create
+        // one to make the request succeed.
+        Dataset dataset = datasets.save(new Dataset("pg-api-unbound", OWNER));
+        UUID policyId = ownerPolicy("unbound-pol", "v1");
+
+        assertThatThrownBy(() -> apiController().create(
+                        as(OWNER), dataset.getId(), new PostgresRunCreationRequest(policyId)))
+                .isInstanceOf(com.aegivault.aegivault.dataset.postgres.binding
+                        .PostgresDatasetBindingNotFoundException.class);
+
+        assertThat(runs.findByDatasetIdAndOwnerSubject(dataset.getId(), OWNER)).isEmpty();
     }
 
     private String readNote() throws SQLException {

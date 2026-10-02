@@ -959,6 +959,63 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   this endpoint**: it is synchronous profiling only, and the existing CSV
   profiling endpoint is untouched.
 
+  **An authenticated PostgreSQL run-creation API now exists**:
+  `POST /api/datasets/{datasetId}/postgres/runs`, taking exactly one field,
+  `{"policyId": "..."}`. The dataset is the path, not a body field. **The actor
+  is `jwt.getSubject()` and nothing else** — the request has no owner field, so
+  no body, query parameter, or header can supply or override it. There is no
+  field for a schema, table, source type, connection detail, credential, JDBC
+  URL, transformation rule, SQL fragment, requested token value, or row limit,
+  so none can be sent; extra JSON properties are ignored under the project's
+  existing unknown-property behaviour.
+
+  **Check order is ownership → binding → policy → run → launch → 202.** A
+  PostgreSQL binding must already exist: the endpoint never discovers a table,
+  never selects the first table, and never creates a binding, so the existing
+  owner-scoped binding remains the sole source of the table and is never
+  modified, deleted, or swapped. The binding is proven *before* the policy is
+  read, so a foreign caller never reaches the policy table at all. The policy is
+  resolved owner-scoped through `SanitizationPolicyService`, and its rules become
+  the `TransformationPlan` — a plan or rules are never accepted from the
+  request. A missing dataset, a foreign dataset, a dataset with no binding, and
+  a missing or foreign policy are **all the same generic 404**, so no response
+  reveals which reference failed or whether it exists; there is no ADMIN bypass.
+  **Nothing is read from PostgreSQL during the request** — the actual source
+  access happens in the background worker.
+
+  The run is created through the existing `PostgresSanitizationRunService` with
+  `source_type = POSTGRESQL`, `QUEUED` status, the frozen `PolicySnapshot`, and
+  the policy name and version. **No credential, JDBC URL, schema, table, or row
+  data is persisted on the run**, and none is added to any audit event. The
+  controller holds only a thin orchestrator, which in turn holds only the four
+  existing collaborators; run creation, persistence, the `PolicySnapshot`, the
+  lifecycle transitions, and artifact capture all stay with the services that
+  already own them.
+
+  **The policy is frozen at creation and never re-resolved.** A later policy
+  edit or deletion cannot change a queued run, and the recorded source type
+  remains `POSTGRESQL`. Profiling is never triggered automatically: the
+  `policyId` is explicit and nothing is inferred or selected for the caller.
+
+  **Execution is asynchronous through the existing launcher.** The persisted run
+  is handed to the same `SanitizationRunJobLauncher` and the same bounded pool a
+  CSV run uses; no second executor, thread pool, queue, or job table was added.
+  The API returns **`202 Accepted`** with a `Location` header pointing at the
+  existing run resource `/api/runs/{runId}` — the endpoint where callers already
+  poll — and the existing `SanitizationRunView` as its body. It never waits for
+  `COMPLETED`. If submission is refused, the launcher's own safe failure is
+  reported: the run stays `QUEUED` and launchable rather than being marked
+  running, and the response names no pool, queue, thread, or executor detail.
+
+  **Audit reuses the existing run lifecycle events**
+  (`SANITIZATION_RUN_CREATED`, `SANITIZATION_RUN_COMPLETED`, `SANITIZATION_RUN_FAILED`);
+  no PostgreSQL-specific event type was introduced, and the event data remains
+  the existing safe metadata only.
+
+  **The existing CSV run API `POST /api/runs` is unchanged**, no
+  source-specific field was added to its request, and it remains a separate
+  synchronous path.
+
   **The row layer stays a carrier, and production data is never persisted.**
   `PostgresTableRow` is still just the driver's own JDBC type (or SQL `NULL`),
   with no domain PII type, confidence, classification, or transformation, and the
