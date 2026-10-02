@@ -881,6 +881,26 @@ failRun     -> FAILED (error code/stage/message + completed_at)
 
   **No REST endpoint exists yet.** `SanitizationRunJobLauncher` is unchanged.
 
+    **An authenticated table-discovery endpoint now exists**:
+  `GET /api/datasets/{datasetId}/postgres/tables`. It is the first public surface
+  over the PostgreSQL source and it is **read-only metadata only** — schema
+  name, table names, and per column its name, ordinal position, and declared
+  type. The actor comes exclusively from `jwt.getSubject()`; no query parameter,
+  header, body, or path variable can name a different owner. The caller must own
+  the referenced dataset, and a foreign and a missing dataset are the same generic
+  404. **No row data, sample, PII finding, row count, or credential is returned**:
+  the response is a dedicated DTO whose fields are only the ones the discovery
+  model already has, so the shape itself rules those out rather than a filter
+  applied afterwards. The **configured schema is fixed** — there is no schema
+  parameter and no cross-schema browsing — and **order is the discovery model's**
+  (columns in ordinal position), with no second sorting policy introduced.
+  Discovery requires no binding and creates none, so a dataset with no binding
+  can still see what is available. Choosing a table is a separate later step, and
+  binding, profiling, sanitization, and run APIs remain unimplemented. An absent
+  source and a failed discovery both return the same safe 503,
+  `PostgreSQL source is not available.`, with no driver, SQL, or connection
+  detail. An empty schema is a normal 200 with an empty list.
+
   **The row layer stays a carrier, and production data is never persisted.**
   `PostgresTableRow` is still just the driver's own JDBC type (or SQL `NULL`),
   with no domain PII type, confidence, classification, or transformation, and the

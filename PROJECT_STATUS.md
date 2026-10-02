@@ -1358,6 +1358,56 @@ lifecycle.
 **Test coverage (4 new wiring tests).** All production files touched by this
 milestone are under the 400-line rule; `SanitizationRunExecutor` is 399.
 
+## PostgreSQL table discovery API (authenticated, read-only)
+
+`GET /api/datasets/{datasetId}/postgres/tables` is the first public surface over
+the PostgreSQL source, and it is **discovery only**. The actor comes exclusively
+from `@AuthenticationPrincipal Jwt jwt` → `jwt.getSubject()`; no query parameter,
+header, body, or path variable can name a different owner. **The caller must own
+the referenced dataset** — a foreign and a missing dataset are the same generic
+404 — and there is no ADMIN bypass.
+
+**Metadata only.** The response carries the configured schema name, table names,
+and per column its name, ordinal position, and declared type. **No row data, row
+count, sample, PII finding, index, constraint, default, comment, JDBC URL, host,
+port, database, username, or password is returned.** That is structural rather
+than filtered: the DTO (`PostgresTablesResponse`) only has fields the discovery
+model already exposes, so those values have nowhere to appear. The response
+deliberately omits `ownerSubject` as well.
+
+**The configured schema is fixed** — no schema parameter, no cross-schema
+browsing, no schema switching — and **order is the discovery model's** (columns
+in discovered ordinal position, tables in discovery order), so no second sorting
+policy is introduced that could disagree with the row stream.
+
+**Discovery requires no binding and creates none**: a dataset with no PostgreSQL
+binding can still see what is available, and nothing is bound, defaulted, or
+remembered as a side effect of looking. **Binding, profiling, sanitization, and
+run APIs are separate later steps and remain unimplemented.**
+
+**Source and error handling.** An absent source and a failed discovery both
+return the same safe **503** `PostgreSQL source is not available.` — the two are
+indistinguishable, so the endpoint is not a probe for the source's state — with
+no driver text, SQL, or connection detail. The underlying driver exception is not
+retained in the API error at all. An empty schema is a normal **200** with an
+empty table list. Ownership is checked *before* the source is touched, so an
+unauthorised caller learns nothing about whether a source is configured. A
+malformed dataset id is a 400 that does not echo the text. Unauthenticated
+requests are refused by the existing `anyRequest().authenticated()` rule.
+
+**Test coverage (21 new tests, no new Spring context).** 11 pure service tests
+(schema and table metadata, empty schema, unsorted pass-through of discovery
+order, foreign and missing dataset, unconfigured source, discovery failure,
+unreachable source, blank owner, dependency direction, and a structural check
+that no JDBC or row type is reachable) and 10 standalone MockMvc controller tests
+(200 with correct ordinal/type metadata, token-derived owner with
+`actorSubject`/`ownerSubject`/header attempts ignored, absence of owner and
+credential fields, only the expected response fields present, empty schema,
+404, 400, both 503s, and a single-operation surface). The controller tests use
+`MockMvcBuilders.standaloneSetup` with a mocked service, so **no application
+context and no datasource pool were added** — which matters given the
+repository's prior PostgreSQL connection-pressure issues.
+
 ## Next planned step
 
 Continue wiring the authenticated dataset flow. Dataset input storage exists as
