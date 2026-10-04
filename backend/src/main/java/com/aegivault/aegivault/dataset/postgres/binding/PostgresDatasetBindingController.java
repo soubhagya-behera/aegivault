@@ -13,6 +13,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,10 +41,10 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * only PostgreSQL interaction anywhere on this path is the existing metadata
  * discovery inside that service.
  *
- * <p><strong>Create and read; never modify.</strong> Creation records an
- * association and reading reports it, but there is deliberately no update,
- * rebind, or delete route: reassignment stays an explicit delete-then-bind in a
- * later milestone, so exposing an overwrite now would invite rebinding by
+ * <p><strong>Create, read, and delete; never modify.</strong> Creation records an
+ * association, reading reports it, and deletion removes it, but there is
+ * deliberately no update or rebind route: reassignment stays an explicit
+ * delete-then-bind, so exposing an overwrite would invite rebinding by
  * accident.
  *
  * <p><strong>The read touches no PostgreSQL.</strong> {@code GET /binding}
@@ -101,7 +102,7 @@ public class PostgresDatasetBindingController {
      * <p>A dataset the caller owns with no PostgreSQL binding is the same
      * generic 404 as a foreign or missing dataset, so this cannot be used to
      * discover whether somebody else has bound a dataset. Nothing is mutated:
-     * there is no update, rebind, or delete here, and binding remains a
+     * there is no update or rebind here, and binding remains a
      * one-binding-per-dataset rule enforced by the service.
      *
      * @param jwt verified token; its subject is the only accepted owner
@@ -113,6 +114,32 @@ public class PostgresDatasetBindingController {
             @AuthenticationPrincipal Jwt jwt, @PathVariable UUID datasetId) {
         PostgresDatasetBinding binding = bindings.get(jwt.getSubject(), datasetId);
         return PostgresBindingResponse.from(binding);
+    }
+
+    /**
+     * Deletes the caller's current binding for this dataset, if it has one.
+     *
+     * <p><strong>Strictly metadata-only.</strong> This removes the binding row
+     * and nothing else: it opens no PostgreSQL connection, and it never
+     * modifies, cancels, or deletes runs, artifacts, or profiles. Completed
+     * and failed run history stays intact.
+     *
+     * <p><strong>Active runs block deletion.</strong> PostgreSQL execution
+     * re-resolves the binding when a queued worker starts, so a dataset with
+     * a {@code QUEUED} or {@code RUNNING} PostgreSQL run keeps its binding
+     * and this answers {@code 409} instead. Terminal runs never block.
+     *
+     * <p>A dataset the caller owns with no PostgreSQL binding is the same
+     * generic 404 as a foreign or missing dataset.
+     *
+     * @param jwt verified token; its subject is the only accepted owner
+     * @param datasetId dataset whose binding to delete, must belong to the caller
+     */
+    @DeleteMapping("/binding")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteBinding(
+            @AuthenticationPrincipal Jwt jwt, @PathVariable UUID datasetId) {
+        bindings.delete(jwt.getSubject(), datasetId);
     }
 
     /** A missing and a foreign dataset are the same generic 404. */
@@ -132,6 +159,17 @@ public class PostgresDatasetBindingController {
     @ResponseStatus(HttpStatus.CONFLICT)
     DatasetError alreadyBound(PostgresDatasetAlreadyBoundException ex) {
         return new DatasetError(PostgresDatasetAlreadyBoundException.MESSAGE);
+    }
+
+    /**
+     * A {@code QUEUED} or {@code RUNNING} PostgreSQL run still needs this
+     * binding, so the binding is left exactly as it is. The fixed safe message
+     * names no run, count, policy, table, or actor.
+     */
+    @ExceptionHandler(PostgresDatasetBindingActiveRunException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    DatasetError activeRun(PostgresDatasetBindingActiveRunException ex) {
+        return new DatasetError(PostgresDatasetBindingActiveRunException.MESSAGE);
     }
 
     /**

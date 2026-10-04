@@ -259,12 +259,9 @@ class PostgresDatasetBindingControllerTest {
     }
 
     @Test
-    void theOnlyVerbsOnThisResourceAreCreateAndRead() throws Exception {
-        // Read is now available; modification is not. Deletion, rebinding, and
-        // update stay a later milestone, so POST-only paths answer 405.
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
-                        .delete(PATH))
-                .andExpect(status().isMethodNotAllowed());
+    void theOnlyVerbsOnThisResourceAreCreateReadAndDelete() throws Exception {
+        // Read and delete are available; modification is not. Rebinding and
+        // update stay unsupported, so PUT answers 405.
         mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
                         .put(PATH).contentType(MediaType.APPLICATION_JSON)
                         .content(body("public", "customers")))
@@ -272,14 +269,15 @@ class PostgresDatasetBindingControllerTest {
     }
 
     @Test
-    void theControllerExposesOnlyBindAndReadAndNeverTheOwnerOrSource() throws Exception {
-        // Two verbs, bind and read, and read takes no request body of any kind.
+    void theControllerExposesOnlyBindReadDeleteAndNeverTheOwnerOrSource() throws Exception {
+        // Three verbs — bind, read, and delete — and read and delete take no
+        // request body of any kind.
         assertThat(java.util.Arrays.stream(
                         PostgresDatasetBindingController.class.getDeclaredMethods())
                 .filter(method -> java.lang.reflect.Modifier.isPublic(method.getModifiers()))
                 .filter(method -> !method.isSynthetic())
                 .map(java.lang.reflect.Method::getName))
-                .containsExactly("bind", "getBinding");
+                .containsExactlyInAnyOrder("bind", "getBinding", "deleteBinding");
 
         // It holds only the existing binding service: no repository, no profiler,
         // no sanitizer, no run executor, no artifact store.

@@ -181,7 +181,7 @@ class PostgresDatasetSanitizationPostgresTest {
     /** The real binding service, so the fixture binding is verified as in production. */
     private PostgresDatasetBindingService bindingService() {
         return new PostgresDatasetBindingService(
-                bindings, datasets, discovery, providerOf(applicationSource()));
+                bindings, datasets, discovery, providerOf(applicationSource()), runs);
     }
 
     /** The real engine, over the real strategy implementations. */

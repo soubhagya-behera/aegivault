@@ -92,6 +92,9 @@ class PostgresDatasetProfilingPostgresTest {
     private PostgresSchemaDiscoveryService discovery;
 
     @Autowired
+    private com.aegivault.aegivault.sanitization.run.SanitizationRunRepository runRepository;
+
+    @Autowired
     private DatasetProfileService profileService;
 
     @BeforeAll
@@ -163,7 +166,7 @@ class PostgresDatasetProfilingPostgresTest {
     /** The real binding service, used to create the fixture binding. */
     private PostgresDatasetBindingService bindingService() {
         return new PostgresDatasetBindingService(
-                bindings, datasets, discovery, providerOf(applicationSource()));
+                bindings, datasets, discovery, providerOf(applicationSource()), runRepository);
     }
 
     private PostgresDatasetProfilingService service() {

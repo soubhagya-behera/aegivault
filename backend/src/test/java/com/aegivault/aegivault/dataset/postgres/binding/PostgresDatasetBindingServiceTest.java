@@ -3,9 +3,11 @@ package com.aegivault.aegivault.dataset.postgres.binding;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.aegivault.aegivault.dataset.Dataset;
@@ -17,6 +19,9 @@ import com.aegivault.aegivault.dataset.postgres.PostgresSchema;
 import com.aegivault.aegivault.dataset.postgres.PostgresSchemaDiscoveryService;
 import com.aegivault.aegivault.dataset.postgres.PostgresSourceConnectionException;
 import com.aegivault.aegivault.dataset.postgres.PostgresTable;
+import com.aegivault.aegivault.sanitization.run.RunStatus;
+import com.aegivault.aegivault.sanitization.run.SanitizationRunRepository;
+import com.aegivault.aegivault.sanitization.run.SanitizationSourceType;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
@@ -54,6 +59,8 @@ class PostgresDatasetBindingServiceTest {
 
     private PostgresDataSource source;
 
+    private SanitizationRunRepository runs;
+
     private UUID datasetId;
 
     @BeforeEach
@@ -61,6 +68,7 @@ class PostgresDatasetBindingServiceTest {
         bindings = mock(PostgresDatasetBindingRepository.class);
         datasets = mock(DatasetRepository.class);
         discovery = mock(PostgresSchemaDiscoveryService.class);
+        runs = mock(SanitizationRunRepository.class);
         source = sourceReportingSchema(SCHEMA);
         datasetId = UUID.randomUUID();
         when(datasets.findByIdAndOwnerSubject(datasetId, OWNER))
@@ -71,7 +79,7 @@ class PostgresDatasetBindingServiceTest {
         @SuppressWarnings("unchecked")
         ObjectProvider<PostgresDataSource> provider = mock(ObjectProvider.class);
         when(provider.getIfAvailable()).thenReturn(configured);
-        return new PostgresDatasetBindingService(bindings, datasets, discovery, provider);
+        return new PostgresDatasetBindingService(bindings, datasets, discovery, provider, runs);
     }
 
     private PostgresDataSource sourceReportingSchema(String schema) {
@@ -271,5 +279,69 @@ class PostgresDatasetBindingServiceTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> service.delete(OWNER, null))
                 .isInstanceOf(NullPointerException.class);
+    }
+
+    private void givenBindingExists() {
+        when(bindings.findByDatasetIdAndOwnerSubject(datasetId, OWNER))
+                .thenReturn(Optional.of(new PostgresDatasetBinding(datasetId, OWNER, SCHEMA, TABLE)));
+    }
+
+    private void givenActivePostgresRun(boolean active) {
+        when(runs.existsByDatasetIdAndOwnerSubjectAndSourceTypeAndStatusIn(
+                        eq(datasetId),
+                        eq(OWNER),
+                        eq(SanitizationSourceType.POSTGRESQL),
+                        eq(List.of(RunStatus.QUEUED, RunStatus.RUNNING))))
+                .thenReturn(active);
+    }
+
+    @Test
+    void anActivePostgresRunBlocksDeletionAndLeavesTheBindingIntact() {
+        givenBindingExists();
+        givenActivePostgresRun(true);
+
+        assertThatThrownBy(() -> service(source).delete(OWNER, datasetId))
+                .isInstanceOf(PostgresDatasetBindingActiveRunException.class)
+                .hasMessage(PostgresDatasetBindingActiveRunException.MESSAGE)
+                .hasMessage("PostgreSQL dataset binding cannot be deleted while a sanitization run is active.");
+        verify(bindings, never()).delete(any());
+    }
+
+    @Test
+    void theGuardCountsPostgresQueuedAndRunningRunsOnly() {
+        givenBindingExists();
+        givenActivePostgresRun(false);
+
+        // The exact existence query: this dataset, this owner, POSTGRESQL
+        // source kind, QUEUED or RUNNING status — so CSV runs and terminal
+        // runs can never match.
+        service(source).delete(OWNER, datasetId);
+
+        verify(runs).existsByDatasetIdAndOwnerSubjectAndSourceTypeAndStatusIn(
+                datasetId, OWNER, SanitizationSourceType.POSTGRESQL,
+                List.of(RunStatus.QUEUED, RunStatus.RUNNING));
+        verify(bindings).delete(any(PostgresDatasetBinding.class));
+    }
+
+    @Test
+    void aTerminalPostgresRunDoesNotBlockDeletion() {
+        // COMPLETED and FAILED rows are invisible to the guard query, which the
+        // repository answers with false; deletion then proceeds normally.
+        givenBindingExists();
+        givenActivePostgresRun(false);
+
+        service(source).delete(OWNER, datasetId);
+
+        verify(bindings).delete(any(PostgresDatasetBinding.class));
+    }
+
+    @Test
+    void aForeignBindingIsA404BeforeTheGuardIsEverConsulted() {
+        when(bindings.findByDatasetIdAndOwnerSubject(datasetId, OTHER)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service(source).delete(OTHER, datasetId))
+                .isInstanceOf(PostgresDatasetBindingNotFoundException.class);
+        verifyNoInteractions(runs);
+        verify(bindings, never()).delete(any());
     }
 }

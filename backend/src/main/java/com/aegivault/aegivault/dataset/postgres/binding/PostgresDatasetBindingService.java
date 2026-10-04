@@ -7,6 +7,10 @@ import com.aegivault.aegivault.dataset.postgres.PostgresIdentifiers;
 import com.aegivault.aegivault.dataset.postgres.PostgresSchemaDiscoveryService;
 import com.aegivault.aegivault.dataset.postgres.PostgresSourceConnectionException;
 import com.aegivault.aegivault.dataset.postgres.PostgresTable;
+import com.aegivault.aegivault.sanitization.run.RunStatus;
+import com.aegivault.aegivault.sanitization.run.SanitizationRunRepository;
+import com.aegivault.aegivault.sanitization.run.SanitizationSourceType;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.beans.factory.ObjectProvider;
@@ -57,15 +61,19 @@ public class PostgresDatasetBindingService {
 
     private final ObjectProvider<PostgresDataSource> source;
 
+    private final SanitizationRunRepository runs;
+
     public PostgresDatasetBindingService(
             PostgresDatasetBindingRepository bindings,
             DatasetRepository datasets,
             PostgresSchemaDiscoveryService discovery,
-            ObjectProvider<PostgresDataSource> source) {
+            ObjectProvider<PostgresDataSource> source,
+            SanitizationRunRepository runs) {
         this.bindings = Objects.requireNonNull(bindings, "bindings must not be null");
         this.datasets = Objects.requireNonNull(datasets, "datasets must not be null");
         this.discovery = Objects.requireNonNull(discovery, "discovery must not be null");
         this.source = Objects.requireNonNull(source, "source must not be null");
+        this.runs = Objects.requireNonNull(runs, "runs must not be null");
     }
 
     /**
@@ -140,12 +148,30 @@ public class PostgresDatasetBindingService {
      * <p>Deleting the dataset also removes its binding through the database
      * cascade, so a binding never outlives what it describes.
      *
+     * <p><strong>Active runs block deletion.</strong> PostgreSQL execution
+     * re-resolves the binding when a queued worker starts, so a {@code QUEUED}
+     * run must not lose its binding and a {@code RUNNING} run must not lose
+     * its binding either. When such a run exists the binding is left exactly
+     * as it is and a {@link PostgresDatasetBindingActiveRunException} is
+     * thrown instead. Terminal ({@code COMPLETED}, {@code FAILED}) runs never
+     * block, runs of another source kind never block, and no run row is
+     * modified, cancelled, or deleted here. The check and the delete run in
+     * one transaction, which narrows but does not close the race with a run
+     * being queued concurrently: fully race-free protection would need a
+     * larger schema redesign, so this guard is best-effort rather than
+     * absolute.
+     *
+     * <p><strong>Metadata only.</strong> No PostgreSQL source connection is
+     * opened: this operates on Aegivault rows alone.
+     *
      * @param ownerSubject calling owner, never blank; must own the dataset
      * @param datasetId    dataset to unbind, never null
      * @throws IllegalArgumentException when the owner is blank or the dataset is
      *         null
      * @throws PostgresDatasetBindingNotFoundException when there is no binding for
      *         this owner and dataset (identical to a foreign one)
+     * @throws PostgresDatasetBindingActiveRunException when a {@code QUEUED} or
+     *         {@code RUNNING} PostgreSQL run still references this dataset
      */
     @Transactional
     public void delete(String ownerSubject, UUID datasetId) {
@@ -153,6 +179,12 @@ public class PostgresDatasetBindingService {
         Objects.requireNonNull(datasetId, "datasetId must not be null");
         PostgresDatasetBinding binding = bindings.findByDatasetIdAndOwnerSubject(datasetId, owner)
                 .orElseThrow(PostgresDatasetBindingNotFoundException::new);
+        boolean active = runs.existsByDatasetIdAndOwnerSubjectAndSourceTypeAndStatusIn(
+                datasetId, owner, SanitizationSourceType.POSTGRESQL,
+                List.of(RunStatus.QUEUED, RunStatus.RUNNING));
+        if (active) {
+            throw new PostgresDatasetBindingActiveRunException();
+        }
         bindings.delete(binding);
     }
 

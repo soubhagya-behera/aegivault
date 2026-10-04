@@ -1666,8 +1666,8 @@ since changed.
 **GET is strictly read-only.** It updates, rebinds, deletes, or switches nothing,
 and the dataset's `source_type` is untouched — binding still records an
 association only, and the one-binding-per-dataset rule is unchanged.
-**DELETE and rebind are deliberately not exposed in this milestone**;
-reassignment stays an explicit delete-then-bind decision for a later change.
+**Rebind is deliberately not exposed**;
+reassignment stays an explicit delete-then-bind.
 **The existing `POST` binding route is unchanged** in request shape, 201 status,
 `Location` header, conflict behaviour, ownership, and source-type behaviour.
 
@@ -1692,6 +1692,49 @@ asserts only `DELETE` and `PUT` are 405, and the method-set assertion now
 expects `bind` and `getBinding`. **No new `@SpringBootTest` context, no new
 datasource pool, and no sleeps or retries were added**; `max_connections` was not
 touched.
+
+* `DELETE /api/datasets/{datasetId}/postgres/binding` lets an authenticated owner
+remove their dataset's PostgreSQL binding with **204 and no body**. **The actor
+comes exclusively from `@AuthenticationPrincipal Jwt jwt` → `jwt.getSubject()`**;
+the delete takes no request body, and an `ownerSubject`/`actorSubject` supplied
+as a query parameter, header, or body is simply not read. The endpoint delegates
+to the existing owner-scoped `PostgresDatasetBindingService.delete(...)`, so
+**a foreign dataset, a missing dataset, and an unbound dataset all return the
+same generic 404** with no ADMIN bypass. **Deletion is blocked while a
+PostgreSQL sanitization run is `QUEUED` or `RUNNING`**: PostgreSQL execution
+re-resolves the binding when a queued worker starts, so the binding is left
+intact and the endpoint answers **409** with the fixed safe message
+`PostgreSQL dataset binding cannot be deleted while a sanitization run is
+active.`, naming no run, count, policy, table, or actor. The guard is one
+database-side existence query over dataset, `POSTGRESQL` source type, and
+`QUEUED`/`RUNNING` status — **terminal (`COMPLETED`/`FAILED`) runs and CSV runs
+never block** — executed in the same transaction as the delete, which narrows
+but does not close the race with a concurrently queued run. **Deletion is
+metadata-only**: it opens no PostgreSQL source connection and never modifies,
+cancels, or deletes runs, artifacts, or profiles, so terminal run history stays
+intact and a new binding can be created afterwards under the existing
+one-binding-per-dataset rule. **No binding-deletion audit event was added**, and
+`Dataset.source_type` stays `CSV`.
+
+**Tests added (no new Spring context).** 14 standalone MockMvc tests in the new
+`PostgresDatasetBindingDeleteControllerTest` (204 on success; identical 404 for
+foreign, missing, and unbound datasets; 400 for malformed UUID with no service
+interaction; 409 for active `QUEUED` and `RUNNING` runs; 204 for completed,
+failed, and CSV runs; actor-subject query parameter ignored; ownerSubject
+body/header cannot override the JWT; empty body on 204; and the safe 409
+message carrying no run/policy/table detail), plus guard unit tests in
+`PostgresDatasetBindingServiceTest` (active run blocks with the fixed message
+and no delete; the exact existence query filters dataset, owner, `POSTGRESQL`,
+and `QUEUED`/`RUNNING`; terminal runs allow deletion; foreign delete is a 404
+before the guard is consulted), plus 4 integration tests in the existing cached
+`PostgresDatasetBindingPostgresTest` (terminal runs allow deletion with runs,
+artifact bytes, and profile retained and rebinding possible; `QUEUED` blocks
+with binding and run intact; `RUNNING` blocks with binding and run intact; a
+queued CSV run does not block). Two existing tests were updated because they
+asserted the delete route did not exist: the route-verb test now asserts only
+`PUT` is 405, and the method-set assertion now expects `bind`, `getBinding`,
+and `deleteBinding`. **No new `@SpringBootTest` context, no new datasource
+pool, and no sleeps or retries were added**; `max_connections` was not touched.
 
 ## Next planned step
 

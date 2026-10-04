@@ -232,7 +232,7 @@ class PostgresSanitizationRunJobTest {
 
     private PostgresDatasetBindingService bindingService() {
         return new PostgresDatasetBindingService(
-                bindings, datasets, discovery, providerOf(applicationSource()));
+                bindings, datasets, discovery, providerOf(applicationSource()), runs);
     }
 
     private PostgresDatasetSanitizationService sanitizationService(SanitizationRunExecutor beanExecutor) {

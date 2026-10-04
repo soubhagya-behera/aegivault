@@ -1,5 +1,6 @@
 package com.aegivault.aegivault.sanitization.run;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -23,4 +24,16 @@ public interface SanitizationRunRepository extends JpaRepository<SanitizationRun
     List<SanitizationRun> findByDatasetIdAndOwnerSubject(UUID datasetId, String ownerSubject);
 
     List<SanitizationRun> findByOwnerSubjectOrderByCreatedAtDescIdDesc(String ownerSubject);
+
+    /**
+     * Database-side existence check for active runs of one source kind against
+     * one owned dataset. Used by PostgreSQL binding deletion to refuse removal
+     * while a {@code QUEUED} or {@code RUNNING} {@code POSTGRESQL} run exists;
+     * terminal runs and runs of another source kind never match.
+     */
+    boolean existsByDatasetIdAndOwnerSubjectAndSourceTypeAndStatusIn(
+            UUID datasetId,
+            String ownerSubject,
+            SanitizationSourceType sourceType,
+            Collection<RunStatus> statuses);
 }

@@ -949,10 +949,39 @@ failRun     -> FAILED (error code/stage/message + completed_at)
   **The read is read-only.** Nothing is updated, rebound, deleted, or switched,
   and the dataset's `source_type` is untouched — binding still records an
   association only, and the one-binding-per-dataset rule is unchanged. **No
-  DELETE or rebind route is exposed in this milestone**: reassignment remains an
-  explicit delete-then-bind decision for a later, separate change. The existing
-  `POST` binding route is unchanged in every respect — request shape, 201 status,
+  rebind route is exposed**: reassignment remains an explicit delete-then-bind.
+  The existing `POST` binding route is unchanged in every respect — request shape, 201 status,
   `Location` header, conflict behaviour, ownership, and source-type behaviour.
+
+  **The owner can now delete their own binding**:
+  `DELETE /api/datasets/{datasetId}/postgres/binding` answers `204` with no
+  body. The actor is `jwt.getSubject()` and nothing else — the delete takes no
+  request body, and `ownerSubject` in a query parameter, header, or body is
+  simply not read. It delegates to the existing owner-scoped
+  `PostgresDatasetBindingService.delete(...)`, so a foreign dataset, a missing
+  dataset, and a dataset the owner has not bound all produce the **same generic
+  404**. There is no ADMIN bypass.
+
+  **Deletion is blocked while a PostgreSQL sanitization run is active.**
+  PostgreSQL execution re-resolves the binding when a queued worker starts, so
+  a `QUEUED` run must not lose its binding and a `RUNNING` run must not lose
+  its binding either: when such a run exists the binding is left exactly as it
+  is and the endpoint answers `409` with the fixed safe message
+  `PostgreSQL dataset binding cannot be deleted while a sanitization run is
+  active.`, which names no run, count, policy, table, or actor. The guard is
+  one database-side existence query over dataset, `POSTGRESQL` source type,
+  and `QUEUED`/`RUNNING` status, so terminal (`COMPLETED`, `FAILED`) runs and
+  CSV runs never block. The check and the delete run in one transaction, which
+  narrows but does not close the race with a run being queued concurrently —
+  fully race-free protection would need a larger schema redesign, so the guard
+  is best-effort rather than absolute.
+
+  **Deletion is metadata-only and retains history.** It removes the binding row
+  and nothing else: it opens no PostgreSQL source connection, and it never
+  modifies, cancels, or deletes runs, artifacts, or profiles — terminal run
+  history stays intact and a new binding can be created afterwards under the
+  existing one-binding-per-dataset rule. No binding-deletion audit event was
+  added.
 
   **An authenticated PostgreSQL profiling API now exists**:
   `POST /api/datasets/{datasetId}/postgres/profile`, with **no request body** —

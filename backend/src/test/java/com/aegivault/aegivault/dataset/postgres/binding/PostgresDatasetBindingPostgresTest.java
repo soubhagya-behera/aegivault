@@ -71,6 +71,15 @@ class PostgresDatasetBindingPostgresTest {
     @Autowired
     private PostgresDatasetBindingRepository bindingRepository;
 
+    @Autowired
+    private com.aegivault.aegivault.sanitization.run.SanitizationRunRepository runRepository;
+
+    @Autowired
+    private com.aegivault.aegivault.sanitization.artifact.SanitizationArtifactStore artifacts;
+
+    @Autowired
+    private com.aegivault.aegivault.dataset.profile.DatasetProfileService profileService;
+
     @PersistenceContext
     private EntityManager entityManager;
 
@@ -159,7 +168,7 @@ class PostgresDatasetBindingPostgresTest {
                     }
                 };
         return new PostgresDatasetBindingService(
-                bindingRepository, datasets, discovery, provider);
+                bindingRepository, datasets, discovery, provider, runRepository);
     }
     @Test
     void aRealDatasetIsBoundToARealSyntheticTableAndReadBack() {
@@ -359,6 +368,153 @@ class PostgresDatasetBindingPostgresTest {
                 .isInstanceOf(PostgresDatasetBindingNotFoundException.class);
         // Unbinding a dataset does not remove the dataset itself.
         assertThat(datasets.findById(dataset.getId())).isPresent();
+    }
+
+    private com.aegivault.aegivault.sanitization.run.PolicySnapshot snapshot() {
+        return com.aegivault.aegivault.sanitization.run.PolicySnapshot.fromPlan(
+                "default",
+                "v1",
+                com.aegivault.aegivault.sanitization.DefaultTransformationPolicy.plan());
+    }
+
+    private com.aegivault.aegivault.sanitization.run.SanitizationRun queuedRun(
+            Dataset dataset, com.aegivault.aegivault.sanitization.run.SanitizationSourceType sourceType) {
+        return runRepository.saveAndFlush(new com.aegivault.aegivault.sanitization.run.SanitizationRun(
+                dataset, OWNER, snapshot(), sourceType));
+    }
+
+    private com.aegivault.aegivault.sanitization.run.SanitizationRun runningPostgresRun(Dataset dataset) {
+        com.aegivault.aegivault.sanitization.run.SanitizationRun run = queuedRun(
+                dataset, com.aegivault.aegivault.sanitization.run.SanitizationSourceType.POSTGRESQL);
+        run.markRunning();
+        return runRepository.saveAndFlush(run);
+    }
+
+    private com.aegivault.aegivault.sanitization.run.SanitizationRun completedPostgresRun(Dataset dataset) {
+        com.aegivault.aegivault.sanitization.run.SanitizationRun run = queuedRun(
+                dataset, com.aegivault.aegivault.sanitization.run.SanitizationSourceType.POSTGRESQL);
+        run.markRunning();
+        run.markCompleted(new com.aegivault.aegivault.sanitization.run.RunResult(1, 1, 0, 2));
+        return runRepository.saveAndFlush(run);
+    }
+
+    private com.aegivault.aegivault.sanitization.run.SanitizationRun failedPostgresRun(Dataset dataset) {
+        com.aegivault.aegivault.sanitization.run.SanitizationRun run = queuedRun(
+                dataset, com.aegivault.aegivault.sanitization.run.SanitizationSourceType.POSTGRESQL);
+        run.markRunning();
+        run.markFailed(new com.aegivault.aegivault.sanitization.run.RunFailure(
+                "POLICY_GAP", "TRANSFORM", "no transformation is configured for a detected type"));
+        return runRepository.saveAndFlush(run);
+    }
+
+    private com.aegivault.aegivault.pii.profile.DatasetProfile profileFor(Dataset dataset) {
+        return new com.aegivault.aegivault.pii.profile.DatasetProfile(
+                dataset.getId(),
+                List.of(new com.aegivault.aegivault.pii.profile.ColumnProfile("id", 1, 1, 1,
+                        java.util.Map.of(), java.util.Map.of(), java.util.Set.of())),
+                1,
+                100);
+    }
+
+    @Test
+    void terminalPostgresRunsDoNotBlockDeletionAndHistorySurvives() throws Exception {
+        Dataset dataset = datasetFor(OWNER);
+        PostgresDatasetBindingService service = service();
+        service.bind(OWNER, dataset.getId(), "public", FIXTURE);
+
+        // One completed and one failed PostgreSQL run, plus a stored profile
+        // and a stored artifact on the completed run.
+        com.aegivault.aegivault.sanitization.run.SanitizationRun completed =
+                completedPostgresRun(dataset);
+        com.aegivault.aegivault.sanitization.run.SanitizationRun failed = failedPostgresRun(dataset);
+        byte[] csv = "id,note\n1,synthetic only\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        artifacts.storeArtifact(OWNER, completed.getId(), new java.io.ByteArrayInputStream(csv));
+        profileService.saveProfile(OWNER, dataset.getId(), profileFor(dataset));
+
+        service.delete(OWNER, dataset.getId());
+
+        // The binding is gone: the read is the existing safe 404.
+        assertThatThrownBy(() -> service.get(OWNER, dataset.getId()))
+                .isInstanceOf(PostgresDatasetBindingNotFoundException.class);
+        assertThat(bindingRepository.findById(dataset.getId())).isEmpty();
+
+        // Both runs still exist with their terminal states and source types
+        // intact: deletion never touches run rows.
+        assertThat(runRepository.findByIdAndOwnerSubject(completed.getId(), OWNER))
+                .hasValueSatisfying(run -> {
+                    assertThat(run.getStatus())
+                            .isEqualTo(com.aegivault.aegivault.sanitization.run.RunStatus.COMPLETED);
+                    assertThat(run.getSourceType()).isEqualTo(
+                            com.aegivault.aegivault.sanitization.run.SanitizationSourceType.POSTGRESQL);
+                });
+        assertThat(runRepository.findByIdAndOwnerSubject(failed.getId(), OWNER))
+                .hasValueSatisfying(run -> assertThat(run.getStatus())
+                        .isEqualTo(com.aegivault.aegivault.sanitization.run.RunStatus.FAILED));
+
+        // The completed run's artifact is still downloadable, byte for byte.
+        try (java.io.InputStream stored = artifacts.openArtifact(OWNER, completed.getId())) {
+            assertThat(stored.readAllBytes()).isEqualTo(csv);
+        }
+
+        // The stored profile is untouched.
+        assertThat(profileService.getProfile(OWNER, dataset.getId()).datasetId())
+                .isEqualTo(dataset.getId());
+
+        // And the dataset accepts a new binding afterwards, under the existing
+        // one-binding-per-dataset rule.
+        service.bind(OWNER, dataset.getId(), "public", FIXTURE);
+        assertThat(service.get(OWNER, dataset.getId()).getTableName()).isEqualTo(FIXTURE);
+    }
+
+    @Test
+    void aQueuedPostgresRunBlocksDeletionAndLeavesTheBinding() {
+        Dataset dataset = datasetFor(OWNER);
+        PostgresDatasetBindingService service = service();
+        service.bind(OWNER, dataset.getId(), "public", FIXTURE);
+        com.aegivault.aegivault.sanitization.run.SanitizationRun queued = queuedRun(
+                dataset, com.aegivault.aegivault.sanitization.run.SanitizationSourceType.POSTGRESQL);
+
+        assertThatThrownBy(() -> service.delete(OWNER, dataset.getId()))
+                .isInstanceOf(PostgresDatasetBindingActiveRunException.class)
+                .hasMessage(PostgresDatasetBindingActiveRunException.MESSAGE);
+
+        // The binding still exists and the run was never altered.
+        assertThat(service.get(OWNER, dataset.getId()).getTableName()).isEqualTo(FIXTURE);
+        assertThat(runRepository.findByIdAndOwnerSubject(queued.getId(), OWNER))
+                .hasValueSatisfying(run -> assertThat(run.getStatus())
+                        .isEqualTo(com.aegivault.aegivault.sanitization.run.RunStatus.QUEUED));
+    }
+
+    @Test
+    void aRunningPostgresRunBlocksDeletionAndLeavesTheBinding() {
+        Dataset dataset = datasetFor(OWNER);
+        PostgresDatasetBindingService service = service();
+        service.bind(OWNER, dataset.getId(), "public", FIXTURE);
+        com.aegivault.aegivault.sanitization.run.SanitizationRun running = runningPostgresRun(dataset);
+
+        assertThatThrownBy(() -> service.delete(OWNER, dataset.getId()))
+                .isInstanceOf(PostgresDatasetBindingActiveRunException.class)
+                .hasMessage(PostgresDatasetBindingActiveRunException.MESSAGE);
+
+        // The binding still exists and the run was never altered.
+        assertThat(service.get(OWNER, dataset.getId()).getTableName()).isEqualTo(FIXTURE);
+        assertThat(runRepository.findByIdAndOwnerSubject(running.getId(), OWNER))
+                .hasValueSatisfying(run -> assertThat(run.getStatus())
+                        .isEqualTo(com.aegivault.aegivault.sanitization.run.RunStatus.RUNNING));
+    }
+
+    @Test
+    void aQueuedCsvRunDoesNotBlockPostgresBindingDeletion() {
+        Dataset dataset = datasetFor(OWNER);
+        PostgresDatasetBindingService service = service();
+        service.bind(OWNER, dataset.getId(), "public", FIXTURE);
+        // Even a non-terminal CSV run is not a PostgreSQL blocker.
+        queuedRun(dataset, com.aegivault.aegivault.sanitization.run.SanitizationSourceType.CSV);
+
+        service.delete(OWNER, dataset.getId());
+
+        assertThatThrownBy(() -> service.get(OWNER, dataset.getId()))
+                .isInstanceOf(PostgresDatasetBindingNotFoundException.class);
     }
 
     @Test

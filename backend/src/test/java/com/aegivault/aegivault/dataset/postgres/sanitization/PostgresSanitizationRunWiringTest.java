@@ -159,7 +159,9 @@ class PostgresSanitizationRunWiringTest {
                     org.mockito.Mockito.mock(PostgresDatasetBindingRepository.class),
                     org.mockito.Mockito.mock(DatasetRepository.class),
                     discovery,
-                    providerOf(source));
+                    providerOf(source),
+                    org.mockito.Mockito.mock(
+                            com.aegivault.aegivault.sanitization.run.SanitizationRunRepository.class));
         }
     }
 
