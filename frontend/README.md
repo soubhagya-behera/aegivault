@@ -4,9 +4,9 @@ React + Vite (**TypeScript**) frontend for the Aegivault data privacy, security,
 and AI governance platform. Talks to the existing Spring Boot backend without
 modifying it.
 
-> Status: **Phase 2B — TypeScript, API client, and authentication foundation.**
-> The protected `/` route renders an honest placeholder. The landing page,
-> dashboard, and remaining feature modules are built in later phases.
+> Status: **Phase 3A — public landing page (navigation + hero) at `/home`.**
+> The protected `/` route still renders the honest placeholder; the feature
+> showcase, scrollytelling, footer, and dashboard are built in later phases.
 
 ## Tech stack
 
@@ -34,8 +34,9 @@ npm install
 npm run dev
 ```
 
-The dev server starts on <http://localhost:5173>. Open `/login` (or register a
-real account against the backend).
+The dev server starts on <http://localhost:5173>. The public landing page is at
+`/home`; open `/login` (or register a real account against the backend) for the
+protected workspace.
 
 ## Commands
 
