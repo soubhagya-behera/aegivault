@@ -1,0 +1,165 @@
+/* =============================================================================
+ * Aegivault — Semantic Design Tokens
+ * -----------------------------------------------------------------------------
+ * Canonical source of truth for the "Aegivault Controlled Contrast" system.
+ *
+ * These CSS custom properties are framework-agnostic on purpose: Tailwind
+ * (v3 JS config or v4 @theme) and any plain CSS both read from here so the
+ * palette never drifts. Do NOT scatter raw hex values through components;
+ * always reference a semantic token name below.
+ *
+ * Contrast targets (see DESIGN_SYSTEM.md):
+ *   - Normal text  >= 4.5:1 (WCAG AA)
+ *   - Large text   >= 3:1   (WCAG AA)
+ *   - UI boundaries / meaningful graphical indicators >= 3:1 where applicable
+ * ========================================================================== */
+
+:root {
+  /* ---- Raw palette (starting values; documented, not for direct use) ------- */
+  --aegivault-obsidian: #0b0c0e; /* application canvas                  */
+  --aegivault-graphite: #141619; /* surface                             */
+  --aegivault-graphite-raised: #1c2022; /* raised surface               */
+  --aegivault-graphite-highest: #232826; /* highest elevation surface   */
+  --aegivault-bone: #ece6d8; /* paper / light surface                 */
+  --aegivault-text-primary: #f2ede2; /* primary light text             */
+  --aegivault-text-on-light: #171917; /* dark text on light surfaces   */
+  --aegivault-text-secondary: #a7a99f; /* secondary text               */
+  --aegivault-border: #333833; /* borders and dividers                 */
+  --aegivault-oxide: #cf5a3d; /* oxide accent                          */
+  --aegivault-success: #4f9f81; /* positive / security-allowed          */
+  --aegivault-warning: #da9969; /* warning / review                     */
+  --aegivault-danger: #d95d52; /* blocked / error                      */
+  --aegivault-info: #708285; /* informational accent                  */
+
+  /* ---- Semantic color tokens (USE THESE IN COMPONENTS) -------------------- */
+  --color-canvas: var(--aegivault-obsidian);
+  --color-surface: var(--aegivault-graphite);
+  --color-surface-raised: var(--aegivault-graphite-raised);
+  --color-surface-highest: var(--aegivault-graphite-highest);
+  --color-surface-paper: var(--aegivault-bone); /* selective editorial use */
+
+  --color-text: var(--aegivault-text-primary);
+  --color-text-muted: var(--aegivault-text-secondary);
+  --color-text-inverse: var(--aegivault-text-on-light); /* text on --color-surface-paper */
+
+  --color-border: var(--aegivault-border);
+  --color-border-strong: #464a45; /* slightly stronger divider for tables */
+
+  --color-accent: var(--aegivault-oxide);
+  --color-accent-hover: #d96b4d; /* hover state, kept within oxide family */
+  --color-accent-contrast: #14110f; /* text/icon on accent fills           */
+
+  /* Security-state colors. Never used as decoration; each pairs with an
+     explicit text label so status never depends on color alone. */
+  --color-success: var(--aegivault-success); /* ALLOW / allowed            */
+  --color-warning: var(--aegivault-warning); /* review / caution           */
+  --color-danger: var(--aegivault-danger); /* BLOCK / failed / error       */
+  --color-info: var(--aegivault-info); /* informational                   */
+
+  /* Subtle translucent fills derived from the security colors, for badges and
+     row accents. Foreground text on these remains the full-strength color. */
+  --color-success-bg: rgba(79, 159, 129, 0.14);
+  --color-warning-bg: rgba(218, 153, 105, 0.14);
+  --color-danger-bg: rgba(217, 93, 82, 0.14);
+  --color-info-bg: rgba(112, 130, 133, 0.16);
+  /* ---- Typography --------------------------------------------------------- */
+  /* Preferred pairing: Space Grotesk (display), Inter (UI/body),
+     IBM Plex Mono (metadata/technical). Sensible local fallbacks; no
+     third-party runtime requests are assumed by these stacks. */
+  --font-display: "Space Grotesk", "Inter", system-ui, -apple-system, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", "Cascadia Mono",
+    Menlo, Consolas, monospace;
+
+  /* Disciplined type scale (rem, 1rem = 16px base). */
+  --text-xs: 0.75rem; /* 12px — micro labels, table meta */
+  --text-sm: 0.8125rem; /* 13px — dense UI, forms           */
+  --text-base: 0.9375rem; /* 15px — body                     */
+  --text-md: 1rem; /* 16px — comfortable body          */
+  --text-lg: 1.125rem; /* 18px — lead paragraph            */
+  --text-xl: 1.5rem; /* 24px — section heading           */
+  --text-2xl: 2rem; /* 32px — page heading              */
+  --text-3xl: 2.75rem; /* 44px — hero                      */
+  --text-4xl: 3.5rem; /* 56px — display (desktop hero)    */
+
+  --leading-tight: 1.1;
+  --leading-snug: 1.25;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+
+  --tracking-tight: -0.02em;
+  --tracking-wide: 0.08em; /* eyebrow / technical labels */
+
+  /* ---- Spacing scale (4px base) ------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
+  --space-24: 6rem;
+
+  /* ---- Layout / containers ------------------------------------------------ */
+  --container-app: 1200px; /* operational dashboard content max width */
+  --container-measure: 68ch; /* readable measure for editorial copy     */
+  --sidebar-width: 248px;
+  --sidebar-width-collapsed: 68px;
+  --topbar-height: 60px;
+
+  /* ---- Radius (restrained; not everything is a card) ---------------------- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+
+  /* ---- Borders & elevation ------------------------------------------------ */
+  --border-width: 1px;
+  --border-width-strong: 2px;
+  --elevation-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --elevation-2: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --elevation-3: 0 12px 40px rgba(0, 0, 0, 0.55);
+
+  /* ---- Focus -------------------------------------------------------------- */
+  --focus-ring: var(--aegivault-oxide);
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* ---- Motion (defaults; see ANIMATION_SPEC.md) --------------------------- */
+  --ease-primary: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-hover: 180ms; /* hover / focus feedback    */
+  --dur-press: 120ms; /* press feedback            */
+  --dur-reveal: 420ms; /* standard reveal           */
+  --dur-hero: 700ms; /* hero sequence             */
+  --dur-layout: 280ms; /* layout transitions        */
+
+  /* Interactive hit-area target (accessibility). */
+  --hit-target: 44px;
+}
+
+/* Honor reduced motion globally: collapse travel/duration, keep content
+   fully accessible. Reduced-motion users get immediate/minimal transitions. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-hover: 0ms;
+    --dur-press: 0ms;
+    --dur-reveal: 0ms;
+    --dur-hero: 0ms;
+    --dur-layout: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

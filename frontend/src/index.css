@@ -1,0 +1,85 @@
+@import "tailwindcss";
+@import "./styles/tokens.css";
+
+/* =============================================================================
+ * Tailwind v4 CSS-first theme bridge.
+ * -----------------------------------------------------------------------------
+ * tokens.css remains the single source of truth for every design token. We do
+ * NOT redefine values here. Using `@theme inline`, each Tailwind utility key
+ * (bg-canvas, text-text, border-border, font-display, rounded-md, ...) resolves
+ * to the existing custom property from tokens.css, so there is exactly one
+ * definition of each token in the project.
+ * ========================================================================== */
+@theme inline {
+  /* Surfaces */
+  --color-canvas: var(--color-canvas);
+  --color-surface: var(--color-surface);
+  --color-surface-raised: var(--color-surface-raised);
+  --color-surface-highest: var(--color-surface-highest);
+  --color-surface-paper: var(--color-surface-paper);
+
+  /* Text */
+  --color-text: var(--color-text);
+  --color-text-muted: var(--color-text-muted);
+  --color-text-inverse: var(--color-text-inverse);
+
+  /* Lines */
+  --color-border: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
+
+  /* Accent + security states */
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-contrast: var(--color-accent-contrast);
+  --color-success: var(--color-success);
+  --color-warning: var(--color-warning);
+  --color-danger: var(--color-danger);
+  --color-info: var(--color-info);
+
+  /* Type families */
+  --font-display: var(--font-display);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  /* Radius */
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-pill: var(--radius-pill);
+
+  /* Containers (max-w-* reads from the --container-* namespace in v4) */
+  --container-app: var(--container-app);
+  --container-measure: var(--container-measure);
+
+  /* Security-state translucent fills (badges, alert backgrounds) */
+  --color-accent-bg: var(--color-accent-bg);
+  --color-success-bg: var(--color-success-bg);
+  --color-warning-bg: var(--color-warning-bg);
+  --color-danger-bg: var(--color-danger-bg);
+  --color-info-bg: var(--color-info-bg);
+}
+
+/* Base document defaults using the semantic tokens. */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-canvas);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible keyboard focus everywhere, using the oxide focus token. */
+  :focus-visible {
+    outline: var(--focus-ring-width) solid var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
+  }
+}
