@@ -95,6 +95,35 @@ never scatter hex values through JSX.
   dividers. Reach for `--color-surface-raised` / `-highest` and the elevation
   shadows only when a surface genuinely floats (menus, popovers, modals).
 
+### 3.2b Marketing chapters (Phase 3E, PUBLIC /home ONLY)
+
+Five full-bleed chapters, each scoped under `data-mkt-chapter` in
+`features/marketing/marketing.css` so the dashboard is untouched. Components
+keep reading `var(--color-*)`; the chapter remaps them locally. The Phase 3D
+beige/terracotta/olive direction is retired — no beige survives under a new
+name.
+
+| Chapter  | Scope value | Canvas / surface | Text / accents | Personality |
+| -------- | ----------- | ---------------- | -------------- | ----------- |
+| Opening  | `opening`   | graphite `#090C12`, deep `#121824` | ice `#F4F7FC`, secondary `#A5AEC0`, cobalt glow, lime CTA + highlights | immersive graphite, oversized type, live pipeline |
+| Platform | `platform`  | ice `#F4F7FC`, white cards | ink `#141A26`, muted `#3D4759`, cobalt-deep `#3350D8` selection | cool-white explorer, vivid blue selection |
+| Workflow | `workflow`  | midnight `#0B1326`, raised `#111B36` | ice text, cobalt spine, lime active stages | deep-blue pinned narrative |
+| Evidence | `evidence`  | graphite `#090C12` | ice text, lime verify, coral `#FF6B61` BLOCK | high-contrast audit finale |
+| Convert  | `convert`   | cobalt `#4169FF` field, graphite card | ice display type (large), lime rule | bold memorable CTA |
+
+Rationale: graphite/cobalt/lime gives the confidence the reference direction
+asks for while staying a technical product story — cobalt marks system
+behavior, lime marks selection/success highlights only, coral marks BLOCK.
+Contrast: white small text on luminous cobalt is borderline, so text-bearing
+fills use cobalt-deep `#3350D8` (~6.4:1 with white); luminous cobalt is kept
+for large display type, rules, and glow. Ink/muted on ice and ice/muted on
+graphite all clear 4.5:1. Status colors keep their text labels everywhere.
+
+Chapter 02 layout note: the Platform capability carousel cards reuse the
+platform chapter tokens above (white surfaces, cobalt selection) — no new
+colors. Carousel cards, the workflow schematic, and the audit figure share
+one caption convention: `Schematic — any example values are fictional.`
+
 ### 3.3 Security-state semantics (critical)
 
 Security states are **meaning, not decoration**. Every state pairs a color with

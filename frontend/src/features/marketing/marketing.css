@@ -1,0 +1,371 @@
+/* =============================================================================
+ * Aegivault marketing chapters (Phase 3E, PUBLIC /home ONLY).
+ * ---------------------------------------------------------------------------
+ * Bold chapter palette: graphite opening → cool-white platform → midnight
+ * workflow → graphite evidence → cobalt conversion. Scoped under
+ * [data-mkt-chapter]; the authenticated dashboard is never affected.
+ * Components keep reading var(--color-*); each chapter remaps them locally.
+ * ========================================================================== */
+
+[data-mkt-chapter] {
+  transition:
+    background-color var(--dur-chapter) var(--ease-primary),
+    color var(--dur-chapter) var(--ease-primary);
+}
+
+/* ---- Opening + evidence: graphite dark ---------------------------------- */
+[data-mkt-chapter="opening"],
+[data-mkt-chapter="evidence"] {
+  background-color: var(--mkt-graphite);
+  color: var(--mkt-ice);
+  --color-text: var(--mkt-ice);
+  --color-text-muted: var(--mkt-ice-muted);
+  --color-border: var(--mkt-line-dark);
+  --color-border-strong: var(--mkt-line-dark-strong);
+  --color-surface: var(--mkt-deep);
+  --color-surface-raised: var(--mkt-deep-raised);
+  --color-canvas: #070a10;
+  --color-accent: var(--mkt-cobalt);
+  --color-accent-hover: var(--mkt-cobalt-hover);
+  --color-accent-contrast: #ffffff;
+}
+
+/* ---- Platform: cool white ----------------------------------------------- */
+[data-mkt-chapter="platform"] {
+  background-color: var(--mkt-ice);
+  color: var(--mkt-ink);
+  --color-text: var(--mkt-ink);
+  --color-text-muted: var(--mkt-ink-muted);
+  --color-border: var(--mkt-ink-line);
+  --color-border-strong: var(--mkt-ink-line-strong);
+  --color-surface: #ffffff;
+  --color-surface-raised: #e8edf5;
+  --color-canvas: #e2e8f2;
+  --color-accent: var(--mkt-cobalt-deep);
+  --color-accent-hover: #2c46bd;
+  --color-accent-contrast: #ffffff;
+}
+
+/* ---- Workflow: midnight deep blue ---------------------------------------- */
+[data-mkt-chapter="workflow"] {
+  background-color: var(--mkt-midnight);
+  color: var(--mkt-ice);
+  --color-text: var(--mkt-ice);
+  --color-text-muted: var(--mkt-ice-muted);
+  --color-border: var(--mkt-line-dark);
+  --color-border-strong: var(--mkt-line-dark-strong);
+  --color-surface: var(--mkt-midnight-raised);
+  --color-surface-raised: #182446;
+  --color-canvas: #080e20;
+  --color-accent: var(--mkt-cobalt);
+  --color-accent-hover: var(--mkt-cobalt-hover);
+  --color-accent-contrast: #ffffff;
+}
+
+/* ---- Conversion: bold cobalt field ----------------------------------------
+   Display type sits directly on cobalt (large, ~4.5:1); body copy lives on
+   graphite cards inside the field so normal text keeps full contrast. */
+[data-mkt-chapter="convert"] {
+  background-color: var(--mkt-cobalt);
+  color: #ffffff;
+  --color-text: #ffffff;
+  --color-text-muted: #e4e9ff;
+  --color-border: rgba(255, 255, 255, 0.28);
+  --color-border-strong: rgba(255, 255, 255, 0.5);
+  --color-surface: var(--mkt-graphite);
+  --color-surface-raised: var(--mkt-deep);
+  --color-canvas: var(--mkt-graphite);
+  --color-accent: var(--mkt-lime);
+  --color-accent-hover: #d8ff7a;
+  --color-accent-contrast: var(--mkt-ink);
+}
+
+/* ---- Public navigation scope (PublicLayout only — never the dashboard) ----
+   The sticky nav floats over every chapter, so it carries the opening remap
+   (cobalt actions, cobalt focus) wherever the page is scrolled. */
+.mkt-nav-scope {
+  --color-accent: var(--mkt-cobalt);
+  --color-accent-hover: var(--mkt-cobalt-hover);
+  --color-accent-contrast: #ffffff;
+  --focus-ring: var(--mkt-cobalt);
+}
+
+[data-mkt-chapter="convert"] {
+  --focus-ring: var(--mkt-lime);
+}
+
+/* ---- Editorial display ---------------------------------------------------- */
+.mkt-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.03em;
+  line-height: 0.96;
+  text-wrap: balance;
+}
+
+.mkt-outline-word {
+  -webkit-text-stroke: 1.5px rgba(244, 247, 252, 0.22);
+  color: transparent;
+}
+
+/* ---- Live-pipeline loops (inside the visual panel, never behind prose) --- */
+@keyframes mkt-chip-drift {
+  from { transform: translateX(0); opacity: 0; }
+  12%, 82% { opacity: 1; }
+  to { transform: translateX(-16px); opacity: 0; }
+}
+
+@keyframes mkt-scan-x {
+  0% { left: 2%; opacity: 0; }
+  10%, 90% { opacity: 1; }
+  100% { left: 96%; opacity: 0; }
+}
+
+@keyframes mkt-dash-crawl {
+  to { stroke-dashoffset: -28; }
+}
+
+@keyframes mkt-drift-slow {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-32px, 18px, 0); }
+}
+
+@keyframes mkt-blink-caret {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+
+.mkt-chips { animation: mkt-chip-drift 5.2s linear infinite; }
+.mkt-scan-x {
+  animation: mkt-scan-x 3.4s var(--ease-primary) infinite;
+  will-change: left, opacity;
+}
+.mkt-dash-flow {
+  stroke-dasharray: 7 7;
+  animation: mkt-dash-crawl 1.4s linear infinite;
+}
+.mkt-ambient {
+  animation: mkt-drift-slow 24s ease-in-out infinite alternate;
+  will-change: transform;
+}
+.mkt-caret { animation: mkt-blink-caret 1.1s steps(1) infinite; }
+
+/* ---- Mobile folding-card rails (Phase 3G) ---------------------------------
+   Compact index rails scroll natively with snap inside their padded
+   container, so the page itself never gains a horizontal scrollbar. */
+.mkt-snap-rail {
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+/* ---- Sticky storytelling (desktop only) ----------------------------------- */
+@media (min-width: 1024px) {
+  .mkt-sticky-visual { position: sticky; top: 5.5rem; align-self: start; }
+}
+
+/* ---- Mobile workflow journey (pinned, below lg) -----------------------------
+   The runway supplies deliberate scroll distance — five sticky-heights, so
+   each of the five stages owns one full interval and Verify completes
+   before the pin releases into the next chapter. The pin holds one compact
+   stage in view below the fixed 4rem nav (svh with vh fallback); it never
+   clips content. Native vertical scrolling stays in charge throughout. */
+.mkt-wf-runway {
+  height: calc((100vh - 4rem) * 5);
+  height: calc((100svh - 4rem) * 5);
+}
+
+.mkt-wf-pin {
+  position: sticky;
+  top: 4rem;
+  height: calc(100vh - 4rem);
+  height: calc(100svh - 4rem);
+  overflow: visible;
+}
+
+/* ---- Platform manual carousel (Chapter 02 rebuild) --------------------------
+   One native horizontal track, no pinning, no scroll-linked transforms.
+   Vertical page scrolling never moves the cards: the browser only scrolls
+   this track for deliberate horizontal input (touch swipe, trackpad, drag,
+   arrows, rail). Cards keep full static content — no 3D, no fades. */
+.mkt-carousel-track {
+  display: flex;
+  gap: 1rem;
+  overflow-x: auto;
+  overflow-y: visible;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  padding: 0.25rem 0.25rem 0.5rem;
+  overscroll-behavior-x: contain;
+  cursor: grab;
+  /* The track owns its horizontal overflow: flex children start at
+     min-width 0 and the track clips at its own box, so the six-card row
+     can never widen the document or draw a page-level scrollbar. */
+  min-width: 0;
+  max-width: 100%;
+  contain: layout inline-size;
+}
+
+.mkt-carousel-track:active {
+  cursor: grabbing;
+}
+
+.mkt-carousel-track:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.mkt-carousel-card {
+  flex: 0 0 auto;
+  width: min(560px, 100%);
+  min-width: 0;
+  max-width: 100%;
+  scroll-snap-align: start;
+}
+
+@media (max-width: 1023.5px) {
+  .mkt-carousel-track { gap: 0.75rem; }
+  .mkt-carousel-card { width: 100%; }
+}
+
+@media (max-width: 1023px) {
+  .mkt-sticky-visual { position: static; }
+  .mkt-ambient { animation-duration: 44s; }
+  .mkt-chips { animation-duration: 7s; }
+}
+
+/* ---- Flat workflow schematic: readable data-flow spine plus five legible
+   stage cards. No 3D, no fixed scene height; the active stage takes lime. */
+.mkt-pipe {
+  position: relative;
+  margin-top: 0.75rem;
+}
+
+.mkt-pipe-stage {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.mkt-pipe-route {
+  display: block;
+  width: 100%;
+  height: 26px;
+  opacity: 0.9;
+}
+
+.mkt-pipe-packet {
+  position: absolute;
+  top: 13px;
+  width: 10px;
+  height: 10px;
+  translate: -5px -5px;
+  border-radius: 999px;
+  background: var(--mkt-lime);
+  box-shadow:
+    0 0 0 3px rgba(65, 105, 255, 0.35),
+    0 0 14px rgba(201, 255, 80, 0.55);
+}
+
+/* Vertical spine for the mobile journey: the packet travels downward past
+   the five nodes as scrolling advances Source → Verify. */
+.mkt-pipe-vertical {
+  position: relative;
+  width: 22px;
+  flex: none;
+  align-self: stretch;
+}
+
+.mkt-pipe-route-vertical {
+  display: block;
+  width: 100%;
+  height: 100%;
+  opacity: 0.9;
+}
+
+.mkt-pipe-packet-vertical {
+  position: absolute;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  translate: -50% -50%;
+  border-radius: 999px;
+  background: var(--mkt-lime);
+  box-shadow:
+    0 0 0 3px rgba(65, 105, 255, 0.35),
+    0 0 14px rgba(201, 255, 80, 0.55);
+}
+
+/* Compact cards inside the pinned mobile stack: same content, tighter
+   rhythm so all five stay visible within the viewport-height pin. */
+.mkt-wf-stack .mkt-module-front {
+  padding: 8px 10px 10px;
+}
+
+.mkt-module { position: static; width: 100%; }
+
+.mkt-module::after { content: none; }
+
+.mkt-module-top { display: none; }
+
+.mkt-module-front {
+  position: relative;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 10px;
+  background: var(--color-surface);
+  padding: 12px 14px 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(244, 247, 252, 0.12),
+    inset 0 -14px 24px rgba(0, 0, 0, 0.32),
+    0 18px 40px rgba(0, 0, 0, 0.45);
+}
+
+.mkt-module[data-active="true"] .mkt-module-front {
+  border-color: var(--mkt-lime);
+  box-shadow:
+    inset 0 1px 0 rgba(244, 247, 252, 0.16),
+    0 0 0 1px var(--mkt-lime);
+}
+
+.mkt-module-light {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-border-strong);
+}
+
+.mkt-module-light[data-tone="cobalt"] {
+  background: var(--color-accent);
+  box-shadow: 0 0 8px rgba(65, 105, 255, 0.8);
+}
+
+.mkt-module-light[data-tone="coral"] {
+  background: var(--mkt-coral);
+  box-shadow: 0 0 8px rgba(255, 107, 97, 0.8);
+}
+
+.mkt-module-light[data-tone="lime"] {
+  background: var(--mkt-lime);
+  box-shadow: 0 0 8px rgba(201, 255, 80, 0.8);
+}
+
+.mkt-module-light[data-lit="false"] {
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+/* ---- Reduced motion: everything static, fully legible --------------------- */
+@media (prefers-reduced-motion: reduce) {
+  [data-mkt-chapter] { transition: none; }
+  .mkt-chips,
+  .mkt-scan-x,
+  .mkt-dash-flow,
+  .mkt-ambient,
+  .mkt-caret {
+    animation: none !important;
+  }
+  /* The manual carousel is already motion-safe: keep the track natively
+     scrollable with instant jumps and no snap animation. */
+  .mkt-carousel-track { scroll-snap-type: none; cursor: default; }
+  .mkt-wf-runway { height: auto !important; }
+  .mkt-wf-pin { position: static; height: auto; overflow: visible; }
+}

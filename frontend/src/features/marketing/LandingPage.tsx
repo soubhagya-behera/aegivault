@@ -1,13 +1,24 @@
 import LandingHero from "./LandingHero";
+import PlatformShowcase from "./PlatformShowcase";
+import WorkflowSection from "./WorkflowSection";
+import SecuritySection from "./SecuritySection";
+import ConversionSection from "./ConversionSection";
 
 /**
- * Public landing page (Phase 3A) — navigation + hero only, by design.
- *
- * The section anchors are the contract with later phases:
- *   #platform  → feature showcase,  #workflow → scrollytelling sequence,
- *   #security  → security/audit section, plus the site footer.
- * None of those sections exist yet; this file only composes what is built.
+ * Public landing page (Phase 3D): five deliberate visual chapters —
+ * opening (ink) → platform (paper) → workflow (moss) → evidence
+ * (near-black) → conversion (paper). Each section owns its chapter scope
+ * (data-mkt-chapter) so transitions read as one coherent narrative and the
+ * authenticated dashboard is untouched. The site footer arrives later.
  */
 export default function LandingPage() {
-  return <LandingHero />;
+  return (
+    <>
+      <LandingHero />
+      <PlatformShowcase />
+      <WorkflowSection />
+      <SecuritySection />
+      <ConversionSection />
+    </>
+  );
 }

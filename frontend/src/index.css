@@ -57,6 +57,9 @@
   --color-warning-bg: var(--color-warning-bg);
   --color-danger-bg: var(--color-danger-bg);
   --color-info-bg: var(--color-info-bg);
+
+  /* Marketing-only signal color (selected states, small highlights). */
+  --color-lime: var(--mkt-lime);
 }
 
 /* Base document defaults using the semantic tokens. */

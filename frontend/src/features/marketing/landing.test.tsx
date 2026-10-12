@@ -62,10 +62,12 @@ describe("landing page (Phase 3A)", () => {
     auth.status = "unauthenticated";
     renderLanding();
 
+    // Stage names also appear in the #workflow section, so assert at least one
+    // match each and scope the unique strings to the hero illustration figure.
     for (const stage of ["Source", "Inspect", "Sanitize", "Govern", "Verify"]) {
-      expect(screen.getByText(stage)).toBeTruthy();
+      expect(screen.getAllByText(stage).length).toBeGreaterThan(0);
     }
-    expect(screen.getByText(/example values are fictional/i)).toBeTruthy();
+    expect(screen.getByText(/illustrative pipeline — example values are fictional/i)).toBeTruthy();
     expect(screen.getByText("email → tok_av_7f2c")).toBeTruthy();
   });
 
@@ -130,8 +132,10 @@ describe("landing page (Phase 3A)", () => {
     expect(screen.getByRole("main")).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "Sections" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Skip to main content" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /aegivault/i }).getAttribute("href")).toBe(
-      "/home",
-    );
+    // Phase 3D adds a "Sign in to Aegivault" conversion CTA, so scope the
+    // brand assertion to the navigation wordmark link.
+    const brandLinks = screen.getAllByRole("link", { name: /aegivault/i });
+    const brand = brandLinks.find((link) => link.getAttribute("href") === "/home");
+    expect(brand).toBeTruthy();
   });
 });

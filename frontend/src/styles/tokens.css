@@ -141,6 +141,42 @@
 
   /* Interactive hit-area target (accessibility). */
   --hit-target: 44px;
+
+  /* ---- Marketing chapters (Phase 3E, PUBLIC ONLY) -------------------------
+     Scoped tokens for the /home immersive chapters. The authenticated
+     dashboard never reads these: components use them only inside
+     [data-mkt-chapter] sections (see marketing.css). Raw values live here
+     so there is still exactly one definition per color.
+     Contrast notes: white small text on luminous cobalt #4169FF is ~4.5:1
+     borderline, so text-bearing fills use --mkt-cobalt-deep (#3350D8,
+     ~6.4:1 with white); luminous cobalt is reserved for large display
+     type, rules, glows, and graphical accents. */
+  --mkt-graphite: #090c12; /* opening + evidence canvas */
+  --mkt-deep: #121824; /* raised panels on dark chapters */
+  --mkt-deep-raised: #1a2334; /* cards, diagrams on dark chapters */
+  --mkt-midnight: #0b1326; /* workflow chapter canvas (deep blue) */
+  --mkt-midnight-raised: #111b36; /* workflow panels */
+  --mkt-cobalt: #4169ff; /* luminous cobalt — large type, rules, glow */
+  --mkt-cobalt-deep: #3350d8; /* text-bearing fills with white label */
+  --mkt-cobalt-hover: #6685ff; /* graphical hover only, never small text */
+  --mkt-ice: #f4f7fc; /* cool white — light chapter canvas + dark text */
+  --mkt-ice-muted: #a5aec0; /* secondary text on dark (>=7:1 on graphite) */
+  --mkt-ink: #141a26; /* light-section body text on ice (~14:1) */
+  --mkt-ink-muted: #3d4759; /* light-section muted on ice (~7:1) */
+  --mkt-ink-line: rgba(20, 26, 38, 0.14); /* dividers on ice */
+  --mkt-ink-line-strong: rgba(20, 26, 38, 0.36);
+  --mkt-lime: #c9ff50; /* selected states + small highlights on dark */
+  --mkt-coral: #ff6b61; /* BLOCK / risk on dark */
+  --mkt-line-dark: rgba(244, 247, 252, 0.14); /* dividers on dark */
+  --mkt-line-dark-strong: rgba(244, 247, 252, 0.32);
+
+  /* Marketing display scale (editorial hero only; app type scale unchanged). */
+  --text-5xl: 4.25rem; /* 68px — marketing display, desktop */
+  --text-6xl: 5.5rem; /* 88px — marketing oversize, wide desktop only */
+
+  /* Marketing motion chapters (mirrors ANIMATION_SPEC §2 additions). */
+  --dur-chapter: 500ms; /* chapter background/foreground transitions */
+  --dur-stage: 300ms; /* sticky stage + diagram swaps */
 }
 
 /* Honor reduced motion globally: collapse travel/duration, keep content

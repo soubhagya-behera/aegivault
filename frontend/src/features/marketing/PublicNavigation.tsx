@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Menu, X } from "lucide-react";
 import { useAuth } from "../../auth/AuthProvider";
 import BrandMark from "../../components/ui/BrandMark";
+import { DUR, EASE } from "./motion";
 
 interface SectionLink {
   href: string;
@@ -10,15 +12,49 @@ interface SectionLink {
 }
 
 /**
- * Anchor links to landing-page sections that later phases implement. The hrefs
- * are the contract with those phases; they are real fragment links now, not
- * dead buttons.
+ * Anchor links to the landing-page sections (#platform, #workflow, #security);
+ * each href has a real section target on the landing page.
  */
 const SECTION_LINKS: readonly SectionLink[] = [
   { href: "#platform", label: "Platform" },
   { href: "#workflow", label: "Workflow" },
   { href: "#security", label: "Security" },
 ];
+
+interface MobileMenuBodyProps {
+  to: string;
+  label: string;
+  ctaClassName: string;
+  onNavigate: () => void;
+}
+
+/**
+ * Mobile menu body: section anchors plus the auth action. Shared by the
+ * static reduced-motion panel and the animated panel so both stay identical.
+ */
+function MobileMenuBody({ to, label, ctaClassName, onNavigate }: MobileMenuBodyProps) {
+  return (
+    <>
+      <nav aria-label="Sections" className="flex flex-col px-6">
+        {SECTION_LINKS.map((link) => (
+          <a
+            key={link.href}
+            href={link.href}
+            onClick={onNavigate}
+            className="border-b border-border py-3.5 text-sm text-text-muted transition-colors hover:text-text"
+          >
+            {link.label}
+          </a>
+        ))}
+      </nav>
+      <div className="px-6 py-4">
+        <Link to={to} onClick={onNavigate} className={`${ctaClassName} w-full`}>
+          {label}
+        </Link>
+      </div>
+    </>
+  );
+}
 
 /**
  * Public navigation (Phase 3A): compact sticky top bar with the animated brand
@@ -28,11 +64,12 @@ const SECTION_LINKS: readonly SectionLink[] = [
  *   (`/`, enforced by RequireAuth), signed out → `/login`.
  * - Mobile menu is a disclosure: `aria-expanded`/`aria-controls`, Escape closes
  *   and restores focus, an outside press closes, focus moves into the panel on
- *   open, and every target is ≥44px. It is plain DOM state — it works even if
- *   all animation is disabled.
+ *   open, and every target is ≥44px. It opens with a short fade-and-settle
+ *   and is plain DOM state — it works even if all animation is disabled.
  */
 export default function PublicNavigation() {
   const { status } = useAuth();
+  const reduce = useReducedMotion();
   const [menuOpen, setMenuOpen] = useState(false);
   const headerRef = useRef<HTMLElement | null>(null);
   const toggleRef = useRef<HTMLButtonElement | null>(null);
@@ -80,12 +117,12 @@ export default function PublicNavigation() {
   }
 
   const ctaClassName =
-    "inline-flex min-h-11 items-center justify-center rounded-md bg-accent px-4 text-sm font-medium text-accent-contrast transition-colors hover:bg-accent-hover";
+    "inline-flex min-h-11 items-center justify-center rounded-md bg-accent px-4 text-sm font-medium text-accent-contrast transition-[background-color,transform] duration-200 hover:bg-accent-hover active:scale-[0.98]";
 
   return (
     <header
       ref={headerRef}
-      className="sticky top-0 z-40 border-b border-border bg-canvas"
+      className="sticky top-0 z-40 border-b border-border bg-canvas/90 backdrop-blur-md"
     >
       <div className="mx-auto flex h-16 max-w-app items-center justify-between gap-4 px-6">
         <Link to="/home" className="group flex items-center gap-2.5">
@@ -132,30 +169,42 @@ export default function PublicNavigation() {
         </button>
       </div>
 
-      <div
-        id="public-nav-menu"
-        ref={panelRef}
-        hidden={!menuOpen}
-        className="absolute inset-x-0 top-full border-b border-border bg-canvas md:hidden"
-      >
-        <nav aria-label="Sections" className="flex flex-col px-6">
-          {SECTION_LINKS.map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              onClick={closeMenu}
-              className="border-b border-border py-3.5 text-sm text-text-muted transition-colors hover:text-text"
-            >
-              {link.label}
-            </a>
-          ))}
-        </nav>
-        <div className="px-6 py-4">
-          <Link to={authAction.to} onClick={closeMenu} className={`${ctaClassName} w-full`}>
-            {authAction.label}
-          </Link>
+      {menuOpen && reduce ? (
+        <div
+          id="public-nav-menu"
+          ref={panelRef}
+          className="absolute inset-x-0 top-full border-b border-border bg-canvas md:hidden"
+        >
+          <MobileMenuBody
+            to={authAction.to}
+            label={authAction.label}
+            ctaClassName={ctaClassName}
+            onNavigate={closeMenu}
+          />
         </div>
-      </div>
+      ) : (
+        <AnimatePresence initial={false}>
+          {menuOpen ? (
+            <motion.div
+              key="public-nav-menu"
+              id="public-nav-menu"
+              ref={panelRef}
+              className="absolute inset-x-0 top-full border-b border-border bg-canvas md:hidden"
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: DUR.hover, ease: EASE }}
+            >
+              <MobileMenuBody
+                to={authAction.to}
+                label={authAction.label}
+                ctaClassName={ctaClassName}
+                onNavigate={closeMenu}
+              />
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+      )}
     </header>
   );
 }

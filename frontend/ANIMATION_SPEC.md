@@ -32,6 +32,137 @@ Documented defaults — **not a reason to animate everything.**
 | Standard reveal | ~350–500 ms (`--dur-reveal` 420ms) | content entering           |
 | Hero sequence   | ~500–800 ms (`--dur-hero` 700ms)   | kinetic hero               |
 | Layout          | ~220–320 ms (`--dur-layout` 280ms) | layout/route transitions   |
+| Chapter         | ~500 ms (`--dur-chapter`)          | marketing chapter bg/fg transitions |
+| Stage swap      | ~300 ms (`--dur-stage`)            | sticky stage + diagram swaps |
+
+- **Primary easing:** `cubic-bezier(0.22, 1, 0.36, 1)` (`--ease-primary`) — a
+  confident ease-out for entrances and state changes.
+- **Spring reference:** stiffness `260`, damping `28`, mass `0.8` — for the few
+  spring-driven primitives (e.g., tilt return, brand-mark settle). Use sparingly;
+  most motion should use the timed easings above.
+- Durations live as CSS custom properties in `tokens.css` so reduced-motion can
+  collapse them in one place.
+
+### 2b. Phase 3E motion language (marketing chapters)
+
+- **Opening sequence (once on mount):** backdrop glow settles → eyebrow →
+  headline lines rise through overflow masks → lead → lime CTA + ghost →
+  live-pipeline lanes boot in order (records drift, findings badge, token
+  morphs, verdicts resolve, chain checks). Content is in the DOM immediately;
+  motion only sequences visibility, never replays on state updates.
+- **Chapter transitions:** each `data-mkt-chapter` owns its bg/fg; CSS
+  `transition: background-color/color var(--dur-chapter)` makes graphite →
+  ice → midnight → graphite → cobalt read as deliberate chapters with no
+  scroll listeners or per-frame React state.
+- **Workflow choreography:** desktop pins `WorkflowVisual` while five 52vh
+  stages scroll past. `useScroll` + `useSpring` fill the spine (MotionValue,
+  zero re-renders); one `IntersectionObserver` sets the discrete active
+  stage (lime node, scene crossfade, caption swap, `aria-current`). Mobile
+  stacks the schematic above compact stages with no pinning.
+- **Shared-layout rules:** `platform-active-rule` (cobalt rail) and
+  `workflow-active-glow` (lime bar) glide on selection/stage change; panels
+  swap via `AnimatePresence mode="wait"` with rise + settle.
+- **Technical SVG motion:** chip drift, scan sweeps, dash-crawl connectors,
+  token morphs, verdict resolution, traveling verify pass — each demonstrates
+  a capability; opacity pulses are never the primary animation.
+- **Ambient (quiet only):** 24s backdrop drift, all inside visual panels or
+  backdrops, disabled under reduced motion, calmed on mobile. No particles,
+  no WebGL, no parallax on body text.
+- **Performance boundaries:** MotionValues for scroll-linked fills;
+  transform/opacity/SVG-stroke only; single observer disconnected on unmount.
+
+### 2c. Phase 3F scroll-driven product experience (marketing chapters)
+
+- **Platform manual carousel (Chapter 02):** six capability cards live in one
+  native horizontal `overflow-x: auto` track (`PlatformJourney`). Vertical
+  page scrolling never moves the cards — there is no `useScroll`,
+  `useTransform`, `window.scrollY` reader, or pinned runway. Horizontal
+  movement comes only from deliberate interaction: touch swipe, native
+  horizontal scroll, pointer drag, the capability rail, or the previous/next
+  buttons. Navigation scrolls the track container only (`track.scrollTo`),
+  never `scrollIntoView`, so the document never shifts sideways. The active
+  index derives from the track's real `scrollLeft` vs. card `offsetLeft`
+  (with a max-scroll rule so Audit wins at the far end), and drives the rail
+  highlight, counter, progress bar, and button boundaries. Reduced motion
+  falls back to the static vertical tab explorer (`PlatformLegacy`). The
+  active-index math is unit-tested (`journey.test.tsx`).
+- **Transition fix:** panel/scene swaps use `AnimatePresence mode="popLayout"`
+  (overlapping crossfade) instead of `mode="wait"` (unmount gap), so rapid
+  selection never passes through a blank frame.
+- **Workflow additions:** a lime data packet rides the spine with journey
+  progress; the schematic header carries a discrete `Stage n / 5` counter;
+  VERIFY lands a `SEQUENCE COMPLETE` tag with the audit-chain result.
+- **Hero exit:** the pipeline panel alone drifts, settles, and softens as the
+  visitor scrolls into Platform; the heading never moves.
+- **Evidence:** the audit figure's connectors trace, verify sweep travels, and
+  entry checks + result resolve with section-entry scroll progress
+  (`start end` → `center center`), coordinated with the boundary copy.
+- **Conversion close:** a lime rule draws on entry; the outline wordmark
+  parallaxes with chapter scroll. CTAs stay static and usable throughout.
+
+### 2d. Phase 3G mobile folding cards (below the `lg` breakpoint)
+
+- **Workflow folding card:** a five-stage rail over the shared `WorkflowVisual`
+  with the stage explanation appended inline via a `trailing` slot. Tapping a
+  stage glides the data packet along the spine (`animate` on the progress
+  MotionValue) while the explanation folds left-to-right. Desktop passes no
+  `trailing` node, so its output is unchanged.
+- Both keep native buttons (≥44px), roving arrow-key travel, `aria-current`,
+  and visible focus; focus is never moved into the swapping panel, and the
+  panel container never unmounts. Reduced motion renders instant swaps with
+  full content. No `wheel`/scroll interception; rails scroll natively inside
+  their padded containers so the page never overflows horizontally.
+
+### 2e. Chapter 02 manual carousel (below the `lg` breakpoint)
+
+- **One manual carousel:** `PlatformJourney` serves every motion-safe viewport
+  with the same manual horizontal track described in §2c. Below `lg`, cards
+  span the container width (`width: 100%`), so one complete capability is
+  fully visible at a time; touch swipe and native horizontal scrolling move
+  the track, and the rail/previous/next controls scroll it container-locally.
+  Vertical scrolling moves only the document — never the cards. Compact
+  mobile copy (a concise `tagline` per capability) keeps cards short; the
+  full technical description renders at `sm:` and above. Reduced motion
+  renders the static vertical tab explorer with no pinning.
+
+### 2f. Phase 3I isometric workflow pipeline (Chapter 03)
+
+- **Scene:** five cuboid modules (front face + lit top face + recessed
+  chassis layer, directional inset lighting, restrained shadows) riding a
+  cobalt route inside a `perspective` / `preserve-3d` scene. Lime marks the
+  auto-active module (edge + top strip + lit readout); coral is reserved for
+  the govern BLOCK pill. No WebGL, no new dependency.
+- **Scroll-driven 3D:** pose is a pure function of journey progress —
+  `d = index − progress·(count−1)` drives `x` (conveyor travel), `rotateY`
+  (cover-flow ±42° max, facing at focus), `translateZ` (forward at focus,
+  receding with distance), sink, scale, and opacity. MotionValues only, zero
+  per-frame React state; backward scroll reverses symmetrically. The route
+  fills with progress, node diamonds ignite discretely, and a lime packet
+  with a cobalt halo marks the processing point.
+- **Desktop:** the working sticky + stage-list structure is preserved; only
+  the flat schematic is replaced by the pipeline (same `active` + spring
+  `progress` inputs, same observer driver).
+- **Mobile:** a measured pinned journey (pin height + 0.85 pin-heights per
+  stage) auto-advances all five stages; rail + explanation stay in sync and
+  the pin releases into the next chapter. Rail taps select without moving the
+  page. Reduced motion renders a stable module stack with instant swaps,
+  never pinned.
+
+### 2f.1. Phase 3I.1 mobile rendering repair (Chapter 03)
+
+- **Root cause — missing containing block:** `.mkt-module` had no `position`,
+  so its absolute chassis layer (`::after`, scene-sized inset) and top face
+  anchored to `.mkt-pipe` instead — five overlapping scene-sized empty
+  outlines veiling the real fronts, detached strips at the scene top, and a
+  void-looking stage. Fixed with `position: relative` on the module; no
+  architecture change.
+- **Label sync:** the rail/header/explanation now use `stageForProgress`
+  (rounds to the nearest module center, unit-tested) instead of floor bands,
+  so the label always names the module in focus; poses and labels derive from
+  the single scroll progress value.
+- **Overlap tuning:** lanes exceed module widths (168 mobile / 185 desktop),
+  max facing ±36°, and neighbors dim faster — peeks read as depth without
+  hiding the focused front. Far modules exit the clipped scene fully.
 
 - **Primary easing:** `cubic-bezier(0.22, 1, 0.36, 1)` (`--ease-primary`) — a
   confident ease-out for entrances and state changes.

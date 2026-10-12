@@ -4,9 +4,10 @@ React + Vite (**TypeScript**) frontend for the Aegivault data privacy, security,
 and AI governance platform. Talks to the existing Spring Boot backend without
 modifying it.
 
-> Status: **Phase 3A — public landing page (navigation + hero) at `/home`.**
-> The protected `/` route still renders the honest placeholder; the feature
-> showcase, scrollytelling, footer, and dashboard are built in later phases.
+> Status: **Phase 3B — public landing page: navigation, hero, and the
+> interactive platform/workflow/security sections at `/home`.** The protected
+> `/` route still renders the honest placeholder; the footer and dashboard are
+> built in later phases.
 
 ## Tech stack
 

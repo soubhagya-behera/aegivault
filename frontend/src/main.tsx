@@ -4,6 +4,7 @@ import { RouterProvider } from "react-router-dom";
 import { AuthProvider } from "./auth/AuthProvider";
 import { router } from "./app/router";
 import "./index.css";
+import "./features/marketing/marketing.css";
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) {
