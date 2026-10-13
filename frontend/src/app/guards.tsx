@@ -21,9 +21,22 @@ export function RequireAuth() {
 /** Keeps already-authenticated users out of the login/register pages. */
 export function RedirectIfAuthed() {
   const { status } = useAuth();
+  const location = useLocation();
 
   if (status === "authenticated") {
-    return <Navigate to="/" replace />;
+    // Return users to the protected page they came from (RequireAuth stores
+    // it as state.from); otherwise fall back to the dashboard. Only accept
+    // same-origin paths so a crafted location state can never redirect away.
+    const from = (location.state as { from?: unknown } | null)?.from;
+    const target =
+      typeof from === "string" &&
+      from.startsWith("/") &&
+      !from.startsWith("//") &&
+      from !== "/login" &&
+      from !== "/register"
+        ? from
+        : "/dashboard";
+    return <Navigate to={target} replace />;
   }
   return <Outlet />;
 }

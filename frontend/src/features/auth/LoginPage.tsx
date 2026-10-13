@@ -12,7 +12,7 @@ import FormError from "./FormError";
  * Login page. Uses the real POST /api/auth/login via the auth provider.
  *
  * On success the provider marks the session authenticated and RedirectIfAuthed
- * sends the user to the protected workspace — no success is claimed here before
+ * sends the user to the protected workspace (/dashboard) — no success is claimed here before
  * that state change. Errors are shown from the normalized, safe ApiError
  * message (never the entered password, never a stack trace).
  */

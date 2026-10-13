@@ -11,39 +11,54 @@ vi.mock("../auth/AuthProvider", () => ({
   useAuth: () => auth,
 }));
 
-function renderAt(path: string) {
+function renderAt(path: string, state?: unknown) {
+  const entry = state === undefined ? path : { pathname: path, state };
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter initialEntries={[entry]}>
       <Routes>
         <Route element={<RequireAuth />}>
-          <Route path="/" element={<div>workspace</div>} />
+          <Route path="/dashboard" element={<div>workspace</div>} />
         </Route>
         <Route element={<RedirectIfAuthed />}>
           <Route path="/login" element={<div>login</div>} />
+          <Route path="/register" element={<div>register</div>} />
         </Route>
+        <Route path="/" element={<div>landing</div>} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 describe("route guards", () => {
-  it("RequireAuth redirects an unauthenticated user away from the workspace", () => {
+  it("RequireAuth redirects an unauthenticated user away from the dashboard", () => {
     auth.status = "unauthenticated";
-    renderAt("/");
+    renderAt("/dashboard");
     expect(screen.queryByText("workspace")).toBeNull();
     expect(screen.getByText("login")).toBeTruthy();
   });
 
-  it("RequireAuth admits an authenticated user to the workspace", () => {
+  it("RequireAuth admits an authenticated user to the dashboard", () => {
     auth.status = "authenticated";
-    renderAt("/");
+    renderAt("/dashboard");
     expect(screen.getByText("workspace")).toBeTruthy();
   });
 
-  it("RedirectIfAuthed sends an authenticated user away from the login page", () => {
+  it("RedirectIfAuthed sends an authenticated user from login to the dashboard", () => {
     auth.status = "authenticated";
     renderAt("/login");
     expect(screen.queryByText("login")).toBeNull();
+    expect(screen.getByText("workspace")).toBeTruthy();
+  });
+
+  it("RedirectIfAuthed returns an authenticated user to their saved destination", () => {
+    auth.status = "authenticated";
+    renderAt("/login", { from: "/dashboard" });
+    expect(screen.getByText("workspace")).toBeTruthy();
+  });
+
+  it("RedirectIfAuthed ignores an unsafe saved destination", () => {
+    auth.status = "authenticated";
+    renderAt("/login", { from: "https://evil.example/" });
     expect(screen.getByText("workspace")).toBeTruthy();
   });
 
@@ -51,5 +66,11 @@ describe("route guards", () => {
     auth.status = "unauthenticated";
     renderAt("/login");
     expect(screen.getByText("login")).toBeTruthy();
+  });
+
+  it("RedirectIfAuthed shows the register page to an unauthenticated user", () => {
+    auth.status = "unauthenticated";
+    renderAt("/register");
+    expect(screen.getByText("register")).toBeTruthy();
   });
 });

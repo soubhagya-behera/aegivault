@@ -15,13 +15,13 @@ vi.mock("../../auth/AuthProvider", () => ({
 
 function renderLanding() {
   return render(
-    <MemoryRouter initialEntries={["/home"]}>
+    <MemoryRouter initialEntries={["/"]}>
       <Routes>
         <Route element={<PublicLayout />}>
-          <Route path="/home" element={<LandingPage />} />
+          <Route path="/" element={<LandingPage />} />
         </Route>
         <Route path="/login" element={<div>login route</div>} />
-        <Route path="/" element={<div>workspace route</div>} />
+        <Route path="/dashboard" element={<div>workspace route</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -55,7 +55,7 @@ describe("landing page (Phase 3A)", () => {
     expect(primary.getAttribute("href")).toBe("#platform");
 
     const secondary = screen.getByRole("link", { name: "Open workspace" });
-    expect(secondary.getAttribute("href")).toBe("/");
+    expect(secondary.getAttribute("href")).toBe("/dashboard");
   });
 
   it("shows the pipeline stages and the fictional-data disclaimer", () => {
@@ -96,7 +96,7 @@ describe("landing page (Phase 3A)", () => {
 
     const workspaceLinks = screen.getAllByRole("link", { name: "Open workspace" });
     expect(workspaceLinks.length).toBeGreaterThan(0);
-    workspaceLinks.forEach((link) => expect(link.getAttribute("href")).toBe("/"));
+    workspaceLinks.forEach((link) => expect(link.getAttribute("href")).toBe("/dashboard"));
     expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
   });
 
@@ -135,7 +135,7 @@ describe("landing page (Phase 3A)", () => {
     // Phase 3D adds a "Sign in to Aegivault" conversion CTA, so scope the
     // brand assertion to the navigation wordmark link.
     const brandLinks = screen.getAllByRole("link", { name: /aegivault/i });
-    const brand = brandLinks.find((link) => link.getAttribute("href") === "/home");
+    const brand = brandLinks.find((link) => link.getAttribute("href") === "/");
     expect(brand).toBeTruthy();
   });
 });

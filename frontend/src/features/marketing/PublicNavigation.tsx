@@ -61,7 +61,7 @@ function MobileMenuBody({ to, label, ctaClassName, onNavigate }: MobileMenuBodyP
  * mark + wordmark, section anchors, and one primary authentication action.
  *
  * - The CTA uses the real routes: authenticated → the protected workspace
- *   (`/`, enforced by RequireAuth), signed out → `/login`.
+ *   (`/dashboard`, enforced by RequireAuth), signed out → `/login`.
  * - Mobile menu is a disclosure: `aria-expanded`/`aria-controls`, Escape closes
  *   and restores focus, an outside press closes, focus moves into the panel on
  *   open, and every target is ≥44px. It opens with a short fade-and-settle
@@ -77,7 +77,7 @@ export default function PublicNavigation() {
 
   const authAction =
     status === "authenticated"
-      ? { to: "/", label: "Open workspace" }
+      ? { to: "/dashboard", label: "Open workspace" }
       : { to: "/login", label: "Sign in" };
 
   // Escape closes the menu and returns focus to the toggle; an outside press
@@ -125,7 +125,7 @@ export default function PublicNavigation() {
       className="sticky top-0 z-40 border-b border-border bg-canvas/90 backdrop-blur-md"
     >
       <div className="mx-auto flex h-16 max-w-app items-center justify-between gap-4 px-6">
-        <Link to="/home" className="group flex items-center gap-2.5">
+        <Link to="/" className="group flex items-center gap-2.5">
           <BrandMark className="size-7 text-text transition-colors group-hover:text-accent" />
           <span className="font-display text-base font-semibold tracking-tight text-text transition-colors group-hover:text-accent">
             Aegivault

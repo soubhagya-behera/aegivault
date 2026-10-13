@@ -99,7 +99,7 @@ export default function LandingHero() {
                   Explore the platform
                 </a>
                 <Link
-                  to="/"
+                  to="/dashboard"
                   className="inline-flex min-h-12 items-center justify-center rounded-md border border-border-strong px-7 text-[15px] font-medium text-text transition-[transform,border-color,background-color] duration-200 hover:border-accent hover:bg-surface-raised active:scale-[0.98]"
                 >
                   Open workspace
