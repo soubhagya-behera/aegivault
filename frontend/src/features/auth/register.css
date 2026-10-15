@@ -1,0 +1,397 @@
+/* =============================================================================
+ * Aegivault registration split-screen (AUTH ONLY).
+ * ---------------------------------------------------------------------------
+ * Two-panel composition: dark graphite visual (#090C12 family) + a cool,
+ * lightly decorated light form panel. Scoped under .register-split so the
+ * landing page, dashboard, and marketing chapters are never affected.
+ *
+ * LAYOUT RULE THAT PREVENTS THE OLD OVERLAP
+ * Everything sits in normal flex/grid flow. The illustration lives in its own
+ * dedicated stage (.register-stage) that precedes the copy block; the copy is
+ * a sibling that flows after it. There is no absolute positioning, no
+ * negative margin, and no panel-sized image layer, so the headline can never
+ * render on top of the artwork at any width or viewport height.
+ *
+ * ILLUSTRATION HANDLING (1448x1086 landscape asset)
+ * A real <img> with intrinsic width/height attributes (no CLS) inside a stage
+ * whose box is sized explicitly. `object-fit: contain` plus the mirrored aspect
+ * ratio means the shield, padlock, and surrounding glass panels are always
+ * shown complete â€” never cropped, never stretched. A 10% edge mask only
+ * feathers the dark outer scenery so the artwork dissolves into the panel
+ * instead of sitting in a visible rectangular frame; the focal shield and
+ * lock sit well inside the unfeathered 80% of the image.
+ *
+ * Responsive behaviour
+ *   <768px   compact horizontal hero row: complete illustration beside the
+ *            one-line headline. Paragraph and the three feature rows are
+ *            hidden here (they remain on desktop) to keep the decorative
+ *            block short and put the email field immediately below it.
+ *   768-1023 the same row, with a larger illustration and the eyebrow and
+ *            feature row restored â€” a graceful step toward the desktop split.
+ *   >=1024px 45% dark panel / 55% light panel, stage above the copy.
+ *
+ * The right-hand form panel (ambient surface, card, inputs, button) lives in
+ * register-panel.css; the raw palette values live in tokens.css (--mkt-*) and
+ * this file only references them.
+ * ========================================================================== */
+
+/* ---- Split shell -------------------------------------------------------- */
+.register-split {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  /* Rows size to content and stack from the top on narrow screens, so the dark
+     block never inflates to half the viewport (the old mobile height bug). */
+  grid-auto-rows: min-content;
+  align-content: start;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: clip;
+  background-color: #eef2fa;
+  background-image:
+    radial-gradient(58rem 30rem at 10% -6%, rgba(65, 105, 255, 0.16), transparent 62%),
+    radial-gradient(48rem 28rem at 94% 104%, rgba(102, 133, 255, 0.18), transparent 60%),
+    linear-gradient(180deg, #f4f7fc 0%, #e9eefb 52%, #e2e9fa 100%);
+}
+
+/* Restrained ambient detail behind the form: a faint dot grid, faded out
+   toward the edges so it never competes with the card. */
+.register-split::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle at 1px 1px, rgba(20, 26, 38, 0.08) 1px, transparent 0);
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(78% 62% at 50% 42%, #000 0%, rgba(0, 0, 0, 0.2) 62%, transparent 100%);
+  mask-image: radial-gradient(78% 62% at 50% 42%, #000 0%, rgba(0, 0, 0, 0.2) 62%, transparent 100%);
+}
+
+/* ---- Left: dark brand visual ------------------------------------------- */
+.register-visual {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 1rem 1.125rem 1.25rem;
+  overflow: hidden;
+  color: var(--mkt-ice);
+  background-color: var(--mkt-graphite);
+  background-image:
+    radial-gradient(34rem 20rem at 18% -4%, rgba(65, 105, 255, 0.2), transparent 64%),
+    radial-gradient(28rem 18rem at 92% 108%, rgba(201, 255, 80, 0.07), transparent 62%);
+  --color-text: var(--mkt-ice);
+  --color-text-muted: var(--mkt-ice-muted);
+  --color-border: var(--mkt-line-dark);
+  --color-border-strong: var(--mkt-line-dark-strong);
+  --color-accent: var(--mkt-cobalt);
+  --color-accent-hover: var(--mkt-cobalt-hover);
+  --color-accent-contrast: #ffffff;
+}
+
+/* Faint dot field on the dark panel â€” decoration only, always behind content. */
+.register-visual::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle at 1px 1px, rgba(244, 247, 252, 0.06) 1px, transparent 0);
+  background-size: 26px 26px;
+  -webkit-mask-image: radial-gradient(80% 70% at 50% 40%, #000 0%, transparent 100%);
+  mask-image: radial-gradient(80% 70% at 50% 40%, #000 0%, transparent 100%);
+}
+
+.register-visual > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---- Brand -------------------------------------------------------------- */
+.register-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  align-self: flex-start;
+  color: var(--mkt-ice);
+  text-decoration: none;
+  transition: opacity var(--dur-hover) var(--ease-primary);
+}
+
+.register-brand:hover {
+  opacity: 0.82;
+}
+
+.register-brand-name {
+  font-family: var(--font-display);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+}
+
+/* ---- Hero: brand above full-width art on mobile, stacked on desktop ----- */
+.register-hero {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  min-width: 0;
+  margin-top: 0.75rem;
+}
+
+/* Dedicated visual stage. Sized explicitly so the box is reserved before the
+   image decodes, and it never shares space with the text. The stage follows
+   the artwork's own aspect ratio; the image fills it with width:100% and
+   height:auto, so the shield, lock and surrounding glass are never cropped. */
+.register-stage {
+  position: relative;
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1448 / 1086;
+}
+
+/* Ambient glow that integrates the artwork into the panel. */
+.register-stage::before {
+  content: "";
+  position: absolute;
+  inset: -20% -18%;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    closest-side,
+    rgba(65, 105, 255, 0.26),
+    rgba(65, 105, 255, 0.08) 56%,
+    transparent 80%
+  );
+  animation: register-stage-glow 9s ease-in-out infinite;
+}
+
+.register-stage-inner {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+}
+
+.register-art-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+  object-fit: contain;
+  /* Feather only the outermost 10% on each axis so the dark scenery blends
+     into the panel. `intersect` keeps the shield and lock fully opaque. */
+  --register-mask-x: linear-gradient(to right, transparent 0%, #000 10%, #000 90%, transparent 100%);
+  --register-mask-y: linear-gradient(to bottom, transparent 0%, #000 10%, #000 90%, transparent 100%);
+  -webkit-mask-image: var(--register-mask-x), var(--register-mask-y);
+  -webkit-mask-composite: source-in;
+  mask-image: var(--register-mask-x), var(--register-mask-y);
+  mask-composite: intersect;
+}
+
+/* ---- Copy (hidden on mobile only; restored from 768px up) ------------- */
+.register-copy {
+  display: none;
+}
+
+.register-eyebrow,
+.register-headline,
+.register-lede {
+  margin: 0;
+  color: var(--mkt-ice);
+}
+
+.register-headline {
+  margin-top: 0.25rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.12;
+  /* ~4.6vw keeps "Your data. Your control." on one line at 393px. */
+  font-size: clamp(1.0625rem, 4.6vw, 1.25rem);
+  text-wrap: balance;
+}
+
+/* Hidden below 768px only to cut the decorative height above the form; both
+   stay in the DOM and return from 768px up. */
+.register-eyebrow,
+.register-lede,
+.register-highlights {
+  display: none;
+}
+
+.register-lede {
+  margin-top: 0.75rem;
+  max-width: 30rem;
+  color: var(--mkt-ice-muted);
+  font-size: 0.9375rem;
+  line-height: var(--leading-relaxed);
+}
+
+/* ---- Compact feature highlights ---------------------------------------- */
+.register-highlights {
+  list-style: none;
+  margin: 1.375rem 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.875rem;
+}
+
+.register-highlight {
+  display: flex;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.register-highlight-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--mkt-line-dark);
+  background: var(--mkt-deep-raised);
+  color: var(--mkt-cobalt-hover);
+}
+
+.register-highlight-text {
+  min-width: 0;
+}
+
+.register-highlight-title {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--mkt-ice);
+}
+
+.register-highlight-body {
+  display: block;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--mkt-ice-muted);
+}
+
+/* ---- Ambient animation (decorative, disabled under reduced motion) ------ */
+@keyframes register-stage-glow {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+/* ---- Tablet: between the compact stacked row and the desktop split ----- */
+@media (min-width: 768px) {
+  .register-visual {
+    padding: 1.5rem 1.75rem 2rem;
+  }
+
+  .register-hero {
+    flex-direction: row;
+    align-items: center;
+    gap: 1.25rem;
+    margin-top: 1rem;
+  }
+
+  .register-copy {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .register-stage {
+    width: 7.5rem;
+  }
+
+  .register-headline {
+    font-size: clamp(1.5rem, 3vw, 1.75rem);
+  }
+
+  .register-eyebrow {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--mkt-ice-muted);
+  }
+
+  .register-lede,
+  .register-highlights {
+    display: grid;
+  }
+
+  .register-lede {
+    margin-top: 0.5rem;
+    font-size: 0.875rem;
+  }
+
+  .register-highlight-mark {
+    width: 2rem;
+    height: 2rem;
+  }
+}
+
+/* ---- Desktop: the 45 / 55 split-screen --------------------------------- */
+@media (min-width: 1024px) {
+  .register-split {
+    grid-template-columns: 45% 55%;
+    grid-auto-rows: auto;
+    align-content: stretch;
+  }
+
+  .register-visual {
+    padding: 2.75rem 3rem 3rem;
+  }
+
+  .register-hero {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: 1.75rem;
+    margin-top: 1.5rem;
+  }
+
+  .register-stage {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    aspect-ratio: 1448 / 1086;
+    /* Artwork sizes to the full usable width of the 45% panel; no fixed
+       height, so the image keeps its native 1448x1086 proportions. */
+    margin-block: 0.5rem 1.25rem;
+  }
+
+  .register-stage::before {
+    inset: -12% -8%;
+  }
+
+  .register-headline {
+    margin-top: 0.5rem;
+    font-size: clamp(1.75rem, 2.4vw, 2.25rem);
+  }
+
+  .register-copy {
+    flex: 0 0 auto;
+    max-width: 32rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .register-stage::before {
+    animation: none;
+  }
+}
