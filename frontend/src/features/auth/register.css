@@ -75,7 +75,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  padding: 1rem 1.125rem 1.25rem;
+  padding: 0.75rem 1.125rem;
   overflow: hidden;
   color: var(--mkt-ice);
   background-color: var(--mkt-graphite);
@@ -139,7 +139,7 @@
   align-items: stretch;
   gap: 0;
   min-width: 0;
-  margin-top: 0.75rem;
+  margin-top: 0.5rem;
 }
 
 /* Dedicated visual stage. Sized explicitly so the box is reserved before the
@@ -149,9 +149,10 @@
 .register-stage {
   position: relative;
   flex: 0 0 auto;
-  width: 100%;
+  width: min(100%, 17rem);
   max-width: 100%;
   height: auto;
+  margin-inline: auto;
   aspect-ratio: 1448 / 1086;
 }
 

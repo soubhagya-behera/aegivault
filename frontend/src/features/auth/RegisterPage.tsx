@@ -24,6 +24,13 @@ const HERO_ALT =
 const HERO_WIDTH = 1448;
 const HERO_HEIGHT = 1086;
 
+/** Decorative ticker sequence (uppercase, matching the highlight titles in
+ *  meaning but never colliding with their test queries); rendered twice for
+ *  a seamless CSS loop. */
+const TICKER_ITEMS = ["DATA PRIVACY", "SECURITY", "GOVERNANCE", "AUDIT"];
+
+const RESET_EMAIL = "soubhagyabehera074@gmail.com";
+
 /** Concise product points; mirrors the landing-page narrative, no new claims. */
 const HIGHLIGHTS = [
   {
@@ -217,7 +224,9 @@ export default function RegisterPage() {
         </div>
       </section>
 
-      {/* Right panel: light registration form on the ambient panel surface. */}
+      {/* Right panel: light registration form on the ambient panel surface.
+          Card first, then the decorative ticker, then the reset notice — all
+          in normal flow inside this panel, never over the dark visual. */}
       <section aria-labelledby="register-title" className="register-form-panel">
         <motion.div {...formReveal} className="register-card">
           <span aria-hidden="true" className="register-card-mark">
@@ -273,6 +282,30 @@ export default function RegisterPage() {
             </Link>
           </p>
         </motion.div>
+
+        <div aria-hidden="true" className="register-ticker">
+          <div className="register-ticker-track">
+            {[0, 1].map((half) => (
+              <span key={half} className="register-ticker-half">
+                {TICKER_ITEMS.map((item) => (
+                  <span key={item} className="register-ticker-item">
+                    {item}
+                    <span className="register-ticker-sep">✦</span>
+                  </span>
+                ))}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <p className="register-reset-note">
+          <span className="register-reset-heading">Forgot your password?</span>
+          Password reset isn&apos;t available right now. For assistance, contact{" "}
+          <a href={`mailto:${RESET_EMAIL}`} className="register-reset-link">
+            {RESET_EMAIL}
+          </a>
+          .
+        </p>
       </section>
     </main>
   );

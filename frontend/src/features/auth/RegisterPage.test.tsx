@@ -192,4 +192,19 @@ describe("registration page (split-screen)", () => {
       false,
     );
   });
+
+  it("shows the ticker and reset notice inside the light panel only", () => {
+    renderPage();
+
+    const panel = document.querySelector(".register-form-panel");
+    const visual = document.querySelector(".register-visual");
+    expect(panel?.querySelector(".register-ticker")).toBeTruthy();
+    expect(panel?.querySelector(".register-reset-note")).toBeTruthy();
+    // Neither element may cross into the dark illustration panel.
+    expect(visual?.querySelector(".register-ticker")).toBeNull();
+    expect(visual?.querySelector(".register-reset-note")).toBeNull();
+    expect(screen.getByText("Forgot your password?")).toBeTruthy();
+    const mail = screen.getByRole("link", { name: "soubhagyabehera074@gmail.com" });
+    expect(mail.getAttribute("href")).toBe("mailto:soubhagyabehera074@gmail.com");
+  });
 });
