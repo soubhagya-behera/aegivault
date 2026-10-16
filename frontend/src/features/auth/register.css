@@ -1,127 +1,45 @@
-/* =============================================================================
- * Aegivault registration split-screen (AUTH ONLY).
- * ---------------------------------------------------------------------------
- * Two-panel composition: dark graphite visual (#090C12 family) + a cool,
- * lightly decorated light form panel. Scoped under .register-split so the
- * landing page, dashboard, and marketing chapters are never affected.
- *
- * LAYOUT RULE THAT PREVENTS THE OLD OVERLAP
- * Everything sits in normal flex/grid flow. The illustration lives in its own
- * dedicated stage (.register-stage) that precedes the copy block; the copy is
- * a sibling that flows after it. There is no absolute positioning, no
- * negative margin, and no panel-sized image layer, so the headline can never
- * render on top of the artwork at any width or viewport height.
- *
- * ILLUSTRATION HANDLING (1448x1086 landscape asset)
- * A real <img> with intrinsic width/height attributes (no CLS) inside a stage
- * whose box is sized explicitly. `object-fit: contain` plus the mirrored aspect
- * ratio means the shield, padlock, and surrounding glass panels are always
- * shown complete â€” never cropped, never stretched. A 10% edge mask only
- * feathers the dark outer scenery so the artwork dissolves into the panel
- * instead of sitting in a visible rectangular frame; the focal shield and
- * lock sit well inside the unfeathered 80% of the image.
- *
- * Responsive behaviour
- *   <768px   compact horizontal hero row: complete illustration beside the
- *            one-line headline. Paragraph and the three feature rows are
- *            hidden here (they remain on desktop) to keep the decorative
- *            block short and put the email field immediately below it.
- *   768-1023 the same row, with a larger illustration and the eyebrow and
- *            feature row restored â€” a graceful step toward the desktop split.
- *   >=1024px 45% dark panel / 55% light panel, stage above the copy.
- *
- * The right-hand form panel (ambient surface, card, inputs, button) lives in
- * register-panel.css; the raw palette values live in tokens.css (--mkt-*) and
- * this file only references them.
+/* ==========================================================================
+ * Aegivault registration — immersive scene shell + floating glass card
+ * (AUTH ONLY). Scoped under .register-scene; never touches login,
+ * landing, or dashboard.
+ * Palette: #090C12 canvas, #121824 surfaces, #4169FF/#6685FF cobalt,
+ * #F4F7FC ice, #A5AEC0 muted, #C9FF50 lime (verification only).
  * ========================================================================== */
 
-/* ---- Split shell -------------------------------------------------------- */
-.register-split {
+.register-scene {
   position: relative;
-  display: grid;
-  grid-template-columns: 1fr;
-  /* Rows size to content and stack from the top on narrow screens, so the dark
-     block never inflates to half the viewport (the old mobile height bug). */
-  grid-auto-rows: min-content;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: clip;
-  background-color: #eef2fa;
-  background-image:
-    radial-gradient(58rem 30rem at 10% -6%, rgba(65, 105, 255, 0.16), transparent 62%),
-    radial-gradient(48rem 28rem at 94% 104%, rgba(102, 133, 255, 0.18), transparent 60%),
-    linear-gradient(180deg, #f4f7fc 0%, #e9eefb 52%, #e2e9fa 100%);
+  color: #f4f7fc;
+  --focus-ring: #6685ff;
 }
 
-/* Restrained ambient detail behind the form: a faint dot grid, faded out
-   toward the edges so it never competes with the card. */
-.register-split::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: radial-gradient(circle at 1px 1px, rgba(20, 26, 38, 0.08) 1px, transparent 0);
-  background-size: 22px 22px;
-  -webkit-mask-image: radial-gradient(78% 62% at 50% 42%, #000 0%, rgba(0, 0, 0, 0.2) 62%, transparent 100%);
-  mask-image: radial-gradient(78% 62% at 50% 42%, #000 0%, rgba(0, 0, 0, 0.2) 62%, transparent 100%);
-}
-
-/* ---- Left: dark brand visual ------------------------------------------- */
-.register-visual {
+.register-scene > *:not(.register-backdrop) {
   position: relative;
   z-index: 1;
+}
+
+/* ---- Top brand row ------------------------------------------------------ */
+.register-top {
   display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding: 0.75rem 1.125rem;
-  overflow: hidden;
-  color: var(--mkt-ice);
-  background-color: var(--mkt-graphite);
-  background-image:
-    radial-gradient(34rem 20rem at 18% -4%, rgba(65, 105, 255, 0.2), transparent 64%),
-    radial-gradient(28rem 18rem at 92% 108%, rgba(201, 255, 80, 0.07), transparent 62%);
-  --color-text: var(--mkt-ice);
-  --color-text-muted: var(--mkt-ice-muted);
-  --color-border: var(--mkt-line-dark);
-  --color-border-strong: var(--mkt-line-dark-strong);
-  --color-accent: var(--mkt-cobalt);
-  --color-accent-hover: var(--mkt-cobalt-hover);
-  --color-accent-contrast: #ffffff;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  max-width: 88rem;
+  margin-inline: auto;
+  padding: 1.125rem 1.5rem 0;
 }
 
-/* Faint dot field on the dark panel â€” decoration only, always behind content. */
-.register-visual::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background-image: radial-gradient(circle at 1px 1px, rgba(244, 247, 252, 0.06) 1px, transparent 0);
-  background-size: 26px 26px;
-  -webkit-mask-image: radial-gradient(80% 70% at 50% 40%, #000 0%, transparent 100%);
-  mask-image: radial-gradient(80% 70% at 50% 40%, #000 0%, transparent 100%);
-}
-
-.register-visual > * {
-  position: relative;
-  z-index: 1;
-}
-
-/* ---- Brand -------------------------------------------------------------- */
 .register-brand {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  align-self: flex-start;
-  color: var(--mkt-ice);
+  color: #f4f7fc;
   text-decoration: none;
-  transition: opacity var(--dur-hover) var(--ease-primary);
-}
-
-.register-brand:hover {
-  opacity: 0.82;
 }
 
 .register-brand-name {
@@ -131,268 +49,291 @@
   letter-spacing: var(--tracking-tight);
 }
 
-/* ---- Hero: brand above full-width art on mobile, stacked on desktop ----- */
-.register-hero {
-  display: flex;
-  flex: 1 0 auto;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0;
-  min-width: 0;
-  margin-top: 0.5rem;
+.register-descriptor {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #a5aec0;
 }
 
-/* Dedicated visual stage. Sized explicitly so the box is reserved before the
-   image decodes, and it never shares space with the text. The stage follows
-   the artwork's own aspect ratio; the image fills it with width:100% and
-   height:auto, so the shield, lock and surrounding glass are never cropped. */
+/* ---- Stage: balanced 3-column composition on desktop -------------------- */
 .register-stage {
   position: relative;
-  flex: 0 0 auto;
-  width: min(100%, 17rem);
-  max-width: 100%;
-  height: auto;
-  margin-inline: auto;
-  aspect-ratio: 1448 / 1086;
-}
-
-/* Ambient glow that integrates the artwork into the panel. */
-.register-stage::before {
-  content: "";
-  position: absolute;
-  inset: -20% -18%;
-  z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(
-    closest-side,
-    rgba(65, 105, 255, 0.26),
-    rgba(65, 105, 255, 0.08) 56%,
-    transparent 80%
-  );
-  animation: register-stage-glow 9s ease-in-out infinite;
-}
-
-.register-stage-inner {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  height: 100%;
-}
-
-.register-art-img {
-  display: block;
-  width: 100%;
-  height: auto;
-  max-width: 100%;
-  object-fit: contain;
-  /* Feather only the outermost 10% on each axis so the dark scenery blends
-     into the panel. `intersect` keeps the shield and lock fully opaque. */
-  --register-mask-x: linear-gradient(to right, transparent 0%, #000 10%, #000 90%, transparent 100%);
-  --register-mask-y: linear-gradient(to bottom, transparent 0%, #000 10%, #000 90%, transparent 100%);
-  -webkit-mask-image: var(--register-mask-x), var(--register-mask-y);
-  -webkit-mask-composite: source-in;
-  mask-image: var(--register-mask-x), var(--register-mask-y);
-  mask-composite: intersect;
-}
-
-/* ---- Copy (hidden on mobile only; restored from 768px up) ------------- */
-.register-copy {
-  display: none;
-}
-
-.register-eyebrow,
-.register-headline,
-.register-lede {
-  margin: 0;
-  color: var(--mkt-ice);
-}
-
-.register-headline {
-  margin-top: 0.25rem;
-  font-family: var(--font-display);
-  font-weight: 600;
-  letter-spacing: var(--tracking-tight);
-  line-height: 1.12;
-  /* ~4.6vw keeps "Your data. Your control." on one line at 393px. */
-  font-size: clamp(1.0625rem, 4.6vw, 1.25rem);
-  text-wrap: balance;
-}
-
-/* Hidden below 768px only to cut the decorative height above the form; both
-   stay in the DOM and return from 768px up. */
-.register-eyebrow,
-.register-lede,
-.register-highlights {
-  display: none;
-}
-
-.register-lede {
-  margin-top: 0.75rem;
-  max-width: 30rem;
-  color: var(--mkt-ice-muted);
-  font-size: 0.9375rem;
-  line-height: var(--leading-relaxed);
-}
-
-/* ---- Compact feature highlights ---------------------------------------- */
-.register-highlights {
-  list-style: none;
-  margin: 1.375rem 0 0;
-  padding: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.875rem;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 2rem;
+  width: 100%;
+  max-width: 88rem;
+  margin-inline: auto;
+  padding: 1.5rem 1.5rem 1rem;
+  flex: 1 0 auto;
 }
 
-.register-highlight {
-  display: flex;
-  gap: 0.625rem;
-  min-width: 0;
+.register-column--left { justify-self: end; }
+.register-column--right { justify-self: start; }
+
+/* ---- Central floating glass card ---------------------------------------- */
+.register-card-wrap {
+  justify-self: center;
+  /* Definite width (not min()): the auto grid track sizes to it exactly. */
+  width: 29rem;
+  max-width: 100%;
+  animation: register-card-float 7s ease-in-out infinite;
 }
 
-.register-highlight-mark {
+/* Pause the float while the user is inside the form: stable geometry. */
+.register-card-wrap:focus-within { animation: none; }
+
+@keyframes register-card-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.register-card {
+  position: relative;
+  padding: 1.5rem 1.75rem 1.375rem;
+  border-radius: 1.125rem;
+  border: 1px solid rgba(102, 133, 255, 0.32);
+  background:
+    linear-gradient(165deg, rgba(65, 105, 255, 0.14), transparent 42%),
+    linear-gradient(180deg, rgba(26, 35, 52, 0.92), rgba(15, 20, 32, 0.94));
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow:
+    inset 0 1px 0 rgba(244, 247, 252, 0.1),
+    0 24px 60px -20px rgba(0, 0, 0, 0.7),
+    0 0 44px -8px rgba(65, 105, 255, 0.4);
+  transition: border-color 240ms var(--ease-primary), box-shadow 240ms var(--ease-primary);
+}
+
+@media (hover: hover) {
+  .register-card:hover {
+    border-color: rgba(102, 133, 255, 0.45);
+    box-shadow:
+      inset 0 1px 0 rgba(244, 247, 252, 0.12),
+      0 24px 60px -20px rgba(0, 0, 0, 0.7),
+      0 0 60px -8px rgba(65, 105, 255, 0.55);
+  }
+}
+
+.register-card-mark {
   display: inline-flex;
-  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--mkt-line-dark);
-  background: var(--mkt-deep-raised);
-  color: var(--mkt-cobalt-hover);
+  width: 2.5rem;
+  height: 2.5rem;
+  margin-bottom: 0.875rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(102, 133, 255, 0.35);
+  background: linear-gradient(160deg, rgba(65, 105, 255, 0.3), rgba(65, 105, 255, 0.08));
+  color: #b9c6ff;
+  box-shadow: 0 0 18px -2px rgba(65, 105, 255, 0.6);
 }
 
-.register-highlight-text {
-  min-width: 0;
+.register-eyebrow {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #8ea2ff;
 }
 
-.register-highlight-title {
-  display: block;
-  font-size: 0.8125rem;
+.register-title {
+  margin: 0.375rem 0 0;
+  font-family: var(--font-display);
+  font-size: 1.625rem;
   font-weight: 600;
-  color: var(--mkt-ice);
+  letter-spacing: var(--tracking-tight);
+  color: #f4f7fc;
 }
 
-.register-highlight-body {
-  display: block;
+.register-subtitle {
+  margin: 0.375rem 0 0;
+  font-size: 0.875rem;
+  color: #a5aec0;
+}
+
+.register-rule {
+  height: 1px;
+  margin: 0.875rem 0;
+  background: linear-gradient(90deg, transparent, rgba(102, 133, 255, 0.4), transparent);
+}
+
+.register-form { display: flex; flex-direction: column; gap: 0.75rem; }
+.register-form > div { min-width: 0; }
+
+/* Inputs: translucent elevated surface, blue focus, quick transitions */
+.register-card input {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  color: #f4f7fc;
+  background-color: rgba(18, 24, 36, 0.8);
+  border: 1px solid rgba(244, 247, 252, 0.14);
+  border-radius: 0.625rem;
+  transition: background-color 180ms var(--ease-primary), border-color 180ms var(--ease-primary), box-shadow 180ms var(--ease-primary);
+}
+
+.register-card input::placeholder { color: rgba(165, 174, 192, 0.7); }
+.register-card input:hover { border-color: rgba(244, 247, 252, 0.28); }
+.register-card input:focus {
+  border-color: #4169ff;
+  background-color: rgba(18, 24, 36, 0.95);
+  box-shadow: 0 0 0 4px rgba(65, 105, 255, 0.22);
+  outline: none;
+}
+.register-card input:focus-visible { outline: 2px solid #6685ff; outline-offset: 2px; }
+.register-card input[aria-invalid="true"] { border-color: #ff6b61; background-color: rgba(255, 107, 97, 0.06); }
+.register-card label { color: #f4f7fc; }
+.register-form p[id$="-hint"] { color: #a5aec0; }
+
+/* Create-account button: cobalt gradient, lift + glow + sheen on hover */
+.register-card .register-submit {
+  position: relative;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.6875rem 1rem;
+  overflow: hidden;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #fff;
+  background-color: #4169ff;
+  background-image: linear-gradient(110deg, #5a7cff 0%, #4169ff 48%, #3456e8 100%);
+  border: 1px solid rgba(21, 38, 128, 0.4);
+  border-radius: 0.625rem;
+  box-shadow: 0 1px 2px rgba(21, 38, 128, 0.25), 0 10px 22px -10px rgba(65, 105, 255, 0.8);
+  transition: transform 120ms var(--ease-primary), box-shadow 180ms var(--ease-primary), filter 180ms var(--ease-primary);
+}
+
+.register-submit-arrow { margin-left: 0.25rem; }
+
+.register-card .register-submit:hover:not(:disabled) {
+  transform: translateY(-2px);
+  filter: saturate(1.1) brightness(1.06);
+  background-image: linear-gradient(110deg, #6e8eff 0%, #5176ff 48%, #4169ff 100%);
+  box-shadow: 0 2px 6px rgba(21, 38, 128, 0.25), 0 0 0 1px rgba(102, 133, 255, 0.5), 0 20px 34px -12px rgba(65, 105, 255, 0.95);
+}
+
+.register-card .register-submit:active:not(:disabled) { transform: translateY(1px) scale(0.985); }
+.register-card .register-submit:focus-visible { outline: 3px solid #6685ff; outline-offset: 3px; }
+.register-card .register-submit:disabled { background-image: linear-gradient(180deg, #9aaef6, #829bf4); box-shadow: none; filter: saturate(0.7); }
+
+.register-card .register-submit::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 28%, rgba(255, 255, 255, 0.42) 50%, transparent 72%);
+  transform: translateX(-130%);
+  transition: transform 480ms var(--ease-primary);
+  pointer-events: none;
+  mix-blend-mode: soft-light;
+}
+
+@media (hover: hover) {
+  .register-card .register-submit:hover:not(:disabled)::before { transform: translateX(130%); }
+}
+
+.register-footer { margin: 0.875rem 0 0; font-size: 0.8125rem; color: #a5aec0; }
+.register-link { color: #8ea2ff; font-weight: 600; text-underline-offset: 2px; }
+.register-link:hover { color: #c9ff50; text-decoration: underline; }
+.register-link:focus-visible { outline: 2px solid #6685ff; outline-offset: 2px; border-radius: 2px; }
+
+/* ---- Support + mobile assurance ------------------------------------------ */
+.register-support {
+  width: 100%;
+  max-width: 88rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 1.25rem;
+  text-align: center;
   font-size: 0.75rem;
-  line-height: 1.4;
-  color: var(--mkt-ice-muted);
+  line-height: 1.55;
+  color: #a5aec0;
 }
 
-/* ---- Ambient animation (decorative, disabled under reduced motion) ------ */
-@keyframes register-stage-glow {
-  0%,
-  100% {
-    opacity: 0.72;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1.06);
-  }
+.register-support a { color: #8ea2ff; font-weight: 600; }
+.register-support a:hover { color: #c9ff50; }
+
+.register-mobile-badge {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0 auto;
+  padding: 0 1.5rem 0.875rem;
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #8ea2ff;
 }
 
-/* ---- Tablet: between the compact stacked row and the desktop split ----- */
-@media (min-width: 768px) {
-  .register-visual {
-    padding: 1.5rem 1.75rem 2rem;
-  }
+/* ---- Laptop: compact rhythm so the taller card fits reduced heights ------ */
+@media (max-width: 1279px) {
+  .register-top { padding-top: 0.875rem; }
+  .register-stage { gap: 1.5rem; padding: 1rem 1.25rem 0.75rem; }
+  .register-card { padding: 1.25rem 1.375rem 1.125rem; }
+  .register-card-mark { margin-bottom: 0.625rem; }
+  .register-rule { margin: 0.75rem 0; }
+  .register-form { gap: 0.625rem; }
+  .register-footer { margin-top: 0.75rem; }
+  .register-support { padding-bottom: 1rem; }
+}
 
-  .register-hero {
-    flex-direction: row;
-    align-items: center;
-    gap: 1.25rem;
-    margin-top: 1rem;
-  }
-
-  .register-copy {
-    display: block;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
+/* ---- Tablet: card first, panels as compact grid below --------------------- */
+@media (max-width: 1079px) {
   .register-stage {
-    width: 7.5rem;
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 1.5rem;
+    max-width: 40rem;
   }
-
-  .register-headline {
-    font-size: clamp(1.5rem, 3vw, 1.75rem);
-  }
-
-  .register-eyebrow {
-    display: block;
-    font-family: var(--font-mono);
-    font-size: 0.625rem;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--mkt-ice-muted);
-  }
-
-  .register-lede,
-  .register-highlights {
+  .register-column--left, .register-column--right { justify-self: stretch; }
+  .register-column {
     display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.875rem;
+    max-width: none;
   }
+  .register-card-wrap { width: min(29rem, 100%); order: -1; }
+}
 
-  .register-lede {
-    margin-top: 0.5rem;
-    font-size: 0.875rem;
-  }
-
-  .register-highlight-mark {
+/* ---- Mobile: compact single-viewport card, panels hidden, badge shown ----
+ * NOTE: .register-column is hidden here (not only in register-scene.css)
+ * because register.css is injected later in the cascade and its tablet
+ * `display: grid` rule would otherwise win at <=767px. */
+@media (max-width: 767px) {
+  .register-top { padding: 0.625rem 1rem 0; }
+  .register-descriptor { display: none; }
+  .register-stage { padding: 0.75rem 1rem 0.5rem; gap: 0.75rem; }
+  .register-column { display: none; }
+  .register-card { padding: 1rem 1rem 0.875rem; }
+  .register-card-mark {
     width: 2rem;
     height: 2rem;
+    margin-bottom: 0.5rem;
+    border-radius: 0.625rem;
   }
-}
-
-/* ---- Desktop: the 45 / 55 split-screen --------------------------------- */
-@media (min-width: 1024px) {
-  .register-split {
-    grid-template-columns: 45% 55%;
-    grid-auto-rows: auto;
-    align-content: stretch;
-  }
-
-  .register-visual {
-    padding: 2.75rem 3rem 3rem;
-  }
-
-  .register-hero {
-    flex-direction: column;
-    align-items: stretch;
-    justify-content: flex-start;
-    gap: 1.75rem;
-    margin-top: 1.5rem;
-  }
-
-  .register-stage {
-    width: 100%;
-    max-width: 100%;
-    height: auto;
-    aspect-ratio: 1448 / 1086;
-    /* Artwork sizes to the full usable width of the 45% panel; no fixed
-       height, so the image keeps its native 1448x1086 proportions. */
-    margin-block: 0.5rem 1.25rem;
-  }
-
-  .register-stage::before {
-    inset: -12% -8%;
-  }
-
-  .register-headline {
-    margin-top: 0.5rem;
-    font-size: clamp(1.75rem, 2.4vw, 2.25rem);
-  }
-
-  .register-copy {
-    flex: 0 0 auto;
-    max-width: 32rem;
-  }
+  .register-eyebrow { display: none; }
+  .register-title { margin-top: 0; font-size: 1.25rem; }
+  .register-subtitle { margin-top: 0.25rem; font-size: 0.8125rem; }
+  .register-rule { margin: 0.625rem 0; }
+  .register-form { gap: 0.625rem; }
+  .register-form > div.flex-col { gap: 0.25rem; }
+  .register-card .register-submit { margin-top: 0.125rem; }
+  .register-footer { margin-top: 0.625rem; }
+  .register-mobile-badge { display: flex; padding-bottom: 0.625rem; }
+  .register-support { padding: 0 1rem 1rem; font-size: 0.6875rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .register-stage::before {
-    animation: none;
-  }
+  .register-card-wrap, .register-card-wrap:focus-within { animation: none; }
+  .register-card, .register-card:hover { transform: none; }
+  .register-card .register-submit::before { display: none; }
 }

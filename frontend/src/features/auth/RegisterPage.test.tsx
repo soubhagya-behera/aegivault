@@ -3,6 +3,9 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ApiError } from "../../lib/api/client";
 import RegisterPage from "./RegisterPage";
+// @ts-expect-error - node types are excluded from tsconfig "types"; the
+// import resolves at runtime under vitest (node environment).
+import { readFileSync } from "node:fs";
 
 // Mock only the auth hook; the real Field/Button/FormError components and the
 // real validation + payload logic in RegisterPage stay under test.
@@ -24,65 +27,55 @@ function fillValidForm(email = "ada@example.com", password = "s3cure-pass") {
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: password } });
 }
 
-describe("registration page (split-screen)", () => {
-  it("renders the brand visual with the illustration and feature points", () => {
+describe("registration page (immersive scene)", () => {
+  it("renders the join heading, subtitle, and brand without the old split-screen", () => {
     renderPage();
 
     expect(
-      screen.getByRole("heading", { level: 1, name: "Your data. Your control." }),
+      screen.getByRole("heading", { level: 1, name: "Join Aegivault" }),
     ).toBeTruthy();
-    for (const point of ["Privacy", "Governance", "Audit"]) {
-      expect(screen.getByText(point)).toBeTruthy();
-    }
-    const image = screen.getByAltText(/glass security shield and padlock/i);
-    expect(image.getAttribute("src")).toBe("/images/aegivault-register-hero-wide.png");
+    expect(
+      screen.getByText("Start governing production data and AI traffic securely."),
+    ).toBeTruthy();
+    expect(screen.getByText(/create your account/i)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Aegivault home" })).toBeTruthy();
+    // The old split-screen composition is gone: no photo panel, no ticker.
+    expect(document.querySelector(".register-split")).toBeNull();
+    expect(document.querySelector(".register-ticker")).toBeNull();
+    expect(document.querySelector(".register-scene")).toBeTruthy();
   });
 
-  it("preserves the illustration without cropping or distortion", () => {
+  it("renders six decorative holo panels around the card", () => {
     renderPage();
 
-    // The artwork must keep its intrinsic aspect ratio: width/height mirror
-    // the 1448x1086 asset, and the contained presentation class rules out a
-    // fixed-height cover crop of the shield and padlock.
-    const image = screen.getByAltText(/glass security shield and padlock/i);
-    expect(image.getAttribute("width")).toBe("1448");
-    expect(image.getAttribute("height")).toBe("1086");
-    expect(image.classList.contains("register-art-img")).toBe(true);
+    expect(document.querySelectorAll('[data-testid="register-holo"]')).toHaveLength(6);
+    for (const title of [
+      "Your data. Your control.",
+      "Sensitive Data Protection",
+      "Audit & Evidence",
+      "Policy Governance",
+      "AI Security Gateway",
+      "Governance Controls",
+    ]) {
+      expect(screen.getByText(title)).toBeTruthy();
+    }
+    // The real form is still present and labelled.
+    expect(screen.getByLabelText("Email")).toBeTruthy();
+    expect(screen.getByLabelText("Display name (optional)")).toBeTruthy();
+    expect(screen.getByLabelText("Password")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create account" })).toBeTruthy();
   });
 
   it("renders the real form fields, submit, and sign-in link", () => {
     renderPage();
 
-    expect(
-      screen.getByRole("heading", { level: 2, name: "Create your account" }),
-    ).toBeTruthy();
     expect(screen.getByLabelText("Email")).toBeTruthy();
     expect(screen.getByLabelText("Display name (optional)")).toBeTruthy();
     expect(screen.getByLabelText("Password")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Create account" })).toBeTruthy();
+    expect(screen.getByText("At least 8 characters.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Sign in" }).getAttribute("href")).toBe(
       "/login",
     );
-  });
-
-  it("keeps the illustration in its own stage, never behind the copy", () => {
-    renderPage();
-
-    // Layout contract for the desktop overlap bug: the artwork and the copy are
-    // two separate sibling blocks inside .register-hero. The copy is therefore
-    // never an ancestor of (and can never be laid over) the image, whatever the
-    // viewport — the CSS stacks them in normal flow instead.
-    const image = screen.getByAltText(/glass security shield and padlock/i);
-    const stage = image.closest(".register-stage");
-    expect(stage).toBeTruthy();
-    expect(stage?.querySelector("img")).toBe(image);
-
-    const copy = document.querySelector(".register-copy");
-    expect(copy).toBeTruthy();
-    expect(copy?.querySelector("img")).toBeNull();
-    expect(copy?.contains(image)).toBe(false);
-    expect(stage?.contains(copy)).toBe(false);
-    expect(stage?.parentElement).toBe(copy?.parentElement);
   });
 
   it("renders the form inside the elevated card with a security icon tile", () => {
@@ -193,18 +186,32 @@ describe("registration page (split-screen)", () => {
     );
   });
 
-  it("shows the ticker and reset notice inside the light panel only", () => {
+  it("shows the reset notice with a mailto link below the card", () => {
     renderPage();
 
-    const panel = document.querySelector(".register-form-panel");
-    const visual = document.querySelector(".register-visual");
-    expect(panel?.querySelector(".register-ticker")).toBeTruthy();
-    expect(panel?.querySelector(".register-reset-note")).toBeTruthy();
-    // Neither element may cross into the dark illustration panel.
-    expect(visual?.querySelector(".register-ticker")).toBeNull();
-    expect(visual?.querySelector(".register-reset-note")).toBeNull();
-    expect(screen.getByText("Forgot your password?")).toBeTruthy();
+    expect(screen.getByText(/Forgot your password\?/)).toBeTruthy();
     const mail = screen.getByRole("link", { name: "soubhagyabehera074@gmail.com" });
     expect(mail.getAttribute("href")).toBe("mailto:soubhagyabehera074@gmail.com");
+    expect(document.querySelector(".register-support")).toBeTruthy();
+  });
+
+  it("hides the holo columns in the mobile stylesheet (cascade-safe)", () => {
+    // Regression guard: register.css is injected after register-scene.css,
+    // so its tablet `display: grid` rule wins at <=767px unless the mobile
+    // block in this same file hides the columns again.
+    const mobile = readFileSync(
+      "src/features/auth/register.css",
+      "utf8",
+    ).split("@media (max-width: 767px)")[1];
+    expect(mobile).toMatch(/\.register-column\s*\{\s*display:\s*none/);
+  });
+
+  it("keeps the mobile atmosphere restrained in the scene stylesheet", () => {
+    const mobile = readFileSync(
+      "src/features/auth/register-scene.css",
+      "utf8",
+    ).split("@media (max-width: 767px)")[1];
+    expect(mobile).toMatch(/\.register-column\s*\{\s*display:\s*none/);
+    expect(mobile).toMatch(/\.register-packets\s*\{\s*display:\s*none/);
   });
 });

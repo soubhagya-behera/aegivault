@@ -50,7 +50,7 @@ describe("application routes", () => {
   it("renders the registration page at /register", () => {
     auth.status = "unauthenticated";
     renderAt("/register");
-    expect(screen.getByRole("heading", { name: "Create your account" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Join Aegivault" })).toBeTruthy();
   });
 
   it("protects /dashboard for unauthenticated users", () => {
@@ -76,7 +76,7 @@ describe("application routes", () => {
   it("sends authenticated users from /register to the dashboard", () => {
     auth.status = "authenticated";
     renderAt("/register");
-    expect(screen.queryByRole("heading", { name: "Create your account" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Join Aegivault" })).toBeNull();
     expect(screen.getByText("You're signed in.")).toBeTruthy();
   });
 
