@@ -1,0 +1,169 @@
+/* ==========================================================================
+ * Aegivault login — decorative scene layer (AUTH ONLY, scoped .login-scene).
+ * Backdrop atmosphere, dot field, orbit SVG, holographic panels.
+ * No auth logic, no form styling (see login.css). Decorative layers are
+ * pointer-events:none and sit behind the card.
+ * ========================================================================== */
+
+.login-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.login-atmosphere {
+  position: absolute;
+  inset: 0;
+  background-color: #090c12;
+  background-image:
+    radial-gradient(52rem 30rem at 50% -8%, rgba(65, 105, 255, 0.22), transparent 62%),
+    radial-gradient(40rem 26rem at 8% 108%, rgba(65, 105, 255, 0.12), transparent 60%),
+    radial-gradient(34rem 24rem at 94% 104%, rgba(201, 255, 80, 0.05), transparent 62%),
+    radial-gradient(30rem 20rem at 50% 52%, rgba(65, 105, 255, 0.1), transparent 70%);
+}
+
+.login-dotfield {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle at 1px 1px, rgba(244, 247, 252, 0.07) 1px, transparent 0);
+  background-size: 26px 26px;
+  -webkit-mask-image: radial-gradient(72% 64% at 50% 46%, #000 0%, transparent 100%);
+  mask-image: radial-gradient(72% 64% at 50% 46%, #000 0%, transparent 100%);
+}
+
+.login-orbits {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Slow ring motion: rotation on the outer ring, dash crawl on the lime ring. */
+.login-ring-spin {
+  transform-origin: 500px 320px;
+  animation: login-ring-rotate 46s linear infinite;
+}
+
+.login-ring-drift {
+  animation: login-dash-crawl 22s linear infinite;
+}
+
+@keyframes login-ring-rotate {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes login-dash-crawl {
+  to { stroke-dashoffset: -240; }
+}
+
+/* ---- Holographic supporting panels (decorative, non-interactive) --------- */
+.login-column {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  width: 100%;
+  max-width: 17.5rem;
+  pointer-events: none;
+}
+
+.login-holo {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.875rem 0.9375rem;
+  border-radius: 0.875rem;
+  border: 1px solid rgba(102, 133, 255, 0.22);
+  background:
+    linear-gradient(150deg, rgba(65, 105, 255, 0.12), rgba(18, 24, 36, 0.72) 55%),
+    rgba(18, 24, 36, 0.62);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow:
+    inset 0 1px 0 rgba(244, 247, 252, 0.08),
+    0 10px 30px -14px rgba(65, 105, 255, 0.45);
+  animation: login-holo-float 8s ease-in-out infinite;
+}
+
+.login-column--right .login-holo:nth-child(2) { animation-delay: -2.5s; animation-duration: 9s; }
+.login-column--left .login-holo:nth-child(2) { animation-delay: -4s; animation-duration: 7s; }
+
+.login-holo-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.625rem;
+  border: 1px solid rgba(102, 133, 255, 0.3);
+  background: rgba(65, 105, 255, 0.14);
+  color: #8ea2ff;
+}
+
+.login-holo--accent .login-holo-mark {
+  border-color: rgba(201, 255, 80, 0.4);
+  background: rgba(201, 255, 80, 0.1);
+  color: #c9ff50;
+}
+
+.login-holo-text { min-width: 0; }
+.login-holo-title {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #f4f7fc;
+}
+.login-holo-body {
+  display: block;
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: #a5aec0;
+}
+
+/* Lime verification tick on the panel edge */
+.login-holo-dot {
+  position: absolute;
+  top: 0.625rem;
+  right: 0.625rem;
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 999px;
+  background: #6685ff;
+  box-shadow: 0 0 8px rgba(102, 133, 255, 0.9);
+}
+
+.login-holo--accent .login-holo-dot {
+  background: #c9ff50;
+  box-shadow: 0 0 8px rgba(201, 255, 80, 0.9);
+}
+
+@keyframes login-holo-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+}
+
+/* Tablet: panels drop below the card in a compact 2-col grid, calmer float */
+@media (max-width: 1079px) {
+  .login-column { max-width: none; }
+  .login-holo { animation-duration: 9s; }
+}
+
+/* Mobile: text-heavy panels leave the layout (compact badge shown instead) */
+@media (max-width: 767px) {
+  .login-column { display: none; }
+  .login-ring-spin { animation-duration: 60s; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-holo,
+  .login-ring-spin,
+  .login-ring-drift { animation: none; }
+}

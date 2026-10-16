@@ -44,7 +44,7 @@ describe("application routes", () => {
   it("renders the sign-in page at /login", () => {
     auth.status = "unauthenticated";
     renderAt("/login");
-    expect(screen.getByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 
   it("renders the registration page at /register", () => {
@@ -57,7 +57,7 @@ describe("application routes", () => {
     auth.status = "unauthenticated";
     renderAt("/dashboard");
     expect(screen.queryByText("You're signed in.")).toBeNull();
-    expect(screen.getByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Welcome back" })).toBeTruthy();
   });
 
   it("admits authenticated users to /dashboard", () => {
@@ -69,7 +69,7 @@ describe("application routes", () => {
   it("sends authenticated users from /login to the dashboard", () => {
     auth.status = "authenticated";
     renderAt("/login");
-    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Welcome back" })).toBeNull();
     expect(screen.getByText("You're signed in.")).toBeTruthy();
   });
 
