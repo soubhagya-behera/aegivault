@@ -21,6 +21,7 @@ function renderLanding() {
           <Route path="/" element={<LandingPage />} />
         </Route>
         <Route path="/login" element={<div>login route</div>} />
+        <Route path="/register" element={<div>register route</div>} />
         <Route path="/dashboard" element={<div>workspace route</div>} />
       </Routes>
     </MemoryRouter>,
@@ -98,6 +99,23 @@ describe("landing page (Phase 3A)", () => {
     expect(workspaceLinks.length).toBeGreaterThan(0);
     workspaceLinks.forEach((link) => expect(link.getAttribute("href")).toBe("/dashboard"));
     expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Create account" })).toBeNull();
+  });
+
+  it("links registration from the header and mobile menu when signed out", () => {
+    auth.status = "unauthenticated";
+    renderLanding();
+
+    const createAccount = screen.getByRole("link", { name: "Create account" });
+    expect(createAccount.getAttribute("href")).toBe("/register");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open navigation menu" }));
+    const menuLinks = screen.getAllByRole("link", { name: "Create account" });
+    expect(menuLinks).toHaveLength(2);
+    menuLinks.forEach((link) => expect(link.getAttribute("href")).toBe("/register"));
+
+    fireEvent.click(menuLinks[1]!);
+    expect(screen.getByText("register route")).toBeTruthy();
   });
 
   it("navigates the secondary CTA to the workspace route", () => {

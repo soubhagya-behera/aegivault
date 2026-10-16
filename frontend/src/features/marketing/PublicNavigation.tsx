@@ -26,13 +26,22 @@ interface MobileMenuBodyProps {
   label: string;
   ctaClassName: string;
   onNavigate: () => void;
+  secondaryTo?: string;
+  secondaryLabel?: string;
 }
 
 /**
  * Mobile menu body: section anchors plus the auth action. Shared by the
  * static reduced-motion panel and the animated panel so both stay identical.
  */
-function MobileMenuBody({ to, label, ctaClassName, onNavigate }: MobileMenuBodyProps) {
+function MobileMenuBody({
+  to,
+  label,
+  ctaClassName,
+  onNavigate,
+  secondaryTo,
+  secondaryLabel,
+}: MobileMenuBodyProps) {
   return (
     <>
       <nav aria-label="Sections" className="flex flex-col px-6">
@@ -47,10 +56,19 @@ function MobileMenuBody({ to, label, ctaClassName, onNavigate }: MobileMenuBodyP
           </a>
         ))}
       </nav>
-      <div className="px-6 py-4">
+      <div className="flex flex-col gap-2 px-6 py-4">
         <Link to={to} onClick={onNavigate} className={`${ctaClassName} w-full`}>
           {label}
         </Link>
+        {secondaryTo && secondaryLabel ? (
+          <Link
+            to={secondaryTo}
+            onClick={onNavigate}
+            className="inline-flex min-h-11 w-full items-center justify-center rounded-md text-sm font-medium text-text-muted transition-colors hover:text-text"
+          >
+            {secondaryLabel}
+          </Link>
+        ) : null}
       </div>
     </>
   );
@@ -62,6 +80,8 @@ function MobileMenuBody({ to, label, ctaClassName, onNavigate }: MobileMenuBodyP
  *
  * - The CTA uses the real routes: authenticated → the protected workspace
  *   (`/dashboard`, enforced by RequireAuth), signed out → `/login`.
+ * - Signed-out visitors also get a secondary "Create account" link to
+ *   `/register` so registration is reachable without going through login.
  * - Mobile menu is a disclosure: `aria-expanded`/`aria-controls`, Escape closes
  *   and restores focus, an outside press closes, focus moves into the panel on
  *   open, and every target is ≥44px. It opens with a short fade-and-settle
@@ -79,6 +99,12 @@ export default function PublicNavigation() {
     status === "authenticated"
       ? { to: "/dashboard", label: "Open workspace" }
       : { to: "/login", label: "Sign in" };
+  // Registration entry point for signed-out visitors; hidden once signed in
+  // (the workspace CTA is the only auth action then).
+  const registerAction =
+    status === "authenticated"
+      ? null
+      : { to: "/register", label: "Create account" };
 
   // Escape closes the menu and returns focus to the toggle; an outside press
   // closes it without stealing focus.
@@ -144,7 +170,15 @@ export default function PublicNavigation() {
           ))}
         </nav>
 
-        <div className="hidden md:block">
+        <div className="hidden items-center gap-5 md:flex">
+          {registerAction ? (
+            <Link
+              to={registerAction.to}
+              className="text-sm text-text-muted underline-offset-4 transition-colors hover:text-text hover:underline"
+            >
+              {registerAction.label}
+            </Link>
+          ) : null}
           <Link to={authAction.to} className={ctaClassName}>
             {authAction.label}
           </Link>
@@ -180,6 +214,8 @@ export default function PublicNavigation() {
             label={authAction.label}
             ctaClassName={ctaClassName}
             onNavigate={closeMenu}
+            secondaryTo={registerAction?.to}
+            secondaryLabel={registerAction?.label}
           />
         </div>
       ) : (
@@ -200,6 +236,8 @@ export default function PublicNavigation() {
                 label={authAction.label}
                 ctaClassName={ctaClassName}
                 onNavigate={closeMenu}
+                secondaryTo={registerAction?.to}
+                secondaryLabel={registerAction?.label}
               />
             </motion.div>
           ) : null}
